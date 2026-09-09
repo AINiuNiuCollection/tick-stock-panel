@@ -155,12 +155,9 @@ class DespairReversalLeaderStrategy:
     def required_fields(self) -> frozenset[str]:
         return frozenset({
             "consecutive_limit_ups",
-            "raw_close",
             "amount",
             "open",
             "close",
-            "high",
-            "low",
         })
 
     def required_warmup_bars(self, params: dict) -> int:
@@ -177,9 +174,13 @@ class DespairReversalLeaderStrategy:
 
         # ── 1. OAMV 市场环境过滤 ──
         # 全市场日成交额 = 当前 universe 所有股票成交额之和
-        oamv = np.nansum(market.amount, axis=1)  # (T,)
+        # MarketDataMatrix 没有 amount 属性，需通过 matrix_feature 访问
+        amount = matrix_feature(market, "amount")
+        oamv = np.nansum(amount, axis=1)  # (T,)
         oamv_ma = _moving_average_1d(oamv, oamv_period)  # (T,)
-        oamv_ok = oamv > oamv_ma  # (T,) 活跃度高于均线 → 环境OK
+        oamv_ok = np.full_like(oamv, False, dtype=bool)
+        finite_mask = np.isfinite(oamv_ma)
+        oamv_ok[finite_mask] = (oamv > oamv_ma)[finite_mask]
         entry = np.broadcast_to(oamv_ok[:, None], market.shape).copy()
 
         # ── 2. 二板龙头·炸板回封入场信号 ──
@@ -232,7 +233,7 @@ class DespairReversalLeaderStrategy:
         # ── 6. 评分 ──
         score = np.zeros(market.shape, dtype=np.float32)
         score += np.nan_to_num(boards, nan=0.0) * 0.3
-        score += np.nan_to_num(np.log1p(market.amount), nan=0.0) * 0.3
+        score += np.nan_to_num(np.log1p(amount), nan=0.0) * 0.3
         score += np.nan_to_num(matrix_feature(market, "momentum_5d"), nan=0.0) * 0.2
         score += np.nan_to_num(amplitude, nan=0.0) * 0.2
 
