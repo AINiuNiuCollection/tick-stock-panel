@@ -35,6 +35,7 @@ import {
   Tags,
   TrendingUp,
   Flame,
+  BarChart2,
   BarChart3,
   Gauge,
   Sparkles,
@@ -88,6 +89,7 @@ const nav = [
   { to: '/screener',   label: '策略',   icon: ScanSearch },
   { to: '/factors',    label: '因子', icon: Sigma },
   { to: '/backtest',   label: '回测', icon: History },
+  { to: '/backtest-analysis', label: '回测分析', icon: BarChart2 },
   { to: '/stock-analysis',    label: '个股分析', icon: TrendingUp },
   { to: '/limit-ladder', label: '连板梯队', icon: Flame },
   { to: '/concept-analysis', label: '概念分析', icon: Layers3 },
@@ -686,15 +688,15 @@ export function Layout() {
           <div className={cn('flex', railMode ? 'flex-col items-center gap-2' : 'items-center gap-2')}>
             <Logo
               size={railMode ? 24 : 26}
-              className="shrink-0 drop-shadow-[0_0_8px_rgba(139,92,246,0.4)]"
-              style={{ color: BRAND }}
+              className="shrink-0 drop-shadow-[0_0_8px_rgba(239,68,68,0.4)]"
+              style={{ color: '#EF4444' }}
             />
             {!railMode && (
               <div
-                className="font-bold text-[11px] uppercase tracking-[0.14em] text-foreground whitespace-nowrap"
-                style={{ textShadow: `0 0 10px ${BRAND}44` }}
+                className="font-extrabold text-[22px] tracking-[0.08em] text-foreground whitespace-nowrap"
+                style={{ textShadow: `0 0 12px ${BRAND}55` }}
               >
-                Tick Stock Panel
+                破局者
               </div>
             )}
             {/* 收起/展开 按钮 (桌面三态循环) / 移动端抽屉关闭按钮 */}
