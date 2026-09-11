@@ -33,6 +33,15 @@ export const MARKET_PHASE_LABELS: Record<MarketPhase, string> = {
 
 
 
+
+
+
+
+
+
+
+
+
 export interface StrategyDetail {
   id: string
   name: string
@@ -67,6 +76,14 @@ export interface StrategyDetail {
   // 叠加策略(composite)专属: 子策略列表与合并模式。非 composite 时为 null。
   composite_children?: CompositeChildInfo[] | null
 }
+
+
+
+
+
+
+
+
 
 
 
@@ -117,6 +134,14 @@ export interface StrategyBacktestResult {
   elapsed_ms: number
   error: string | null
 }
+
+
+
+
+
+
+
+
 
 
 
