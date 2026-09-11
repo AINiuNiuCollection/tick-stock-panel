@@ -15,12 +15,12 @@ import {
   Pencil, CalendarDays, Repeat, Rows3, LayoutGrid, Flame, Layers, Filter, X,
 } from 'lucide-react'
 import {
-  api, type RegimeRow, type RegimeState, type MarketPhase,
+  api, type RegimeRow, type RegimeState, type MarketPhase, type AmvRow,
   REGIME_STATE_LABELS, REGIME_STATE_COLORS,
   MARKET_PHASE_LABELS, MARKET_PHASE_COLORS, MARKET_PHASE_ORDER,
 } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
-import { useChartTheme } from '@/lib/theme'
+import { useChartTheme, type ChartTheme } from '@/lib/theme'
 import { toast } from '@/components/Toast'
 import { Modal } from '@/components/Modal'
 import { cn } from '@/lib/cn'
@@ -1241,6 +1241,9 @@ export function Regime() {
         </div>
       )}
 
+      {/* ── 0AMV 活跃市值 ── */}
+      <AmvSection ct={ct} />
+
       </div>{/* /市场环境 tab */}
 
       {/* ── 自定义天数弹窗 ── */}
@@ -1430,5 +1433,270 @@ function CustomDaysModal({ current, onClose, onApply }: {
         </div>
       </div>
     </Modal>
+  )
+}
+
+// ── 0AMV (活跃市值) 区块 ──────────────────────────────────
+// 0AMV = Σ(close × float_shares × FREE_FLOAT_RATIO) for stocks where volume > 0
+// 自由流通市值近似: 数据源只提供流通股本, 用全市场系数 0.179 近似自由流通比例, 与指南针对齐(误差±2%)
+// 双轴: 左轴 0AMV+MA5/MA20 折线, 右轴 活跃股票数 柱状;
+// 与指数(上证收盘)叠加观察背离 — 0AMV 创新低而指数不创新低 = 底部信号。
+function AmvSection({ ct }: { ct: ChartTheme }) {
+  const [rangeDays, setRangeDays] = useState(250)
+  const amvRef = useRef<HTMLDivElement>(null)
+  const amvInstRef = useRef<echarts.ECharts | null>(null)
+  const activeRef = useRef<HTMLDivElement>(null)
+  const activeInstRef = useRef<echarts.ECharts | null>(null)
+
+  const amvData = useQuery({
+    queryKey: ['amv-history', rangeDays] as const,
+    queryFn: () => api.amvHistory(undefined, undefined, rangeDays),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const rows: AmvRow[] = amvData.data?.rows ?? []
+
+  // 0AMV + MA5/MA20 三线折线图: 左轴为活跃市值(元), 紫色主线 + 橙色MA5 + 蓝色MA20。
+  // 用法: 0AMV 下行但指数横盘/上行 → 资金撤退(量价背离); 0AMV 创新低而指数不创新低 → 底部信号。
+  const amvOption = useMemo<echarts.EChartsOption | null>(() => {
+    if (rows.length === 0) return null
+    const dates = rows.map(r => r.date)
+    const amvSeries = rows.map(r => r.amv)
+    const ma5Series = rows.map(r => r.amv_ma5 ?? null)
+    const ma20Series = rows.map(r => r.amv_ma20 ?? null)
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: ct.tooltipBg,
+        borderColor: ct.tooltipBorder,
+        textStyle: { color: ct.tooltipText },
+        axisPointer: { type: 'line', snap: true, lineStyle: { color: ct.grid } },
+      },
+      legend: {
+        data: ['0AMV', 'MA5', 'MA20'],
+        textStyle: { color: ct.text, fontSize: 10 },
+        top: 0,
+      },
+      grid: { left: '8%', right: '5%', top: '12%', bottom: '15%' },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        axisLabel: { color: ct.text, fontSize: 10, formatter: (v: string) => v.slice(5) },
+        axisLine: { lineStyle: { color: ct.grid } },
+      },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        axisLabel: {
+          color: ct.text,
+          fontSize: 10,
+          formatter: (v: number) => {
+            if (v >= 1e12) return (v / 1e12).toFixed(1) + '万亿'
+            if (v >= 1e8) return (v / 1e8).toFixed(0) + '亿'
+            if (v >= 1e4) return (v / 1e4).toFixed(0) + '万'
+            return String(v)
+          },
+        },
+        splitLine: { lineStyle: { color: ct.grid } },
+      },
+      dataZoom: [
+        { type: 'inside', start: 0, end: 100 },
+        { type: 'slider', bottom: 0, height: 16, textStyle: { color: ct.text, fontSize: 9 } },
+      ],
+      series: [
+        {
+          name: '0AMV',
+          type: 'line',
+          data: amvSeries,
+          showSymbol: false,
+          lineStyle: { width: 1.5, color: '#a855f7' },
+          itemStyle: { color: '#a855f7' },
+        },
+        {
+          name: 'MA5',
+          type: 'line',
+          data: ma5Series,
+          showSymbol: false,
+          lineStyle: { width: 1, color: '#f59e0b', opacity: 0.8 },
+          itemStyle: { color: '#f59e0b' },
+        },
+        {
+          name: 'MA20',
+          type: 'line',
+          data: ma20Series,
+          showSymbol: false,
+          lineStyle: { width: 1, color: '#3b82f6', opacity: 0.8 },
+          itemStyle: { color: '#3b82f6' },
+        },
+      ],
+    }
+  }, [rows, ct])
+
+  // 活跃股票数柱状图: 反映市场参与广度, 与 0AMV 配合判断是"少股大涨"还是"普涨"。
+  // active_count 骤降 → 大面积停牌或跌停(极端行情); 持续低位 → 市场交投清淡。
+  const activeOption = useMemo<echarts.EChartsOption | null>(() => {
+    if (rows.length === 0) return null
+    const dates = rows.map(r => r.date)
+    const counts = rows.map(r => r.active_count)
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: ct.tooltipBg,
+        borderColor: ct.tooltipBorder,
+        textStyle: { color: ct.tooltipText },
+      },
+      grid: { left: '8%', right: '5%', top: '8%', bottom: '15%' },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        axisLabel: { color: ct.text, fontSize: 10, formatter: (v: string) => v.slice(5) },
+        axisLine: { lineStyle: { color: ct.grid } },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { color: ct.text, fontSize: 10 },
+        splitLine: { lineStyle: { color: ct.grid } },
+      },
+      dataZoom: [
+        { type: 'inside', start: 0, end: 100 },
+        { type: 'slider', bottom: 0, height: 16, textStyle: { color: ct.text, fontSize: 9 } },
+      ],
+      series: [{
+        type: 'bar',
+        data: counts,
+        itemStyle: { color: 'rgba(168,85,247,0.4)' },
+        barWidth: '80%',
+      }],
+    }
+  }, [rows, ct])
+
+  // chart init + update: 惰性创建 echarts 实例, option 变化时 setOption(notMerge) 全量替换。
+  // 与页面顶部 useEChart hook 同模式, 但 AmvSection 独立管理两张图(0AMV + active_count)。
+  useEffect(() => {
+    if (!amvRef.current) return
+    if (!amvInstRef.current) {
+      amvInstRef.current = echarts.init(amvRef.current, undefined, { renderer: 'canvas' })
+    }
+    if (amvOption) {
+      amvInstRef.current.setOption(amvOption, { notMerge: true })
+      amvInstRef.current.resize()
+    }
+  }, [amvOption])
+
+  useEffect(() => {
+    if (!activeRef.current) return
+    if (!activeInstRef.current) {
+      activeInstRef.current = echarts.init(activeRef.current, undefined, { renderer: 'canvas' })
+    }
+    if (activeOption) {
+      activeInstRef.current.setOption(activeOption, { notMerge: true })
+      activeInstRef.current.resize()
+    }
+  }, [activeOption])
+
+  // resize + dispose: 窗口缩放时重算画布尺寸; 组件卸载时释放 echarts 实例避免内存泄漏。
+  useEffect(() => {
+    const onResize = () => {
+      amvInstRef.current?.resize()
+      activeInstRef.current?.resize()
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      amvInstRef.current?.dispose()
+      amvInstRef.current = null
+      activeInstRef.current?.dispose()
+      activeInstRef.current = null
+    }
+  }, [])
+
+  // 概要统计: 最新值 + 区间极值, 供四张卡片展示。avgActive 用于判断当前参与度是否偏离均值。
+  const stats = useMemo(() => {
+    if (rows.length === 0) return null
+    const latest = rows[rows.length - 1]
+    const amvValues = rows.map(r => r.amv)
+    const maxAmv = Math.max(...amvValues)
+    const minAmv = Math.min(...amvValues)
+    const avgActive = rows.reduce((s, r) => s + r.active_count, 0) / rows.length
+    return {
+      latestAmv: latest.amv,
+      latestActive: latest.active_count,
+      maxAmv,
+      minAmv,
+      avgActive: Math.round(avgActive),
+      latestDate: latest.date,
+    }
+  }, [rows])
+
+  /** 0AMV 数值格式化: 万亿/亿/万 三级缩写, 与中国股市市值表达习惯一致。 */
+  const fmtAmv = (v: number) => {
+    if (v >= 1e12) return (v / 1e12).toFixed(2) + '万亿'
+    if (v >= 1e8) return (v / 1e8).toFixed(0) + '亿'
+    return v.toLocaleString()
+  }
+
+  return (
+    <div className={cn(cardCls, 'p-3')}>
+      <SectionTitle icon={Activity} title="0AMV 活跃市值"
+        hint={
+          <div className="flex items-center gap-2">
+            <select
+              value={rangeDays}
+              onChange={e => setRangeDays(Number(e.target.value))}
+              className="rounded-btn border border-border bg-base px-1.5 py-0.5 text-[10px] text-secondary outline-none"
+            >
+              <option value={120}>120天</option>
+              <option value={250}>1年</option>
+              <option value={500}>2年</option>
+              <option value={1000}>全部</option>
+            </select>
+          </div>
+        }
+      />
+      <p className="mt-1 text-[10px] text-muted">
+        0AMV ≈ 当日所有有成交股票的自由流通市值之和(前复权 close × float_shares × 0.179 近似)，与指南针对齐，衡量市场资金活跃度。
+        <span className="text-accent/80"> 0AMV 创新低而指数不创新低 → 底部信号；0AMV 萎缩而指数上涨 → 量价背离，警惕。</span>
+      </p>
+
+      {rows.length === 0 ? (
+        <div className="mt-4 rounded-card border border-dashed border-border p-8 text-center text-sm text-muted">
+          {amvData.isLoading ? '加载中…' : '暂无 0AMV 数据，请先运行盘后管道或手动重算'}
+        </div>
+      ) : (
+        <div className="mt-3 space-y-3">
+          {/* 概要卡片 */}
+          {stats && (
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              <div className="rounded-btn bg-base/40 px-2.5 py-1.5">
+                <div className="text-[10px] text-muted">最新 0AMV</div>
+                <div className="font-mono text-sm font-bold text-purple-400">{fmtAmv(stats.latestAmv)}</div>
+                <div className="text-[9px] text-muted">{stats.latestDate}</div>
+              </div>
+              <div className="rounded-btn bg-base/40 px-2.5 py-1.5">
+                <div className="text-[10px] text-muted">活跃股票数</div>
+                <div className="font-mono text-sm font-bold text-foreground">{stats.latestActive}</div>
+                <div className="text-[9px] text-muted">均值 {stats.avgActive}</div>
+              </div>
+              <div className="rounded-btn bg-base/40 px-2.5 py-1.5">
+                <div className="text-[10px] text-muted">区间最高</div>
+                <div className="font-mono text-sm font-bold text-red-400">{fmtAmv(stats.maxAmv)}</div>
+              </div>
+              <div className="rounded-btn bg-base/40 px-2.5 py-1.5">
+                <div className="text-[10px] text-muted">区间最低</div>
+                <div className="font-mono text-sm font-bold text-green-400">{fmtAmv(stats.minAmv)}</div>
+              </div>
+            </div>
+          )}
+
+          {/* 0AMV + 均线 */}
+          <div ref={amvRef} className="h-[280px]" />
+
+          {/* 活跃股票数 */}
+          <div ref={activeRef} className="h-[180px]" />
+        </div>
+      )}
+    </div>
   )
 }
