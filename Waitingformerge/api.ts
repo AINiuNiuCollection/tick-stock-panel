@@ -229,3 +229,52 @@ marketSnapshot: () =>
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ===== 回测历史记录 =====
+
+export interface BacktestHistoryMeta {
+  id: string
+  name: string
+  created_at: string
+  strategy_name: string
+  strategy_id: string
+  start: string | null
+  end: string | null
+  total_return: number | null
+  max_drawdown: number | null
+  sharpe: number | null
+  n_trades: number | null
+  win_rate: number | null
+  elapsed_ms: number | null
+}
+
+export interface BacktestHistoryRecord {
+  id: string
+  name: string
+  created_at: string
+  config: Record<string, any>
+  labels: Record<string, any>
+  stats: Record<string, any>
+  result: StrategyBacktestResult
+}
+
+// ===== Settings =====
+
+/** 端点发现清单 —— 对应 tickflow.org/endpoints.json */
