@@ -195,6 +195,8 @@ class StrategyDef:
     trailing_take_profit_activate: float | None
     trailing_take_profit_drawdown: float | None
     max_hold_days: int | None
+    cooldown_loss_streak: int | None
+    cooldown_days: int | None
     filter_fn: Callable[[pl.DataFrame, dict], pl.Expr] | None
     filter_history_fn: Callable[[pl.DataFrame, dict], pl.DataFrame] | None
     lookback_days: int
@@ -573,6 +575,8 @@ class StrategyEngine:
             trailing_take_profit_activate=getattr(mod, "TRAILING_TAKE_PROFIT_ACTIVATE", None),
             trailing_take_profit_drawdown=getattr(mod, "TRAILING_TAKE_PROFIT_DRAWDOWN", None),
             max_hold_days=getattr(mod, "MAX_HOLD_DAYS", None),
+            cooldown_loss_streak=getattr(mod, "COOLDOWN_LOSS_STREAK", None),
+            cooldown_days=getattr(mod, "COOLDOWN_DAYS", None),
             filter_fn=filter_fn,
             filter_history_fn=filter_history_fn,
             required_features=frozenset(meta.get("required_features", []) or [])
