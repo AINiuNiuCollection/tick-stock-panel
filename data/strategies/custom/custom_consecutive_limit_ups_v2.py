@@ -65,6 +65,8 @@ EXIT_SIGNALS = ["signal_ma10_breakdown"]
 STOP_LOSS = -0.05
 TRAILING_STOP = -0.10
 MAX_HOLD_DAYS = 20
+COOLDOWN_LOSS_STREAK = 2
+COOLDOWN_DAYS = 3
 
 RULES = """
 1. 连板数在2~4之间，追涨强势连板股但避免5板以上高位风险
