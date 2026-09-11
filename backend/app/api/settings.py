@@ -130,38 +130,52 @@ def switch_endpoint(req: SwitchEndpointIn, request: Request) -> dict:
 
 @router.post("/tickflow-key")
 def save_tickflow_key(req: TickflowKeyIn, request: Request) -> dict:
-    """保存 TickFlow API Key 并立即重新探测能力。
+    """保存 TickFlow API Key（跳过同步探测，立即返回）。
 
-    先探后存(关键改动,修复乱填 key 也会被持久化的问题):
-      1. 临时用新 key 探测(付费端点),判定档位
-      2. 判定为 none(连单只日K都拿不到)→ key 无效:不存,清除已存的,
-         返回 {ok: false, reason: "invalid"},前端提示「Key 无效」
-      3. 判定为 free(免费有效 key)→ 存 key,客户端切到 free-api 服务器
-      4. 判定为 starter+ → 存 key,切到付费端点(现有逻辑)
+    探测能力（detect_capabilities）会逐个试探 16+ 个端点，每个 30s×3 重试，
+    在网络受限环境下前端 30s 必超时。因此保存与探测分离：
+      - 保存：仅写 secrets.json + 重置客户端，毫秒级完成
+      - 探测：前端保存成功后调用 /tickflow-key/probe 手动触发
+    """
+    key = req.api_key.strip()
+    if not key:
+        return {"ok": False, "error": "key empty"}
 
-    端点联动:从无 key 升级到付费 key 时,残留的 free-api 端点不可用,
-    故自动切到默认付费端点(api.tickflow.org);free 档则清除自定义端点。
+    # 存 key + 重置客户端
+    secrets_store.save({"tickflow_api_key": key})
+    tf_client.reset_clients()
+
+    return {
+        "ok": True,
+        "tickflow_api_key_masked": secrets_store.mask(key),
+        "mode": tf_client.current_mode(),
+        "tier_label": tier_label(),
+        "current_endpoint": tf_client.current_endpoint(),
+        "probe_required": True,
+    }
+
+
+@router.post("/tickflow-key/probe")
+def probe_tickflow_key(request: Request) -> dict:
+    """手动触发 TickFlow 能力探测。
+
+    保存 key 后前端调用此端点探测档位。探测可能耗时较长（网络受限环境下
+    每个端点 30s×3 重试），前端应设置足够超时（建议 120s）。
     """
     from app.tickflow.policy import (
         base_tier_name, is_invalid_key,
     )
 
-    key = req.api_key.strip()
+    key = secrets_store.get_tickflow_key()
     if not key:
-        return {"ok": False, "error": "key empty"}
+        return {"ok": False, "error": "no key saved"}
 
-    # ===== 1) 临时存 key + 重置客户端,让探测走付费端点 =====
-    secrets_store.save({"tickflow_api_key": key})
-    tf_client.reset_clients()
-
-    # 立即重新探测(此时 client 已按档位判定,但首次探测必然走付费端点验证)
+    # 探测
     capset = detect_capabilities(force=True)
     request.app.state.capabilities = capset
     _sync_financial_scheduler_caps(request.app.state, capset)
 
-    # ===== 2) 判定为无效 key(连单只日K都拿不到)→ 不存,清除 =====
     if is_invalid_key() or base_tier_name() == "none":
-        # 无效 key:清除刚存的,避免乱填被持久化;退回 none 档
         secrets_store.clear("tickflow_api_key", "tickflow_base_url")
         tf_client.reset_clients()
         capset = detect_capabilities(force=True)
@@ -174,27 +188,22 @@ def save_tickflow_key(req: TickflowKeyIn, request: Request) -> dict:
             "mode": "none",
             "tier_label": tier_label(),
             "current_endpoint": tf_client.current_endpoint(),
-            "probe_log": [],
+            "probe_log": probe_log(),
             "capabilities_count": len(capset.all()),
         }
 
-    # ===== 3) free 档(免费有效 key)→ 存 key,切到 free-api 服务器 =====
     if base_tier_name() == "free":
-        # 免费档运行时走 free-api 服务器,清除付费端点的自定义配置
         secrets_store.clear("tickflow_base_url")
         tf_client.reset_clients()
         return {
             "ok": True,
-            "tickflow_api_key_masked": secrets_store.mask(key),
             "mode": "free",
             "tier_label": tier_label(),
             "current_endpoint": tf_client.current_endpoint(),
-            "probe_log": [],
+            "probe_log": probe_log(),
             "capabilities_count": len(capset.all()),
         }
 
-    # ===== 4) starter+ 付费档 → 确保走付费端点(现有逻辑) =====
-    # 若之前是 none/free(无自定义付费端点),切到默认付费端点
     base = secrets_store.load().get("tickflow_base_url")
     if not base:
         secrets_store.save({"tickflow_base_url": DEFAULT_PAID_ENDPOINT})
@@ -202,11 +211,10 @@ def save_tickflow_key(req: TickflowKeyIn, request: Request) -> dict:
 
     return {
         "ok": True,
-        "tickflow_api_key_masked": secrets_store.mask(key),
         "mode": "api_key",
         "tier_label": tier_label(),
         "current_endpoint": tf_client.current_endpoint(),
-        "probe_log": [],
+        "probe_log": probe_log(),
         "capabilities_count": len(capset.all()),
     }
 
