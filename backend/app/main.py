@@ -25,6 +25,7 @@ from app.api import (
     intraday,
     kline,
     lots,
+    market_amv,
     market_recap,
     mining,
     monitor_rules,
@@ -479,6 +480,7 @@ app.include_router(indices.router)
 app.include_router(overview.router)
 app.include_router(abnormal.router)
 app.include_router(regime.router)
+app.include_router(market_amv.router)
 app.include_router(analysis.router)
 app.include_router(pipeline.router)
 app.include_router(data.router)
