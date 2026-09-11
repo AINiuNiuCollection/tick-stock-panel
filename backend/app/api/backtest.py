@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import date, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -684,6 +684,69 @@ async def strategy_stream(
             raise
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ================================================================
+# 回测历史记录 — 每次运行回测自动保存, 分析页可回看/重命名/删除
+# ================================================================
+
+def _history_store():
+    from app.services.backtest_history import BacktestHistoryStore
+    return BacktestHistoryStore(settings.data_dir)
+
+
+class BacktestHistorySaveRequest(BaseModel):
+    """保存回测历史记录: 前端在回测成功后静默调用。"""
+    result: dict  # 完整 StrategyBacktestResult
+    labels: dict | None = None  # 参数中文名称映射
+    name: str | None = None  # 自定义名称, 默认时间戳
+
+
+@router.get("/history")
+def history_list():
+    """返回回测历史记录列表(元信息, 不含完整 result)。"""
+    return {"items": _history_store().list()}
+
+
+@router.get("/history/{record_id}")
+def history_detail(record_id: str):
+    """返回某条记录的完整数据(含 result, 供分析页回看)。"""
+    record = _history_store().get(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return record
+
+
+@router.post("/history")
+def history_save(req: BacktestHistorySaveRequest):
+    """保存一条回测记录。"""
+    try:
+        return _history_store().save(result=req.result, labels=req.labels, name=req.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.patch("/history/{record_id}")
+def history_rename(record_id: str, name: str = Query(..., min_length=1, max_length=120)):
+    """重命名记录。"""
+    try:
+        item = _history_store().rename(record_id, name)
+        if item is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        return item
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/history/{record_id}")
+def history_delete(record_id: str):
+    """删除记录。"""
+    ok = _history_store().delete(record_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return {"ok": True}
 
 
 @router.post("/strategy/cancel")
