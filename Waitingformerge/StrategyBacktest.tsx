@@ -1654,6 +1654,19 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
 
 
 
+  // 当全局回测任务完成时, 把结果写入组件 (切页回来也能恢复)
+  useEffect(() => {
+    if (backtestTask && !backtestTask.isPending && backtestTask.result) {
+      const btResult = backtestTask.result
+      setResult(btResult)
+      setSharedResult(btResult)  // 自动保存到共享存储, 供分析页面使用
+      setResultTab('daily')
+      setDailyPage(0)
+      setTradePage(0)
+
+
+
+
 
 
 
