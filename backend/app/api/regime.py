@@ -171,11 +171,28 @@ def regime_recompute(request: Request, start: date | None = None, end: date | No
             mainline_rows += rows.height
 
     invalidate_regime_cache()
+
+    # 联动 0AMV 重算: regime 重算意味着 enriched 数据可能已变更, AMV 依赖同源数据需同步刷新。
+    amv_days = 0
+    try:
+        from app.services import market_amv
+        from app.api.market_amv import invalidate_amv_cache
+        amv_rows = market_amv.run_amv_batch(repo, start=start, end=end)
+        if not amv_rows.is_empty():
+            market_amv.upsert_amv_history(data_dir, amv_rows)
+            amv_days = amv_rows.height
+        invalidate_amv_cache()
+    except Exception as e:  # noqa: BLE001
+        # AMV 软失败: 不阻断 regime 重算结果返回
+        import logging
+        logging.getLogger(__name__).warning("regime recompute: AMV联动失败(soft): %s", e)
+
     return {
         "ok": True,
         "computed": new_rows.height if not new_rows.is_empty() else 0,
         "phase_days": phase_days,
         "mainline_rows": mainline_rows,
+        "amv_days": amv_days,
     }
 
 
