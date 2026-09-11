@@ -211,6 +211,8 @@ def _strategy_detail(
         "trailing_take_profit_activate": getattr(s, "trailing_take_profit_activate", None),
         "trailing_take_profit_drawdown": getattr(s, "trailing_take_profit_drawdown", None),
         "max_hold_days": overrides.get("max_hold_days", s.max_hold_days) if overrides else s.max_hold_days,
+        "cooldown_loss_streak": overrides.get("cooldown_loss_streak", s.cooldown_loss_streak) if overrides else s.cooldown_loss_streak,
+        "cooldown_days": overrides.get("cooldown_days", s.cooldown_days) if overrides else s.cooldown_days,
         "order_by": s.meta.get("order_by", "score"),
         "descending": s.meta.get("descending", True),
         "limit": s.meta.get("limit", 30),
