@@ -69,7 +69,7 @@ class MatcherConfig:
 
 
 
-nl_amount < 0:
+        nl_amount < 0:
                     consec_losses += 1
                     if consec_losses >= config.cooldown_loss_streak:
                         cooldown_until = time_id + 1 + config.cooldown_days

@@ -1128,6 +1128,8 @@ class StrategyBacktestService:
         if trailing_take_profit_activate is not None and trailing_take_profit_drawdown is not None:
             trailing_take_profit_drawdown = min(trailing_take_profit_drawdown, trailing_take_profit_activate)
         max_hold_days = self._override_value(overrides, "max_hold_days", s.max_hold_days)
+        cooldown_loss_streak = self._override_value(overrides, "cooldown_loss_streak", s.cooldown_loss_streak)
+        cooldown_days = self._override_value(overrides, "cooldown_days", s.cooldown_days)
         score_min, score_max = self._normalize_score_range(
             overrides.get("score_min"),
             overrides.get("score_max"),
@@ -1146,6 +1148,8 @@ class StrategyBacktestService:
                 max_hold_days=max_hold_days,
                 score_min=score_min,
                 score_max=score_max,
+                cooldown_loss_streak=cooldown_loss_streak,
+                cooldown_days=cooldown_days,
                 progress_cb=progress_cb,
                 cancel_event=cancel_event,
                 result_policy=result_policy,
@@ -1326,6 +1330,8 @@ class StrategyBacktestService:
             initial_capital=config.initial_capital,
             position_sizing=config.position_sizing,
             minute_fill=config.minute_fill,
+            cooldown_loss_streak=cooldown_loss_streak,
+            cooldown_days=cooldown_days,
         )
         t_signal = time.perf_counter()
         selection_stats: dict[str, int | bool]
@@ -1698,6 +1704,8 @@ class StrategyBacktestService:
             "score_max": score_max,
             "source": s.source,
             "execution_backend": s.execution_backend,
+            "cooldown_loss_streak": cooldown_loss_streak,
+            "cooldown_days": cooldown_days,
             **(
                 {
                     "composite_children": [
@@ -1766,6 +1774,8 @@ class StrategyBacktestService:
         max_hold_days,
         score_min,
         score_max,
+        cooldown_loss_streak,
+        cooldown_days,
         progress_cb,
         cancel_event,
         result_policy: BacktestResultPolicy,
@@ -1916,6 +1926,8 @@ class StrategyBacktestService:
             # 分钟策略的成交价由 entry_price_override 提供 (触发分钟收盘),
             # 不再叠加日线口径的分钟成交细化。
             minute_fill=False,
+            cooldown_loss_streak=cooldown_loss_streak,
+            cooldown_days=cooldown_days,
         )
 
         t_matrix = time.perf_counter()
@@ -2006,6 +2018,8 @@ class StrategyBacktestService:
             "score_max": score_max,
             "source": s.source,
             "execution_backend": s.execution_backend,
+            "cooldown_loss_streak": cooldown_loss_streak,
+            "cooldown_days": cooldown_days,
         } if result_policy.include_strategy_info else {}
 
         trades = (

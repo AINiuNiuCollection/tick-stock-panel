@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Play, FlaskConical, Clock, Loader2, Square, Search, Plus, X, SlidersHorizontal, BarChart3, Gauge, Zap, ListPlus, HelpCircle, ChevronRight, AlertTriangle, Layers, BookmarkPlus, Download } from 'lucide-react'
+import { Play, FlaskConical, Clock, Loader2, Square, Search, Plus, X, SlidersHorizontal, BarChart3, Gauge, Zap, ListPlus, HelpCircle, ChevronRight, AlertTriangle, Layers, BookmarkPlus, Download, PieChart } from 'lucide-react'
 import {
   api,
   type StrategyBacktestResult,
@@ -27,6 +28,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { WarmupBadge } from '@/components/WarmupBadge'
 import { DatePicker } from '@/components/DatePicker'
 import { toast } from '@/components/Toast'
+import { setSharedResult } from './analysis/sharedData'
 import { StrategyNavChart } from './charts/StrategyNavChart'
 import { ReturnDistributionChart } from './charts/ReturnDistributionChart'
 import { TradeKlineModal } from './components/TradeKlineModal'
@@ -942,6 +944,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   onLoadConsumed?: () => void
 }) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const signalNames = useSignalNames()
   const [saved] = useState(() => storage.strategyBacktestLast.get(null))
   const [selectedStrategy, setSelectedStrategy] = useState<string | null>(saved?.selectedStrategy ?? null)
@@ -1160,6 +1163,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   useEffect(() => {
     if (backtestTask && !backtestTask.isPending && backtestTask.result) {
       setResult(backtestTask.result)
+      setSharedResult(backtestTask.result)  // 自动保存到共享存储, 供分析页面使用
       setResultTab('daily')
       setDailyPage(0)
       setTradePage(0)
@@ -1311,11 +1315,12 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
     }
 
     lines.push('', '# 交易明细',
-      'symbol,name,entry_date,entry_price,exit_date,exit_price,pnl_pct,duration,exit_reason,shares,entry_value,exit_value,pnl_amount')
+      'symbol,name,entry_date,entry_price,exit_date,exit_price,pnl_pct,duration,exit_reason,shares,entry_value,exit_value,pnl_amount,entry_score')
     for (const t of result.trades ?? []) {
       lines.push([t.symbol, t.name ?? '', t.entry_date, num(t.entry_price), t.exit_date,
         num(t.exit_price), num(t.pnl_pct), num(t.duration), t.exit_reason ?? '',
-        num(t.shares), num(t.entry_value), num(t.exit_value), num(t.pnl_amount)].map(csvEsc).join(','))
+        num(t.shares), num(t.entry_value), num(t.exit_value), num(t.pnl_amount),
+        t.entry_score != null ? num(t.entry_score) : ''].map(csvEsc).join(','))
     }
 
     lines.push('', '# 分标的统计', 'symbol,n_trades,total_return,win_rate,best,worst')
@@ -1499,6 +1504,8 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   const trailingTakeProfitActivatePct = overrides.trailing_take_profit_activate == null ? '' : String(round4(Math.abs(Number(overrides.trailing_take_profit_activate)) * 100))
   const trailingTakeProfitDrawdownPct = overrides.trailing_take_profit_drawdown == null ? '' : String(round4(Math.abs(Number(overrides.trailing_take_profit_drawdown)) * 100))
   const maxHoldDaysValue = overrides.max_hold_days == null ? '' : String(overrides.max_hold_days)
+  const cooldownLossStreakValue = overrides.cooldown_loss_streak == null ? '' : String(overrides.cooldown_loss_streak)
+  const cooldownDaysValue = overrides.cooldown_days == null ? '' : String(overrides.cooldown_days)
   const targetPositionPct = Number(maxPositions) > 0 ? Number(maxExposure) / Number(maxPositions) : 0
 
   useEffect(() => {
@@ -1532,6 +1539,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
         trailingStopPct !== '' ? `移损 ${trailingStopPct}%` : '移损未设',
         trailingTakeProfitActivatePct !== '' && trailingTakeProfitDrawdownPct !== '' ? `回撤 ${trailingTakeProfitActivatePct}-${trailingTakeProfitDrawdownPct}点` : '回撤未设',
         maxHoldDaysValue !== '' ? `最长 ${maxHoldDaysValue}天` : '不限持仓',
+        cooldownLossStreakValue !== '' && cooldownDaysValue !== '' ? `连亏${cooldownLossStreakValue}笔冷却${cooldownDaysValue}天` : '冷却未设',
       ].join(' · ')
     : '选择策略后可调整参数 / 过滤 / 买卖触发器 / 评分 / 风控'
   const selectedStrategyName = detail?.name ?? strategyList.find(st => st.id === selectedStrategy)?.name ?? '未选择策略'
@@ -2181,6 +2189,18 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                 <Download className="h-3 w-3" />
                 导出
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSharedResult(result)
+                  navigate('/backtest-analysis')
+                }}
+                title="将当前回测结果直接送入分析面板（无需导出CSV）"
+                className="ml-1 inline-flex h-6 shrink-0 items-center gap-1 rounded border border-accent/30 bg-accent/10 px-2 text-[10px] text-accent transition-colors hover:bg-accent/20"
+              >
+                <PieChart className="h-3 w-3" />
+                分析
+              </button>
               <span className="ml-auto text-[11px] text-muted font-mono">
                 {String(result.config?.start).slice(0,10)} ~ {String(result.config?.end).slice(0,10)}
               </span>
@@ -2283,6 +2303,9 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                 )}
                 {result.strategy_info.max_hold_days != null && (
                   <span className="text-[10px] text-secondary">最长 {result.strategy_info.max_hold_days} 天</span>
+                )}
+                {result.strategy_info.cooldown_loss_streak != null && result.strategy_info.cooldown_days != null && (
+                  <span className="text-[10px] text-secondary">连亏{result.strategy_info.cooldown_loss_streak}笔冷却{result.strategy_info.cooldown_days}天</span>
                 )}
                 {resultTradeDays > 0 && (
                   <span className="ml-auto flex items-center gap-2 text-[11px] text-muted">
@@ -3031,6 +3054,24 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                         value={numOrNull(maxHoldDaysValue)}
                         min={1} step={1}
                         onChange={n => updateOverride('max_hold_days', n == null ? null : Math.round(n))}
+                        className={INPUT_CLS}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] text-secondary">连亏冷却(笔)</span>
+                      <NumberField
+                        value={numOrNull(cooldownLossStreakValue)}
+                        min={2} step={1}
+                        onChange={n => updateOverride('cooldown_loss_streak', n == null ? null : Math.round(n))}
+                        className={INPUT_CLS}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] text-secondary">冷却天数(天)</span>
+                      <NumberField
+                        value={numOrNull(cooldownDaysValue)}
+                        min={1} step={1}
+                        onChange={n => updateOverride('cooldown_days', n == null ? null : Math.round(n))}
                         className={INPUT_CLS}
                       />
                     </label>

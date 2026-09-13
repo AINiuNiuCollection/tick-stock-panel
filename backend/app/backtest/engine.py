@@ -63,6 +63,9 @@ class MatcherConfig:
     trailing_take_profit_activate_pct: float | None = None
     trailing_take_profit_drawdown_pct: float | None = None
     max_hold_days: int | None = None
+    # 连亏冷却: 连续亏损 N 笔后暂停开仓 X 个交易日
+    cooldown_loss_streak: int | None = None
+    cooldown_days: int | None = None
     max_positions: int = 10
     max_exposure_pct: float = 1.0
     score_min: float | None = None
@@ -1908,7 +1911,7 @@ class BacktestEngine:
             sold_today: set[int],
             override: float | None = None,
         ) -> None:
-            nonlocal cash
+            nonlocal cash, consec_losses, cooldown_until
             pos = positions.pop(asset_id)
             exit_price = float(override) if override is not None else _refill_price(
                 time_id, asset_id, "sell", float(exit_prices[time_id, asset_id])
@@ -1944,6 +1947,15 @@ class BacktestEngine:
                     or _signal_id(int(matrix.exit_signal_code[time_id, asset_id]), matrix.exit_signal_ids)
                 ) if reason == "signal" else None,
             ))
+            if pnl_amount < 0:
+                consec_losses += 1
+                if (config.cooldown_loss_streak is not None
+                        and config.cooldown_days is not None
+                        and consec_losses >= config.cooldown_loss_streak):
+                    cooldown_until = time_id + 1 + config.cooldown_days
+                    consec_losses = 0
+            else:
+                consec_losses = 0
 
         def _try_sell(
             time_id: int,
@@ -1981,6 +1993,9 @@ class BacktestEngine:
                 return False
             _sell(time_id, asset_id, reason, signal_date, sold_today, override)
             return True
+
+        consec_losses = 0
+        cooldown_until = -1
 
         for time_id, date_label in enumerate(matrix.timestamp_labels):
             date_text = date_label[:10]
@@ -2062,93 +2077,98 @@ class BacktestEngine:
                     _try_sell(time_id, asset_id, reason, signal_date, sold_today)
 
             if time_id < time_count - 1 and max_positions > 0:
-                candidates: list[tuple[int, float]] = []
-                for asset_id in np.flatnonzero(matrix.entry[time_id]):
-                    asset = int(asset_id)
-                    if asset in positions:
-                        continue
-                    if asset in sold_today:
-                        _count("buy_same_day_reentry")
-                        continue
-                    ok, blocked = _can_buy(time_id, asset)
-                    if not ok:
-                        _count(blocked)
-                        continue
-                    score = _matrix_entry_score(matrix, time_id, asset)
-                    if config.score_min is not None and score < config.score_min:
-                        _count("buy_score_filter")
-                        continue
-                    if config.score_max is not None and score > config.score_max:
-                        _count("buy_score_filter")
-                        continue
-                    candidates.append((asset, score))
-                candidates.sort(key=lambda item: item[1], reverse=True)
-                slots = max_positions - len(positions)
-                if slots <= 0:
-                    execution_stats["buy_no_slot"] += len(candidates)
-                elif candidates:
-                    selected = candidates[:slots]
-                    market_value_before = _market_value()
-                    equity_before = cash + market_value_before
-                    target_value = equity_before * max_exposure_pct / max_positions
-                    exposure_capacity = equity_before * max_exposure_pct - market_value_before
-                    if equity_before <= 0 or exposure_capacity <= 0 or max_exposure_pct <= 0:
-                        execution_stats["buy_exposure"] += len(selected)
-                    else:
-                        weights = np.repeat(1 / len(selected), len(selected))
-                        if config.position_sizing == "score_weight":
-                            raw_weights = np.array([max(item[1], 0.0) for item in selected])
-                            if raw_weights.sum() > 0:
-                                weights = raw_weights / raw_weights.sum()
-                        total_budget = min(cash, exposure_capacity, target_value * len(selected))
-                        for (asset_id, entry_score), weight in zip(selected, weights):
-                            if len(positions) >= max_positions:
-                                _count("buy_no_slot")
-                                break
-                            market_value = _market_value()
-                            equity = cash + market_value
-                            capacity = equity * max_exposure_pct - market_value
-                            allocation = min(total_budget * float(weight), target_value, cash, capacity)
-                            if allocation <= 0:
-                                _count("buy_exposure")
-                                continue
-                            entry_price = _refill_price(
-                                time_id, asset_id, "buy", float(entry_prices[time_id, asset_id])
-                            )
-                            shares = np.floor(allocation / (entry_price * (1 + buy_cost_pct)) / 100) * 100
-                            entry_value = shares * entry_price * (1 + buy_cost_pct)
-                            if shares <= 0:
-                                _count("buy_lot_size")
-                                continue
-                            if entry_value > cash + 1e-6:
-                                _count("buy_cash")
-                                continue
-                            if entry_value > capacity + 1e-6:
-                                _count("buy_exposure")
-                                continue
-                            cash -= entry_value
-                            positions[asset_id] = {
-                                "entry_date": date_text,
-                                "entry_signal_date": _signal_date(
-                                    int(matrix.entry_signal_time[time_id, asset_id]), date_text
-                                ),
-                                "entry_signal_id": _signal_id(
-                                    int(matrix.entry_signal_code[time_id, asset_id]), matrix.entry_signal_ids
-                                ),
-                                "entry_price": entry_price,
-                                "entry_value": entry_value,
-                                "shares": shares,
-                                "lots": shares / 100,
-                                "position_pct": entry_value / equity_before if equity_before > 0 else 0.0,
-                                "entry_score": entry_score,
-                                "max_high": entry_price,
-                                "hold_days": 0,
-                                "pending_exit_reason": None,
-                                "pending_exit_signal_date": None,
-                                "pending_exit_signal_id": None,
-                                "pending_exit_next_open": False,
-                                "blocked_exit_days": 0,
-                            }
+                # ── 连亏冷却: 冷却期内禁止开仓 ──
+                if config.cooldown_loss_streak is not None and config.cooldown_loss_streak > 0 and config.cooldown_days is not None and time_id < cooldown_until:
+                    for _ in np.flatnonzero(matrix.entry[time_id]):
+                        _count("buy_cooldown")
+                else:
+                    candidates: list[tuple[int, float]] = []
+                    for asset_id in np.flatnonzero(matrix.entry[time_id]):
+                        asset = int(asset_id)
+                        if asset in positions:
+                            continue
+                        if asset in sold_today:
+                            _count("buy_same_day_reentry")
+                            continue
+                        ok, blocked = _can_buy(time_id, asset)
+                        if not ok:
+                            _count(blocked)
+                            continue
+                        score = _matrix_entry_score(matrix, time_id, asset)
+                        if config.score_min is not None and score < config.score_min:
+                            _count("buy_score_filter")
+                            continue
+                        if config.score_max is not None and score > config.score_max:
+                            _count("buy_score_filter")
+                            continue
+                        candidates.append((asset, score))
+                    candidates.sort(key=lambda item: item[1], reverse=True)
+                    slots = max_positions - len(positions)
+                    if slots <= 0:
+                        execution_stats["buy_no_slot"] += len(candidates)
+                    elif candidates:
+                        selected = candidates[:slots]
+                        market_value_before = _market_value()
+                        equity_before = cash + market_value_before
+                        target_value = equity_before * max_exposure_pct / max_positions
+                        exposure_capacity = equity_before * max_exposure_pct - market_value_before
+                        if equity_before <= 0 or exposure_capacity <= 0 or max_exposure_pct <= 0:
+                            execution_stats["buy_exposure"] += len(selected)
+                        else:
+                            weights = np.repeat(1 / len(selected), len(selected))
+                            if config.position_sizing == "score_weight":
+                                raw_weights = np.array([max(item[1], 0.0) for item in selected])
+                                if raw_weights.sum() > 0:
+                                    weights = raw_weights / raw_weights.sum()
+                            total_budget = min(cash, exposure_capacity, target_value * len(selected))
+                            for (asset_id, entry_score), weight in zip(selected, weights):
+                                if len(positions) >= max_positions:
+                                    _count("buy_no_slot")
+                                    break
+                                market_value = _market_value()
+                                equity = cash + market_value
+                                capacity = equity * max_exposure_pct - market_value
+                                allocation = min(total_budget * float(weight), target_value, cash, capacity)
+                                if allocation <= 0:
+                                    _count("buy_exposure")
+                                    continue
+                                entry_price = _refill_price(
+                                    time_id, asset_id, "buy", float(entry_prices[time_id, asset_id])
+                                )
+                                shares = np.floor(allocation / (entry_price * (1 + buy_cost_pct)) / 100) * 100
+                                entry_value = shares * entry_price * (1 + buy_cost_pct)
+                                if shares <= 0:
+                                    _count("buy_lot_size")
+                                    continue
+                                if entry_value > cash + 1e-6:
+                                    _count("buy_cash")
+                                    continue
+                                if entry_value > capacity + 1e-6:
+                                    _count("buy_exposure")
+                                    continue
+                                cash -= entry_value
+                                positions[asset_id] = {
+                                    "entry_date": date_text,
+                                    "entry_signal_date": _signal_date(
+                                        int(matrix.entry_signal_time[time_id, asset_id]), date_text
+                                    ),
+                                    "entry_signal_id": _signal_id(
+                                        int(matrix.entry_signal_code[time_id, asset_id]), matrix.entry_signal_ids
+                                    ),
+                                    "entry_price": entry_price,
+                                    "entry_value": entry_value,
+                                    "shares": shares,
+                                    "lots": shares / 100,
+                                    "position_pct": entry_value / equity_before if equity_before > 0 else 0.0,
+                                    "entry_score": entry_score,
+                                    "max_high": entry_price,
+                                    "hold_days": 0,
+                                    "pending_exit_reason": None,
+                                    "pending_exit_signal_date": None,
+                                    "pending_exit_signal_id": None,
+                                    "pending_exit_next_open": False,
+                                    "blocked_exit_days": 0,
+                                }
 
             for asset_id, pos in positions.items():
                 high_price = float(matrix.high[time_id, asset_id])

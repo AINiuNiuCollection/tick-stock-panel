@@ -581,6 +581,26 @@ export interface RegimeCoverage {
   latest_date: string | null
 }
 
+// ── 0AMV (活跃市值) ──
+export interface AmvRow {
+  date: string
+  amv: number
+  active_count: number
+  amv_ma5: number | null
+  amv_ma20: number | null
+}
+
+export interface AmvHistory {
+  rows: AmvRow[]
+  total: number
+}
+
+export interface AmvCoverage {
+  rows: number
+  earliest_date: string | null
+  latest_date: string | null
+}
+
 // ── 市场阶段(情绪周期) 与 主线 ──
 export type MarketPhase = 'ice' | 'ignite' | 'rally' | 'climax' | 'ebb' | 'repair'
 
@@ -592,6 +612,7 @@ export const MARKET_PHASE_LABELS: Record<MarketPhase, string> = {
   ebb: '退潮',
   repair: '修复',
 }
+
 
 export const MARKET_PHASE_COLORS: Record<MarketPhase, string> = {
   ice: '#38bdf8',     // 天蓝(冻结)
@@ -780,6 +801,8 @@ export interface StrategyDetail {
   trailing_take_profit_activate: number | null
   trailing_take_profit_drawdown: number | null
   max_hold_days: number | null
+  cooldown_loss_streak: number | null
+  cooldown_days: number | null
   display_limit?: number
   order_by: string
   descending: boolean
@@ -1569,6 +1592,8 @@ export interface StrategyBacktestResult {
     score_min: number | null
     score_max: number | null
     max_hold_days: number | null
+    cooldown_loss_streak: number | null
+    cooldown_days: number | null
     source: string
     execution_backend?: string
     // 叠加策略回测: 子策略构成与权重归因
@@ -1576,6 +1601,34 @@ export interface StrategyBacktestResult {
   }
   elapsed_ms: number
   error: string | null
+}
+
+// ===== 回测历史记录 =====
+
+export interface BacktestHistoryMeta {
+  id: string
+  name: string
+  created_at: string
+  strategy_name: string
+  strategy_id: string
+  start: string | null
+  end: string | null
+  total_return: number | null
+  max_drawdown: number | null
+  sharpe: number | null
+  n_trades: number | null
+  win_rate: number | null
+  elapsed_ms: number | null
+}
+
+export interface BacktestHistoryRecord {
+  id: string
+  name: string
+  created_at: string
+  config: Record<string, any>
+  labels: Record<string, any>
+  stats: Record<string, any>
+  result: StrategyBacktestResult
 }
 
 // ===== Settings =====
@@ -2561,7 +2614,7 @@ export const api = {
     if (end) params.set('end', end)
     const qs = params.toString()
     // 补算需扫 enriched 全市场数据, 大区间耗时超过默认超时, 放宽到 5 分钟
-    return request<{ ok: boolean; computed: number; phase_days?: number; mainline_rows?: number }>(`/api/regime/recompute${qs ? `?${qs}` : ''}`, { method: 'POST', timeoutMs: 300_000 })
+    return request<{ ok: boolean; computed: number; phase_days?: number; mainline_rows?: number; amv_days?: number }>(`/api/regime/recompute${qs ? `?${qs}` : ''}`, { method: 'POST', timeoutMs: 300_000 })
   },
   regimePhases: (start?: string, end?: string) => {
     const params = new URLSearchParams()
@@ -2578,6 +2631,24 @@ export const api = {
   },
   regimeMainlineRecompute: () =>
     request<{ ok: boolean; rows: number }>('/api/regime/mainline/recompute', { method: 'POST' }),
+
+  // 0AMV (活跃市值)
+  amvHistory: (start?: string, end?: string, limit?: number) => {
+    const params = new URLSearchParams()
+    if (start) params.set('start', start)
+    if (end) params.set('end', end)
+    if (limit) params.set('limit', String(limit))
+    const qs = params.toString()
+    return request<AmvHistory>(`/api/market-amv/history${qs ? `?${qs}` : ''}`)
+  },
+  amvCoverage: () => request<AmvCoverage>('/api/market-amv/coverage'),
+  amvRecompute: (start?: string, end?: string) => {
+    const params = new URLSearchParams()
+    if (start) params.set('start', start)
+    if (end) params.set('end', end)
+    const qs = params.toString()
+    return request<{ ok: boolean; computed: number }>(`/api/market-amv/recompute${qs ? `?${qs}` : ''}`, { method: 'POST', timeoutMs: 300_000 })
+  },
   mainlineFilterUpdate: (payload: { min_members?: number; max_members?: number; blacklist?: string[]; exclude_st?: boolean }) =>
     request<MainlineFilter>('/api/settings/preferences/mainline-filter', {
       method: 'PUT',
