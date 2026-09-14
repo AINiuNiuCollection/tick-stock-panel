@@ -1,81 +1,225 @@
-@dataclass
-class MatcherConfig:
-    # matching 为向后兼容入口: 仅传 matching 时, entry_fill/exit_fill 都取 matching 的值。
-    # 显式传入 entry_fill/exit_fill 时以二者为准 (允许建仓/清仓口径不同)。
-    matching: Literal["close_t", "open_t+1"] = "close_t"
-    entry_fill: Literal["close_t", "open_t+1"] | None = None
-    exit_fill: Literal["close_t", "open_t+1", "signal_next_minute"] | None = None
-    # 成本模型: 优先使用拆分口径 (佣金双边 + 印花税仅卖出 + 滑点双边)。
-    # 未设 commission_pct 时回退到 fees_pct 作为双边佣金 (向后兼容, 无印花税)。
-    fees_pct: float = 0.0002
-    commission_pct: float | None = None
-    stamp_tax_pct: float | None = None
-    slippage_bps: float = 5.0
-    stop_loss_pct: float | None = None
-    take_profit_pct: float | None = None
-    trailing_stop_pct: float | None = None
-    trailing_take_profit_activate_pct: float | None = None
-    trailing_take_profit_drawdown_pct: float | None = None
-    max_hold_days: int | None = None
-    # 连亏冷却: 连续亏损 N 笔后暂停开仓 X 个交易日
-    cooldown_loss_streak: int | None = None
-    cooldown_days: int | None = None
-    max_positions: int = 10
-    max_exposure_pct: float = 1.0
-    score_min: float | None = None
-    score_max: float | None = None
-    initial_capital: float = 1_000_000.0
-    position_sizing: Literal["equal", "score_weight"] = "equal"
-    # 分钟K精确成交: 开启后, 信号触发日的成交价用当日分钟K优化
-    # (有参考线→穿越价, 无参考线→VWAP)。数据缺失时降级为日K口径。
-    minute_fill: bool = False
+    def simulate_market_matrix(
+        self,
+        matrix: MarketMatrix,
+        config: MatcherConfig,
+        progress_cb: "Callable[[dict], None] | None" = None,
+        cancel_event: "threading.Event | None" = None,
+        options: SimulationOptions | None = None,
+    ) -> SimResult:
+        """Run the production Python matcher on a prebuilt MarketMatrix."""
+        if not matrix.entry.any():
+            return self._empty_result()
+        return self._simulate_portfolio_matrix(matrix, config, progress_cb, cancel_event, options)
 
-    def __post_init__(self) -> None:
-        # 解析最终口径: 优先 entry_fill/exit_fill, 否则回退到 matching (向后兼容)。
-        if self.entry_fill is None:
-            self.entry_fill = self.matching
-        if self.exit_fill is None:
-            self.exit_fill = self.matching
+    def _simulate_portfolio_matrix(
+        self,
+        matrix: MarketMatrix,
+        config: MatcherConfig,
+        progress_cb: "Callable[[dict], None] | None",
+        cancel_event: "threading.Event | None",
+        options: SimulationOptions | None = None,
+    ) -> SimResult:
+        options = options or SimulationOptions()
+        time_count, asset_count = matrix.shape
+        entry_prices = self._resolve_entry_prices(matrix, config)
+        exit_prices = matrix.open if config.exit_fill == "open_t+1" else matrix.close
+        buy_cost_pct = config.buy_cost_pct()
+        sell_cost_pct = config.sell_cost_pct()
+        cash = float(config.initial_capital)
+        peak = cash
+        max_positions = max(int(config.max_positions), 0)
+        max_exposure_pct = min(max(float(config.max_exposure_pct), 0.0), 1.0)
+        positions: dict[int, dict] = {}
+        last_close = np.full(asset_count, np.nan, dtype=np.float64)
+        trades: list[TradeRecord] = []
+        equity_curve: list[dict] = []
+        drawdown_curve: list[dict] = []
+        equity_values: list[float] = []
+        exposure_values: list[float] = []
+        execution_stats = {
+            "buy_invalid_price": 0,
+            "buy_suspended": 0,
+            "buy_limit_up": 0,
+            "buy_no_slot": 0,
+            "buy_cash": 0,
+            "buy_lot_size": 0,
+            "buy_same_day_reentry": 0,
+            "buy_exposure": 0,
+            "buy_score_filter": 0,
+            "sell_invalid_price": 0,
+            "sell_suspended": 0,
+            "sell_limit_down": 0,
+            "pending_exit": 0,
+        }
 
-    def _commission_pct(self) -> float:
-        # commission_pct 显式给出时优先, 否则回退 fees_pct (向后兼容双边佣金)。
-        return self.commission_pct if self.commission_pct is not None else self.fees_pct
+        minute_cache: dict = {}
+        if config.minute_fill:
+            trigger_times, trigger_assets = np.nonzero(matrix.entry | matrix.exit)
+            trigger_dates = {matrix.timestamp_labels[int(t)][:10] for t in trigger_times}
+            trigger_symbols = {matrix.symbols[int(a)] for a in trigger_assets}
+            if trigger_dates and trigger_symbols:
+                asset_type = "etf" if all(
+                    symbol.endswith(".SH") and symbol.startswith("5")
+                    for symbol in list(trigger_symbols)[:5]
+                ) else "stock"
+                loaded = self._load_minute_for_fills(
+                    self.repo, list(trigger_symbols), trigger_dates, asset_type,
+                )
+                minute_cache = {key: value for key, value in loaded.items() if value is not None and len(value) > 0}
 
-    def buy_cost_pct(self) -> float:
-        # 买入腿: 佣金 + 滑点。
-        return self._commission_pct() + self.slippage_bps / 10000.0
+        def _count(key: str) -> None:
+            execution_stats[key] = execution_stats.get(key, 0) + 1
 
-    def sell_cost_pct(self) -> float:
-        # 卖出腿: 佣金 + 印花税 + 滑点。印花税未设时为 0 (向后兼容)。
-        stamp = self.stamp_tax_pct if self.stamp_tax_pct is not None else 0.0
-        return self._commission_pct() + stamp + self.slippage_bps / 10000.0
+        def _valid_price(value) -> bool:
+            return bool(np.isfinite(value) and value > 0)
 
+        def _signal_id(code: int, signal_ids: tuple[str, ...]) -> str | None:
+            return signal_ids[code] if 0 <= code < len(signal_ids) else None
 
+        def _signal_date(signal_time: int, fallback: str) -> str:
+            return matrix.timestamp_labels[signal_time][:10] if signal_time >= 0 else fallback
 
+        def _market_value() -> float:
+            total = 0.0
+            for asset, pos in positions.items():
+                mark = last_close[asset]
+                if not _valid_price(mark):
+                    mark = pos["entry_price"]
+                total += pos["shares"] * mark
+            return total
 
+        def _refill_price(time_id: int, asset_id: int, side: str, daily_price: float) -> float:
+            if not config.minute_fill or not minute_cache:
+                return daily_price
+            key = (matrix.symbols[asset_id], matrix.timestamp_labels[time_id][:10])
+            minute_rows = minute_cache.get(key)
+            if minute_rows is None:
+                return daily_price
+            reference = float(matrix.reference_price[time_id, asset_id])
+            precise = self._resolve_minute_fill(
+                minute_rows,
+                reference if _valid_price(reference) else None,
+                side,
+            )
+            return precise if precise is not None else daily_price
 
+        def _minute_trigger_price(time_id: int, asset_id: int) -> float | None:
+            if not config.minute_fill or not minute_cache:
+                return None
+            key = (matrix.symbols[asset_id], matrix.timestamp_labels[time_id][:10])
+            minute_rows = minute_cache.get(key)
+            if minute_rows is None:
+                return None
+            reference = float(matrix.reference_price[time_id, asset_id])
+            return self._resolve_minute_exit_trigger(
+                minute_rows,
+                reference if _valid_price(reference) else None,
+            )
 
+        def _one_price_limit(time_id: int, asset_id: int, direction: str) -> bool:
+            if not matrix.tradable[time_id, asset_id]:
+                return False
+            prices = (
+                float(matrix.open[time_id, asset_id]),
+                float(matrix.high[time_id, asset_id]),
+                float(matrix.low[time_id, asset_id]),
+                float(matrix.close[time_id, asset_id]),
+            )
+            if not all(_valid_price(value) for value in prices):
+                return False
+            same_price = max(prices) - min(prices) <= max(abs(prices[3]) * 1e-4, 0.01)
+            flag = matrix.limit_up_locked if direction == "up" else matrix.limit_down_locked
+            return bool(flag[time_id, asset_id]) and same_price
 
+        def _can_buy(time_id: int, asset_id: int) -> tuple[bool, str]:
+            if not matrix.tradable[time_id, asset_id]:
+                return False, "buy_suspended"
+            if not _valid_price(entry_prices[time_id, asset_id]):
+                return False, "buy_invalid_price"
+            if _one_price_limit(time_id, asset_id, "up"):
+                return False, "buy_limit_up"
+            return True, ""
 
+        def _can_sell(time_id: int, asset_id: int, override: float | None = None) -> tuple[bool, str]:
+            if not matrix.tradable[time_id, asset_id]:
+                return False, "sell_suspended"
+            price = override if override is not None else exit_prices[time_id, asset_id]
+            if not _valid_price(price):
+                return False, "sell_invalid_price"
+            if _one_price_limit(time_id, asset_id, "down"):
+                return False, "sell_limit_down"
+            return True, ""
 
+        def _mark_pending(
+            asset_id: int,
+            reason: str,
+            signal_date: str,
+            signal_id: str | None = None,
+            next_open: bool = False,
+        ) -> None:
+            pos = positions[asset_id]
+            if not pos.get("pending_exit_reason"):
+                pos["pending_exit_reason"] = reason
+                pos["pending_exit_signal_date"] = signal_date
+                pos["pending_exit_signal_id"] = signal_id
+                _count("pending_exit")
+            if next_open:
+                pos["pending_exit_next_open"] = True
+            pos["blocked_exit_days"] += 1
 
-
-
-
-
-
-
-
-
-
-
-        nl_amount < 0:
-                    consec_losses += 1
-                    if consec_losses >= config.cooldown_loss_streak:
-                        cooldown_until = time_id + 1 + config.cooldown_days
-                        consec_losses = 0
-                else:
+        def _sell(
+            time_id: int,
+            asset_id: int,
+            reason: str,
+            signal_date: str,
+            sold_today: set[int],
+            override: float | None = None,
+        ) -> None:
+            nonlocal cash, consec_losses, cooldown_until
+            pos = positions.pop(asset_id)
+            exit_price = float(override) if override is not None else _refill_price(
+                time_id, asset_id, "sell", float(exit_prices[time_id, asset_id])
+            )
+            exit_value = pos["shares"] * exit_price * (1 - sell_cost_pct)
+            cash += exit_value
+            pnl_amount = exit_value - pos["entry_value"]
+            pnl_pct = pnl_amount / pos["entry_value"] if pos["entry_value"] > 0 else 0.0
+            sold_today.add(asset_id)
+            trades.append(TradeRecord(
+                symbol=matrix.symbols[asset_id],
+                name=matrix.names[asset_id],
+                entry_date=pos["entry_date"],
+                exit_date=matrix.timestamp_labels[time_id][:10],
+                entry_price=round(float(pos["entry_price"]), 4),
+                exit_price=round(exit_price, 4),
+                pnl_pct=round(float(pnl_pct), 6),
+                duration=int(pos["hold_days"]),
+                exit_reason=reason,
+                shares=round(float(pos["shares"]), 4),
+                lots=round(float(pos["lots"]), 2),
+                position_pct=round(float(pos["position_pct"]), 6),
+                entry_value=round(float(pos["entry_value"]), 2),
+                exit_value=round(float(exit_value), 2),
+                pnl_amount=round(float(pnl_amount), 2),
+                entry_score=round(float(pos["entry_score"]), 2),
+                entry_signal_date=pos["entry_signal_date"],
+                exit_signal_date=signal_date,
+                blocked_exit_days=int(pos["blocked_exit_days"]),
+                entry_signal_id=pos["entry_signal_id"],
+                exit_signal_id=(
+                    pos.get("pending_exit_signal_id")
+                    or _signal_id(int(matrix.exit_signal_code[time_id, asset_id]), matrix.exit_signal_ids)
+                ) if reason == "signal" else None,
+            ))
+            if pnl_amount < 0:
+                consec_losses += 1
+                if (config.cooldown_loss_streak is not None
+                        and config.cooldown_days is not None
+                        and consec_losses >= config.cooldown_loss_streak):
+                    cooldown_until = time_id + 1 + config.cooldown_days
                     consec_losses = 0
+            else:
+                consec_losses = 0
 
         def _try_sell(
             time_id: int,
@@ -113,6 +257,9 @@ class MatcherConfig:
                 return False
             _sell(time_id, asset_id, reason, signal_date, sold_today, override)
             return True
+
+        consec_losses = 0
+        cooldown_until = -1
 
         for time_id, date_label in enumerate(matrix.timestamp_labels):
             date_text = date_label[:10]
@@ -287,14 +434,59 @@ class MatcherConfig:
                                     "blocked_exit_days": 0,
                                 }
 
+            for asset_id, pos in positions.items():
+                high_price = float(matrix.high[time_id, asset_id])
+                if _valid_price(high_price):
+                    pos["max_high"] = max(float(pos["max_high"]), high_price)
+            valid_closes = np.isfinite(matrix.close[time_id]) & (matrix.close[time_id] > 0)
+            last_close[valid_closes] = matrix.close[time_id, valid_closes]
 
+            market_value = _market_value()
+            equity = cash + market_value
+            peak = max(peak, equity)
+            drawdown = (equity - peak) / peak if peak > 0 else 0.0
+            exposure = market_value / equity if equity > 0 else 0.0
+            equity_value = round(float(equity), 2)
+            exposure_value = round(float(exposure), 4)
+            equity_values.append(equity_value)
+            exposure_values.append(exposure_value)
+            if options.include_curves:
+                equity_curve.append({
+                    "date": date_text,
+                    "value": equity_value,
+                    "cash": round(float(cash), 2),
+                    "positions": len(positions),
+                    "exposure": exposure_value,
+                })
+                drawdown_curve.append({
+                    "date": date_text,
+                    "value": round(float(drawdown), 4),
+                })
 
-
-
-
-
-
-
-
-
-
+        statistics_started = time.perf_counter()
+        stats = self._calc_portfolio_stats_from_values(
+            equity_values,
+            exposure_values,
+            trades,
+            config.initial_capital,
+            include_monte_carlo=options.include_monte_carlo,
+        )
+        stats["statistics_ms"] = round(
+            (time.perf_counter() - statistics_started) * 1000,
+            1,
+        )
+        stats["execution"] = execution_stats
+        stats["pending_exit_positions"] = sum(1 for pos in positions.values() if pos.get("pending_exit_reason"))
+        stats["market_matrix_shape"] = [time_count, asset_count]
+        stats["market_matrix_bytes"] = matrix.nbytes
+        return SimResult(
+            equity_curve=equity_curve if options.include_curves else [],
+            drawdown_curve=drawdown_curve if options.include_curves else [],
+            trades=trades if options.include_trades else [],
+            per_symbol_stats=(
+                self._calc_per_symbol(trades)
+                if options.include_per_symbol_stats
+                else []
+            ),
+            stats=stats,
+        )
