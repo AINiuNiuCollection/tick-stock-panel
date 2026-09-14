@@ -107,6 +107,9 @@ export function Indices() {
     queryKey: QK.indexMinute(selectedSymbol, selectedDate ?? ''),
     queryFn: () => api.indexMinute(selectedSymbol, selectedDate ?? undefined),
     enabled: !!selectedSymbol && !!selectedDate && hasMinuteCap,
+    // 保留上一次查询数据作为 placeholder, 避免切换指数/日期时分时图闪烁空白;
+    // 配合 minuteRows 的 symbol/date 校验, 仅展示属于当前选中标的的数据
+    placeholderData: (prev) => prev,
   })
 
   const syncDaily = useMutation({
