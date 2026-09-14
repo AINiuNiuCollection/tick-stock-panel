@@ -490,3 +490,6 @@
             ),
             stats=stats,
         )
+
+
+tick-stock-panel\backend\app\backtest
