@@ -2038,6 +2038,7 @@ class StrategyBacktestService:
             if trigger:
                 trade["entry_date"] = f"{entry_text[:10]} {trigger}"
 
+
         selected_stats = result_policy.select_stats(result.stats)
         elapsed = (time.perf_counter() - t0) * 1000
         return StrategyBacktestResult(

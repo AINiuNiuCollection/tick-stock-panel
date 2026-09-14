@@ -1782,11 +1782,20 @@ class BacktestEngine:
             "buy_same_day_reentry": 0,
             "buy_exposure": 0,
             "buy_score_filter": 0,
+            # ── 连亏冷却: 买入被冷却拦截的次数 (诊断指标) ──
+            "buy_cooldown": 0,
             "sell_invalid_price": 0,
             "sell_suspended": 0,
             "sell_limit_down": 0,
             "pending_exit": 0,
         }
+
+        # ── 连亏冷却状态 ──
+        # consec_losses: 连续亏损笔数, 达到阈值后触发冷却期
+        # cooldown_until: 冷却截止 time_id, time_id < cooldown_until 时禁止开仓
+        # 初始化在主循环前 (与原始代码在 _try_sell 后初始化等价, 因 nonlocal 闭包捕获)
+        consec_losses = 0
+        cooldown_until = -1
 
         minute_cache: dict = {}
         if config.minute_fill:
@@ -1947,15 +1956,17 @@ class BacktestEngine:
                     or _signal_id(int(matrix.exit_signal_code[time_id, asset_id]), matrix.exit_signal_ids)
                 ) if reason == "signal" else None,
             ))
-            if pnl_amount < 0:
-                consec_losses += 1
-                if (config.cooldown_loss_streak is not None
-                        and config.cooldown_days is not None
-                        and consec_losses >= config.cooldown_loss_streak):
-                    cooldown_until = time_id + 1 + config.cooldown_days
+            # ── 连亏冷却: 平仓后更新连亏计数 ──
+            # cooldown_loss_streak > 0 守卫: 当用户设为 0 时表示禁用冷却,
+            # 原始代码缺少此守卫, 0 >= 0 恒成立 → 首次亏损即触发冷却 (bug)
+            if config.cooldown_loss_streak is not None and config.cooldown_loss_streak > 0 and config.cooldown_days is not None:
+                if pnl_amount < 0:
+                    consec_losses += 1
+                    if consec_losses >= config.cooldown_loss_streak:
+                        cooldown_until = time_id + 1 + config.cooldown_days
+                        consec_losses = 0
+                else:
                     consec_losses = 0
-            else:
-                consec_losses = 0
 
         def _try_sell(
             time_id: int,
@@ -1993,9 +2004,6 @@ class BacktestEngine:
                 return False
             _sell(time_id, asset_id, reason, signal_date, sold_today, override)
             return True
-
-        consec_losses = 0
-        cooldown_until = -1
 
         for time_id, date_label in enumerate(matrix.timestamp_labels):
             date_text = date_label[:10]

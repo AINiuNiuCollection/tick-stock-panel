@@ -771,6 +771,8 @@ def run_now(
         "etf_adj_factor_symbols": etf_adj_symbols,
         "minute_rows": written_minute,
         "regime_days": regime_days,
+        # ── 活跃市值(AMV)计算天数: 0 = 未计算或无数据 ──
+        "amv_days": amv_days,
         "mainline_rows": mainline_rows,
         "lagging_symbols": len(lagging_symbols),
         "enriched_total_days": enriched_total_days,
