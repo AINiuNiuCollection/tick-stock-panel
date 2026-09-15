@@ -929,7 +929,7 @@ class StrategyEngine:
             )
 
         scoring = effective_scoring(s.meta.get("scoring"), overrides)
-        scoring_directions = effective_scoring_directions(overrides)
+        scoring_directions = effective_scoring_directions(overrides, s.meta)
         current, history = self._materialize_scoring_frames(
             context.current,
             context.history,
@@ -1348,7 +1348,7 @@ class StrategyEngine:
             MatrixPipelineConfig(
                 basic_filter=basic_filter,
                 scoring=scoring,
-                scoring_directions=effective_scoring_directions(overrides),
+                scoring_directions=effective_scoring_directions(overrides, strategy.meta),
                 order_by=strategy.meta.get("order_by"),
                 descending=bool(strategy.meta.get("descending", True)),
                 asset_mask=asset_mask,
