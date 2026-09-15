@@ -1793,9 +1793,17 @@ class BacktestEngine:
         # ── 连亏冷却状态 ──
         # consec_losses: 连续亏损笔数, 达到阈值后触发冷却期
         # cooldown_until: 冷却截止 time_id, time_id < cooldown_until 时禁止开仓
+        # cooldown_trigger_day: 冷却触发日, 当天卖出后不应阻止当天买入 (卖出先于买入执行)
         # 初始化在主循环前 (与原始代码在 _try_sell 后初始化等价, 因 nonlocal 闭包捕获)
         consec_losses = 0
         cooldown_until = -1
+        cooldown_trigger_day = -1
+
+        # ── 选股过程日志 ──
+        # 记录每个有 entry 信号日的完整选股过程: 候选股票、评分、排名、
+        # 选中/淘汰状态及淘汰原因。供前端"选股过程"Tab 展示。
+        # 仅记录至少有 1 个候选进入候选池的日子 (纯冷却期/无信号日不记录)。
+        selection_log: list[dict] = []
 
         minute_cache: dict = {}
         if config.minute_fill:
@@ -1920,7 +1928,7 @@ class BacktestEngine:
             sold_today: set[int],
             override: float | None = None,
         ) -> None:
-            nonlocal cash, consec_losses, cooldown_until
+            nonlocal cash, consec_losses, cooldown_until, cooldown_trigger_day
             pos = positions.pop(asset_id)
             exit_price = float(override) if override is not None else _refill_price(
                 time_id, asset_id, "sell", float(exit_prices[time_id, asset_id])
@@ -1959,11 +1967,16 @@ class BacktestEngine:
             # ── 连亏冷却: 平仓后更新连亏计数 ──
             # cooldown_loss_streak > 0 守卫: 当用户设为 0 时表示禁用冷却,
             # 原始代码缺少此守卫, 0 >= 0 恒成立 → 首次亏损即触发冷却 (bug)
+            # cooldown_until = time_id + 1 + cooldown_days: +1 跳过当天(卖出日),
+            #   使冷却从次日开始持续 cooldown_days 个交易日。
+            #   但 _sell 在买入逻辑之前执行, 当天买入检查也会命中 time_id < cooldown_until,
+            #   因此额外记录 cooldown_trigger_day, 买入检查时排除触发当天。
             if config.cooldown_loss_streak is not None and config.cooldown_loss_streak > 0 and config.cooldown_days is not None:
                 if pnl_amount < 0:
                     consec_losses += 1
                     if consec_losses >= config.cooldown_loss_streak:
                         cooldown_until = time_id + 1 + config.cooldown_days
+                        cooldown_trigger_day = time_id
                         consec_losses = 0
                 else:
                     consec_losses = 0
@@ -2086,42 +2099,97 @@ class BacktestEngine:
 
             if time_id < time_count - 1 and max_positions > 0:
                 # ── 连亏冷却: 冷却期内禁止开仓 ──
-                if config.cooldown_loss_streak is not None and config.cooldown_loss_streak > 0 and config.cooldown_days is not None and time_id < cooldown_until:
-                    for _ in np.flatnonzero(matrix.entry[time_id]):
+                # time_id > cooldown_trigger_day: 排除触发当天 (卖出先于买入, 当天不应被自己触发的冷却阻止)
+                if config.cooldown_loss_streak is not None and config.cooldown_loss_streak > 0 and config.cooldown_days is not None and time_id < cooldown_until and time_id > cooldown_trigger_day:
+                    _cooldown_signals = np.flatnonzero(matrix.entry[time_id])
+                    for _ in _cooldown_signals:
                         _count("buy_cooldown")
+                    # ── 选股日志: 冷却期所有信号被拦截 ──
+                    if len(_cooldown_signals) > 0:
+                        _day_sel: list[dict] = []
+                        for asset_id in _cooldown_signals:
+                            _a = int(asset_id)
+                            _sym = str(matrix.symbols[_a])
+                            _nm = str(matrix.names[_a]) if matrix.names is not None else _sym
+                            _day_sel.append({"symbol": _sym, "name": _nm, "score": None, "rank": None, "status": "rejected", "reason": "cooldown"})
+                        selection_log.append({
+                            "date": date_text,
+                            "signal_count": len(_day_sel),
+                            "slots_available": max_positions - len(positions),
+                            "candidates": _day_sel,
+                        })
                 else:
                     candidates: list[tuple[int, float]] = []
+                    # ── 选股过程日志: 逐个记录当日信号股票的处置结果 ──
+                    # status 流转: rejected(预过滤淘汰) → candidate(进入候选池) →
+                    #              selected(成功买入) / rejected(执行阶段淘汰)
+                    day_selection: list[dict] = []
+                    sel_map: dict[str, dict] = {}
                     for asset_id in np.flatnonzero(matrix.entry[time_id]):
                         asset = int(asset_id)
+                        sym = str(matrix.symbols[asset])
+                        nm = str(matrix.names[asset]) if matrix.names is not None else sym
                         if asset in positions:
+                            _e = {"symbol": sym, "name": nm, "score": None, "rank": None, "status": "rejected", "reason": "already_held"}
+                            day_selection.append(_e); sel_map[sym] = _e
                             continue
                         if asset in sold_today:
                             _count("buy_same_day_reentry")
+                            _e = {"symbol": sym, "name": nm, "score": None, "rank": None, "status": "rejected", "reason": "same_day_reentry"}
+                            day_selection.append(_e); sel_map[sym] = _e
                             continue
+                        score = _matrix_entry_score(matrix, time_id, asset)
                         ok, blocked = _can_buy(time_id, asset)
                         if not ok:
                             _count(blocked)
+                            _e = {"symbol": sym, "name": nm, "score": round(float(score), 4), "rank": None, "status": "rejected", "reason": blocked}
+                            day_selection.append(_e); sel_map[sym] = _e
                             continue
-                        score = _matrix_entry_score(matrix, time_id, asset)
                         if config.score_min is not None and score < config.score_min:
                             _count("buy_score_filter")
+                            _e = {"symbol": sym, "name": nm, "score": round(float(score), 4), "rank": None, "status": "rejected", "reason": "score_filter"}
+                            day_selection.append(_e); sel_map[sym] = _e
                             continue
                         if config.score_max is not None and score > config.score_max:
                             _count("buy_score_filter")
+                            _e = {"symbol": sym, "name": nm, "score": round(float(score), 4), "rank": None, "status": "rejected", "reason": "score_filter"}
+                            day_selection.append(_e); sel_map[sym] = _e
                             continue
                         candidates.append((asset, score))
+                        _e = {"symbol": sym, "name": nm, "score": round(float(score), 4), "rank": None, "status": "candidate", "reason": None}
+                        day_selection.append(_e); sel_map[sym] = _e
                     candidates.sort(key=lambda item: item[1], reverse=True)
+                    # 按评分降序分配名次
+                    for _rank_idx, (_asset, _score) in enumerate(candidates):
+                        _sym = str(matrix.symbols[_asset])
+                        _item = sel_map.get(_sym)
+                        if _item is not None:
+                            _item["rank"] = _rank_idx + 1
                     slots = max_positions - len(positions)
                     if slots <= 0:
                         execution_stats["buy_no_slot"] += len(candidates)
+                        for _item in day_selection:
+                            if _item["status"] == "candidate":
+                                _item["status"] = "rejected"
+                                _item["reason"] = "no_slot"
                     elif candidates:
                         selected = candidates[:slots]
+                        _selected_syms = {str(matrix.symbols[_a]) for _a, _ in selected}
+                        # 未选中的候选 → no_slot
+                        for _item in day_selection:
+                            if _item["status"] == "candidate" and _item["symbol"] not in _selected_syms:
+                                _item["status"] = "rejected"
+                                _item["reason"] = "no_slot"
                         market_value_before = _market_value()
                         equity_before = cash + market_value_before
                         target_value = equity_before * max_exposure_pct / max_positions
                         exposure_capacity = equity_before * max_exposure_pct - market_value_before
                         if equity_before <= 0 or exposure_capacity <= 0 or max_exposure_pct <= 0:
                             execution_stats["buy_exposure"] += len(selected)
+                            for _item in day_selection:
+                                if _item["status"] == "candidate":
+                                    _item["status"] = "rejected"
+                                    _item["reason"] = "exposure"
                         else:
                             weights = np.repeat(1 / len(selected), len(selected))
                             if config.position_sizing == "score_weight":
@@ -2130,8 +2198,12 @@ class BacktestEngine:
                                     weights = raw_weights / raw_weights.sum()
                             total_budget = min(cash, exposure_capacity, target_value * len(selected))
                             for (asset_id, entry_score), weight in zip(selected, weights):
+                                _sym = str(matrix.symbols[asset_id])
                                 if len(positions) >= max_positions:
                                     _count("buy_no_slot")
+                                    _item = sel_map.get(_sym)
+                                    if _item and _item["status"] == "candidate":
+                                        _item["status"] = "rejected"; _item["reason"] = "no_slot"
                                     break
                                 market_value = _market_value()
                                 equity = cash + market_value
@@ -2139,6 +2211,9 @@ class BacktestEngine:
                                 allocation = min(total_budget * float(weight), target_value, cash, capacity)
                                 if allocation <= 0:
                                     _count("buy_exposure")
+                                    _item = sel_map.get(_sym)
+                                    if _item and _item["status"] == "candidate":
+                                        _item["status"] = "rejected"; _item["reason"] = "exposure"
                                     continue
                                 entry_price = _refill_price(
                                     time_id, asset_id, "buy", float(entry_prices[time_id, asset_id])
@@ -2147,12 +2222,21 @@ class BacktestEngine:
                                 entry_value = shares * entry_price * (1 + buy_cost_pct)
                                 if shares <= 0:
                                     _count("buy_lot_size")
+                                    _item = sel_map.get(_sym)
+                                    if _item and _item["status"] == "candidate":
+                                        _item["status"] = "rejected"; _item["reason"] = "lot_size"
                                     continue
                                 if entry_value > cash + 1e-6:
                                     _count("buy_cash")
+                                    _item = sel_map.get(_sym)
+                                    if _item and _item["status"] == "candidate":
+                                        _item["status"] = "rejected"; _item["reason"] = "cash"
                                     continue
                                 if entry_value > capacity + 1e-6:
                                     _count("buy_exposure")
+                                    _item = sel_map.get(_sym)
+                                    if _item and _item["status"] == "candidate":
+                                        _item["status"] = "rejected"; _item["reason"] = "exposure"
                                     continue
                                 cash -= entry_value
                                 positions[asset_id] = {
@@ -2177,6 +2261,17 @@ class BacktestEngine:
                                     "pending_exit_next_open": False,
                                     "blocked_exit_days": 0,
                                 }
+                                _item = sel_map.get(_sym)
+                                if _item and _item["status"] == "candidate":
+                                    _item["status"] = "selected"
+                    # ── 写入选股日志 (所有有信号的天都记录) ──
+                    if day_selection:
+                        selection_log.append({
+                            "date": date_text,
+                            "signal_count": len(day_selection),
+                            "slots_available": slots,
+                            "candidates": day_selection,
+                        })
 
             for asset_id, pos in positions.items():
                 high_price = float(matrix.high[time_id, asset_id])
@@ -2220,6 +2315,7 @@ class BacktestEngine:
             1,
         )
         stats["execution"] = execution_stats
+        stats["selection_log"] = selection_log
         stats["pending_exit_positions"] = sum(1 for pos in positions.values() if pos.get("pending_exit_reason"))
         stats["market_matrix_shape"] = [time_count, asset_count]
         stats["market_matrix_bytes"] = matrix.nbytes
@@ -2401,6 +2497,9 @@ class BacktestEngine:
             "sell_limit_down": 0,
             "pending_exit": 0,
         }
+
+        # ── 选股过程日志 (与 matrix 模式结构一致) ──
+        selection_log: list[dict] = []
 
         def _count(key: str) -> None:
             execution_stats[key] = execution_stats.get(key, 0) + 1
@@ -2629,47 +2728,110 @@ class BacktestEngine:
             if max_positions <= 0:
                 return
             candidates: list[tuple[int, str, float]] = []
+            # ── 选股过程日志 ──
+            day_selection: list[dict] = []
+            sel_map: dict[str, dict] = {}
             for idx in idxs:
                 if not ent[idx]:
                     continue
                 sym = str(panel_symbols[idx])
+                nm = str(names[idx] or sym)
                 if sym in positions:
+                    _e = {"symbol": sym, "name": nm, "score": None, "rank": None, "status": "rejected", "reason": "already_held"}
+                    day_selection.append(_e); sel_map[sym] = _e
                     continue
                 if sym in sold_today:
                     _count("buy_same_day_reentry")
+                    _e = {"symbol": sym, "name": nm, "score": None, "rank": None, "status": "rejected", "reason": "same_day_reentry"}
+                    day_selection.append(_e); sel_map[sym] = _e
                     continue
+                score = float(trade_scores[idx] or 0.0)
                 ok, block_reason = _can_buy(idx)
                 if not ok:
                     _count(block_reason)
+                    _e = {"symbol": sym, "name": nm, "score": round(score, 4), "rank": None, "status": "rejected", "reason": block_reason}
+                    day_selection.append(_e); sel_map[sym] = _e
                     continue
-                score = float(trade_scores[idx] or 0.0)
                 if score_min is not None and score < score_min:
                     _count("buy_score_filter")
+                    _e = {"symbol": sym, "name": nm, "score": round(score, 4), "rank": None, "status": "rejected", "reason": "score_filter"}
+                    day_selection.append(_e); sel_map[sym] = _e
                     continue
                 if score_max is not None and score > score_max:
                     _count("buy_score_filter")
+                    _e = {"symbol": sym, "name": nm, "score": round(score, 4), "rank": None, "status": "rejected", "reason": "score_filter"}
+                    day_selection.append(_e); sel_map[sym] = _e
                     continue
                 candidates.append((idx, sym, score))
+                _e = {"symbol": sym, "name": nm, "score": round(score, 4), "rank": None, "status": "candidate", "reason": None}
+                day_selection.append(_e); sel_map[sym] = _e
             if not candidates:
+                # 仍有信号但全部被预过滤淘汰 → 记录日志
+                if day_selection:
+                    selection_log.append({
+                        "date": str(d_str)[:10],
+                        "signal_count": len(day_selection),
+                        "slots_available": max_positions - len(positions),
+                        "candidates": day_selection,
+                    })
                 return
             candidates.sort(key=lambda x: x[2], reverse=True)
+            for _rank_idx, (_idx, _sym, _score) in enumerate(candidates):
+                _item = sel_map.get(_sym)
+                if _item is not None:
+                    _item["rank"] = _rank_idx + 1
 
             slots = max_positions - len(positions)
             if slots <= 0:
                 execution_stats["buy_no_slot"] += len(candidates)
+                for _item in day_selection:
+                    if _item["status"] == "candidate":
+                        _item["status"] = "rejected"
+                        _item["reason"] = "no_slot"
+                selection_log.append({
+                    "date": str(d_str)[:10],
+                    "signal_count": len(day_selection),
+                    "slots_available": slots,
+                    "candidates": day_selection,
+                })
                 return
 
             selected = candidates[:slots]
+            _selected_syms = {_sym for _, _sym, _ in selected}
+            for _item in day_selection:
+                if _item["status"] == "candidate" and _item["symbol"] not in _selected_syms:
+                    _item["status"] = "rejected"
+                    _item["reason"] = "no_slot"
             market_value_before = _market_value()
             account_equity_before_buy = cash + market_value_before
             if account_equity_before_buy <= 0 or max_exposure_pct <= 0:
                 execution_stats["buy_exposure"] += len(selected)
+                for _item in day_selection:
+                    if _item["status"] == "candidate":
+                        _item["status"] = "rejected"
+                        _item["reason"] = "exposure"
+                selection_log.append({
+                    "date": str(d_str)[:10],
+                    "signal_count": len(day_selection),
+                    "slots_available": slots,
+                    "candidates": day_selection,
+                })
                 return
             target_position_value = account_equity_before_buy * max_exposure_pct / max_positions
             max_exposure_value = account_equity_before_buy * max_exposure_pct
             exposure_capacity = max_exposure_value - market_value_before
             if exposure_capacity <= 0:
                 execution_stats["buy_exposure"] += len(selected)
+                for _item in day_selection:
+                    if _item["status"] == "candidate":
+                        _item["status"] = "rejected"
+                        _item["reason"] = "exposure"
+                selection_log.append({
+                    "date": str(d_str)[:10],
+                    "signal_count": len(day_selection),
+                    "slots_available": slots,
+                    "candidates": day_selection,
+                })
                 return
 
             weights = np.repeat(1 / len(selected), len(selected))
@@ -2682,6 +2844,9 @@ class BacktestEngine:
             for (idx, sym, _score), weight in zip(selected, weights):
                 if len(positions) >= max_positions:
                     _count("buy_no_slot")
+                    _item = sel_map.get(sym)
+                    if _item and _item["status"] == "candidate":
+                        _item["status"] = "rejected"; _item["reason"] = "no_slot"
                     break
                 current_market_value = _market_value()
                 current_equity = cash + current_market_value
@@ -2689,18 +2854,30 @@ class BacktestEngine:
                 allocation = min(total_budget * float(weight), target_position_value, cash, current_exposure_capacity)
                 if allocation <= 0:
                     _count("buy_exposure")
+                    _item = sel_map.get(sym)
+                    if _item and _item["status"] == "candidate":
+                        _item["status"] = "rejected"; _item["reason"] = "exposure"
                     continue
                 entry_price = _refill_price(idx, "buy", float(entry_prices[idx]))
                 shares = np.floor(allocation / (entry_price * (1 + buy_cost_pct)) / 100) * 100
                 entry_value = shares * entry_price * (1 + buy_cost_pct)
                 if shares <= 0:
                     _count("buy_lot_size")
+                    _item = sel_map.get(sym)
+                    if _item and _item["status"] == "candidate":
+                        _item["status"] = "rejected"; _item["reason"] = "lot_size"
                     continue
                 if entry_value > cash + 1e-6:
                     _count("buy_cash")
+                    _item = sel_map.get(sym)
+                    if _item and _item["status"] == "candidate":
+                        _item["status"] = "rejected"; _item["reason"] = "cash"
                     continue
                 if entry_value > current_exposure_capacity + 1e-6:
                     _count("buy_exposure")
+                    _item = sel_map.get(sym)
+                    if _item and _item["status"] == "candidate":
+                        _item["status"] = "rejected"; _item["reason"] = "exposure"
                     continue
                 cash -= entry_value
                 positions[sym] = {
@@ -2721,6 +2898,16 @@ class BacktestEngine:
                     "pending_exit_signal_date": None,
                     "blocked_exit_days": 0,
                 }
+                _item = sel_map.get(sym)
+                if _item and _item["status"] == "candidate":
+                    _item["status"] = "selected"
+            # ── 写入选股日志 ──
+            selection_log.append({
+                "date": str(d_str)[:10],
+                "signal_count": len(day_selection),
+                "slots_available": slots,
+                "candidates": day_selection,
+            })
 
         for d_idx, d_str in enumerate(all_dates):
             if d_idx % 20 == 0:
@@ -2781,6 +2968,7 @@ class BacktestEngine:
 
         stats = self._calc_portfolio_stats(equity_curve, trades, config.initial_capital)
         stats["execution"] = execution_stats
+        stats["selection_log"] = selection_log
         stats["pending_exit_positions"] = sum(1 for p in positions.values() if p.get("pending_exit_reason"))
         per_symbol = self._calc_per_symbol(trades)
         return SimResult(
@@ -2792,6 +2980,8 @@ class BacktestEngine:
         )
 
     # ── 净值曲线 ──────────────────────────────────────
+
+
 
     @staticmethod
     def _build_curves(

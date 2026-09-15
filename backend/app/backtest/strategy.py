@@ -814,7 +814,7 @@ class StrategyBacktestService:
             child_pipeline_cfg = MatrixPipelineConfig(
                 basic_filter=basic_filter,
                 scoring=child_scoring,
-                scoring_directions=effective_scoring_directions(child_override),
+                scoring_directions=effective_scoring_directions(child_override, child_def.meta),
                 order_by=child_def.meta.get("order_by"),
                 descending=bool(child_def.meta.get("descending", True)),
                 protect_strategy_cache=False,
@@ -1492,7 +1492,7 @@ class StrategyBacktestService:
                 pipeline_config = MatrixPipelineConfig(
                     basic_filter=basic_filter,
                     scoring=scoring,
-                    scoring_directions=effective_scoring_directions(overrides),
+                    scoring_directions=effective_scoring_directions(overrides, s.meta),
                     order_by=s.meta.get("order_by"),
                     descending=bool(s.meta.get("descending", True)),
                     protect_strategy_cache=prepared is not None,
@@ -2547,7 +2547,7 @@ class StrategyBacktestService:
         factor_snapshot: dict | None = None,
     ) -> pl.DataFrame:
         scoring = effective_scoring(s.meta.get("scoring"), overrides)
-        directions = effective_scoring_directions(overrides)
+        directions = effective_scoring_directions(overrides, s.meta)
 
         work = materialize_scoring_columns(panel, scoring.keys())
         temporary_scoring_columns = [name for name in scoring if name not in panel.columns and name in work.columns]
