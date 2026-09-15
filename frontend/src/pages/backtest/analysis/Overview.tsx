@@ -88,7 +88,7 @@ export function Overview({ data }: { data: BacktestData }) {
         <StatCard label="净值天数" value={s['净值曲线天数'] || '-'} />
         <StatCard label="超额收益" value={s['超额收益'] || '-'} accent="green" />
         <StatCard label="同期基准" value={s['同期基准'] || '-'} sub="上证指数" />
-        <StatCard label="最终权益" value={s['最终权益'] || '-'} sub="起始100万" />
+        <StatCard label="最终权益" value={s['最终权益'] || '-'} sub={s['起始资金'] ? `起始${s['起始资金']}` : undefined} />
       </div>
 
       <div className="rounded-xl border border-border bg-surface p-4">
