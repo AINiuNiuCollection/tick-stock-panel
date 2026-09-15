@@ -169,7 +169,7 @@ def _strategy_detail(
     """策略详情（含用户覆盖）"""
     bf = {**s.basic_filter}
     scoring = effective_scoring(s.meta.get("scoring"), overrides)
-    scoring_directions = effective_scoring_directions(overrides)
+    scoring_directions = effective_scoring_directions(overrides, s.meta)
     params_defaults = {p["id"]: p["default"] for p in s.meta.get("params", [])}
 
     if overrides:
