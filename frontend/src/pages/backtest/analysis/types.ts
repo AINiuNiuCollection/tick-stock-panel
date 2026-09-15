@@ -39,10 +39,27 @@ export interface PerSymbolStat {
   worst: number
 }
 
+export interface SelectionCandidate {
+  symbol: string
+  name: string
+  score: number | null
+  rank: number | null
+  status: 'selected' | 'rejected'
+  reason: string | null
+}
+
+export interface SelectionLogEntry {
+  date: string
+  signal_count: number
+  slots_available: number
+  candidates: SelectionCandidate[]
+}
+
 export interface BacktestData {
   summary: Record<string, string>
   equityCurve: EquityPoint[]
   trades: Trade[]
   perSymbol: PerSymbolStat[]
   hasScore: boolean
+  selectionLog: SelectionLogEntry[]
 }
