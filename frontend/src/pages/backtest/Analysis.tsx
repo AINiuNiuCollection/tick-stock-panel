@@ -20,6 +20,7 @@ import { Heatmap } from './analysis/Heatmap'
 import { ScatterMatrix } from './analysis/ScatterMatrix'
 import { MarketComparison } from './analysis/MarketComparison'
 import { ScoreAnalysis } from './analysis/ScoreAnalysis'
+import { SelectionProcess } from './analysis/SelectionProcess'
 import { BacktestParams } from './analysis/BacktestParams'
 import { PageHeader } from '@/components/PageHeader'
 import { Upload, FileText, Database, Trash2, Pencil, Check, X } from 'lucide-react'
@@ -29,6 +30,7 @@ const TABS = [
   { id: 'overview', label: '概览' },
   { id: 'equity', label: '净值曲线' },
   { id: 'trades', label: '交易明细' },
+  { id: 'selection', label: '选股过程' },
   { id: 'exit', label: '退出分析' },
   { id: 'dist', label: '收益分布' },
   { id: 'duration', label: '持仓分析' },
@@ -339,6 +341,7 @@ export function Analysis() {
             {activeTab === 'overview' && <Overview data={data} />}
             {activeTab === 'equity' && <EquityCurve data={data} />}
             {activeTab === 'trades' && <TradeTable data={data} />}
+            {activeTab === 'selection' && <SelectionProcess data={data} />}
             {activeTab === 'exit' && <ExitAnalysis data={data} />}
             {activeTab === 'dist' && <ReturnDist data={data} />}
             {activeTab === 'duration' && <DurationAnalysis data={data} />}
