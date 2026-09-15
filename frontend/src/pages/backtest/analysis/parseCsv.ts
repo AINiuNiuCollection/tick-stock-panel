@@ -102,5 +102,5 @@ export function parseBacktestCsv(text: string): BacktestData {
     }
   }
 
-  return { summary, equityCurve, trades, perSymbol, hasScore }
+  return { summary, equityCurve, trades, perSymbol, hasScore, selectionLog: [] }
 }
