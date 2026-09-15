@@ -1,5 +1,5 @@
 import type { StrategyBacktestResult } from '@/lib/api'
-import type { BacktestData, EquityPoint, Trade, PerSymbolStat } from './types'
+import type { BacktestData, EquityPoint, Trade, PerSymbolStat, SelectionLogEntry } from './types'
 
 /**
  * Convert StrategyBacktestResult (API snake_case) to BacktestData (analysis camelCase).
@@ -8,6 +8,18 @@ import type { BacktestData, EquityPoint, Trade, PerSymbolStat } from './types'
  */
 export function convertBacktestResult(result: StrategyBacktestResult): BacktestData {
   const stats = result.stats ?? {}
+
+  // ── 基准收益: 从 benchmark_curve 首尾值计算 (与 StrategyBacktest.tsx 一致) ──
+  const benchValues = (result.benchmark_curve ?? [])
+    .map(r => Number(r.close ?? r.value))
+    .filter(v => Number.isFinite(v) && v > 0)
+  const benchmarkReturn = benchValues.length >= 2
+    ? benchValues[benchValues.length - 1] / benchValues[0] - 1
+    : null
+  const totalReturn = stats.total_return != null ? Number(stats.total_return) : null
+  const excessReturn = totalReturn != null && benchmarkReturn != null
+    ? totalReturn - benchmarkReturn
+    : null
 
   // Build summary from stats
   const summary: Record<string, string> = {
@@ -19,8 +31,13 @@ export function convertBacktestResult(result: StrategyBacktestResult): BacktestD
     '年化收益': stats.annual_return != null ? (stats.annual_return * 100).toFixed(2) + '%' : '',
     '最大回撤': stats.max_drawdown != null ? (stats.max_drawdown * 100).toFixed(2) + '%' : '',
     '夏普比率': stats.sharpe != null ? String(stats.sharpe) : '',
+    '索提诺': stats.sortino != null ? Number(stats.sortino).toFixed(2) : '',
     '胜率': stats.win_rate != null ? (stats.win_rate * 100).toFixed(1) + '%' : '',
     '盈亏比': stats.profit_factor != null ? String(stats.profit_factor) : '',
+    '同期基准': benchmarkReturn != null ? (benchmarkReturn * 100).toFixed(2) + '%' : '',
+    '超额收益': excessReturn != null ? (excessReturn * 100).toFixed(2) + '%' : '',
+    '最终权益': stats.final_equity != null ? Number(stats.final_equity).toLocaleString() : '',
+    '起始资金': stats.initial_capital != null ? Number(stats.initial_capital).toLocaleString() : '',
   }
 
   // Build equity curve, merging drawdown and benchmark from separate curves
@@ -69,5 +86,8 @@ export function convertBacktestResult(result: StrategyBacktestResult): BacktestD
     worst: p.worst,
   }))
 
-  return { summary, equityCurve, trades, perSymbol, hasScore }
+  // ── 选股过程日志 (从 stats.selection_log 提取) ──
+  const selectionLog: SelectionLogEntry[] = (stats.selection_log as SelectionLogEntry[]) ?? []
+
+  return { summary, equityCurve, trades, perSymbol, hasScore, selectionLog }
 }
