@@ -1,5 +1,20 @@
 backend/app/backtest/engine.py
 
+
+
+    def simulate_market_matrix(
+        self,
+        matrix: MarketMatrix,
+        config: MatcherConfig,
+        progress_cb: "Callable[[dict], None] | None" = None,
+        cancel_event: "threading.Event | None" = None,
+        options: SimulationOptions | None = None,
+    ) -> SimResult:
+        """Run the production Python matcher on a prebuilt MarketMatrix."""
+        if not matrix.entry.any():
+            return self._empty_result()
+        return self._simulate_portfolio_matrix(matrix, config, progress_cb, cancel_event, options)
+
     def _simulate_portfolio_matrix(
         self,
         matrix: MarketMatrix,
@@ -46,11 +61,10 @@ backend/app/backtest/engine.py
         # ── 连亏冷却状态 ──
         # consec_losses: 连续亏损笔数, 达到阈值后触发冷却期
         # cooldown_until: 冷却截止 time_id, time_id < cooldown_until 时禁止开仓
-        # cooldown_trigger_day: 冷却触发日, 当天卖出后不应阻止当天买入 (卖出先于买入执行)
+        # 冷却从触发当日起生效 (止损当天即停止开仓), 持续 cooldown_days 个交易日 (从次日起算)。
         # 初始化在主循环前 (与原始代码在 _try_sell 后初始化等价, 因 nonlocal 闭包捕获)
         consec_losses = 0
         cooldown_until = -1
-        cooldown_trigger_day = -1
 
         # ── 选股过程日志 ──
         # 记录每个有 entry 信号日的完整选股过程: 候选股票、评分、排名、
@@ -181,7 +195,7 @@ backend/app/backtest/engine.py
             sold_today: set[int],
             override: float | None = None,
         ) -> None:
-            nonlocal cash, consec_losses, cooldown_until, cooldown_trigger_day
+            nonlocal cash, consec_losses, cooldown_until
             pos = positions.pop(asset_id)
             exit_price = float(override) if override is not None else _refill_price(
                 time_id, asset_id, "sell", float(exit_prices[time_id, asset_id])
@@ -220,16 +234,14 @@ backend/app/backtest/engine.py
             # ── 连亏冷却: 平仓后更新连亏计数 ──
             # cooldown_loss_streak > 0 守卫: 当用户设为 0 时表示禁用冷却,
             # 原始代码缺少此守卫, 0 >= 0 恒成立 → 首次亏损即触发冷却 (bug)
-            # cooldown_until = time_id + 1 + cooldown_days: +1 跳过当天(卖出日),
-            #   使冷却从次日开始持续 cooldown_days 个交易日。
-            #   但 _sell 在买入逻辑之前执行, 当天买入检查也会命中 time_id < cooldown_until,
-            #   因此额外记录 cooldown_trigger_day, 买入检查时排除触发当天。
+            # cooldown_until = time_id + cooldown_days: 触发当天 time_id 已 < cooldown_until,
+            #   当天买入检查即命中冷却被拒绝 (止损当天停止开仓);
+            #   冷却总共持续 cooldown_days 个交易日 (含触发当天), 到期当日恢复买入。
             if config.cooldown_loss_streak is not None and config.cooldown_loss_streak > 0 and config.cooldown_days is not None:
                 if pnl_amount < 0:
                     consec_losses += 1
                     if consec_losses >= config.cooldown_loss_streak:
-                        cooldown_until = time_id + 1 + config.cooldown_days
-                        cooldown_trigger_day = time_id
+                        cooldown_until = time_id + config.cooldown_days
                         consec_losses = 0
                 else:
                     consec_losses = 0
@@ -352,8 +364,9 @@ backend/app/backtest/engine.py
 
             if time_id < time_count - 1 and max_positions > 0:
                 # ── 连亏冷却: 冷却期内禁止开仓 ──
-                # time_id > cooldown_trigger_day: 排除触发当天 (卖出先于买入, 当天不应被自己触发的冷却阻止)
-                if config.cooldown_loss_streak is not None and config.cooldown_loss_streak > 0 and config.cooldown_days is not None and time_id < cooldown_until and time_id > cooldown_trigger_day:
+                # 冷却从触发当日起生效 (卖出先于买入, 止损当天即停止开仓),
+                # 总共持续 cooldown_days 个交易日 (含触发当天), cooldown_until = trigger_day + cooldown_days。
+                if config.cooldown_loss_streak is not None and config.cooldown_loss_streak > 0 and config.cooldown_days is not None and time_id < cooldown_until:
                     _cooldown_signals = np.flatnonzero(matrix.entry[time_id])
                     for _ in _cooldown_signals:
                         _count("buy_cooldown")
@@ -585,315 +598,3 @@ backend/app/backtest/engine.py
         )
 
     def simulate_portfolio_legacy(
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-***************************************************************************************
-        # ── 选股过程日志 (与 matrix 模式结构一致) ──
-        selection_log: list[dict] = []
-
-        def _count(key: str) -> None:
-            execution_stats[key] = execution_stats.get(key, 0) + 1
-
-        def _valid_price(value) -> bool:
-            try:
-                v = float(value)
-            except (TypeError, ValueError):
-                return False
-            return v > 0 and np.isfinite(v)
-
-        def _market_value() -> float:
-            value = 0.0
-            for pos in positions.values():
-                mark = last_close.get(pos["symbol"], pos["entry_price"])
-                value += pos["shares"] * mark
-            return value
-
-
-
-
-
-
-
-
-********************************************************************************************
-        def _process_entries(
-            d_str: str,
-            idxs: list[int],
-            sold_today: set[str],
-        ) -> None:
-            nonlocal cash
-            if max_positions <= 0:
-                return
-            candidates: list[tuple[int, str, float]] = []
-            # ── 选股过程日志 ──
-            day_selection: list[dict] = []
-            sel_map: dict[str, dict] = {}
-            for idx in idxs:
-                if not ent[idx]:
-                    continue
-                sym = str(panel_symbols[idx])
-                nm = str(names[idx] or sym)
-                if sym in positions:
-                    _e = {"symbol": sym, "name": nm, "score": None, "rank": None, "status": "rejected", "reason": "already_held"}
-                    day_selection.append(_e); sel_map[sym] = _e
-                    continue
-                if sym in sold_today:
-                    _count("buy_same_day_reentry")
-                    _e = {"symbol": sym, "name": nm, "score": None, "rank": None, "status": "rejected", "reason": "same_day_reentry"}
-                    day_selection.append(_e); sel_map[sym] = _e
-                    continue
-                score = float(trade_scores[idx] or 0.0)
-                ok, block_reason = _can_buy(idx)
-                if not ok:
-                    _count(block_reason)
-                    _e = {"symbol": sym, "name": nm, "score": round(score, 4), "rank": None, "status": "rejected", "reason": block_reason}
-                    day_selection.append(_e); sel_map[sym] = _e
-                    continue
-                if score_min is not None and score < score_min:
-                    _count("buy_score_filter")
-                    _e = {"symbol": sym, "name": nm, "score": round(score, 4), "rank": None, "status": "rejected", "reason": "score_filter"}
-                    day_selection.append(_e); sel_map[sym] = _e
-                    continue
-                if score_max is not None and score > score_max:
-                    _count("buy_score_filter")
-                    _e = {"symbol": sym, "name": nm, "score": round(score, 4), "rank": None, "status": "rejected", "reason": "score_filter"}
-                    day_selection.append(_e); sel_map[sym] = _e
-                    continue
-                candidates.append((idx, sym, score))
-                _e = {"symbol": sym, "name": nm, "score": round(score, 4), "rank": None, "status": "candidate", "reason": None}
-                day_selection.append(_e); sel_map[sym] = _e
-            if not candidates:
-                # 仍有信号但全部被预过滤淘汰 → 记录日志
-                if day_selection:
-                    selection_log.append({
-                        "date": str(d_str)[:10],
-                        "signal_count": len(day_selection),
-                        "slots_available": max_positions - len(positions),
-                        "candidates": day_selection,
-                    })
-                return
-            candidates.sort(key=lambda x: x[2], reverse=True)
-            for _rank_idx, (_idx, _sym, _score) in enumerate(candidates):
-                _item = sel_map.get(_sym)
-                if _item is not None:
-                    _item["rank"] = _rank_idx + 1
-
-            slots = max_positions - len(positions)
-            if slots <= 0:
-                execution_stats["buy_no_slot"] += len(candidates)
-                for _item in day_selection:
-                    if _item["status"] == "candidate":
-                        _item["status"] = "rejected"
-                        _item["reason"] = "no_slot"
-                selection_log.append({
-                    "date": str(d_str)[:10],
-                    "signal_count": len(day_selection),
-                    "slots_available": slots,
-                    "candidates": day_selection,
-                })
-                return
-
-            selected = candidates[:slots]
-            _selected_syms = {_sym for _, _sym, _ in selected}
-            for _item in day_selection:
-                if _item["status"] == "candidate" and _item["symbol"] not in _selected_syms:
-                    _item["status"] = "rejected"
-                    _item["reason"] = "no_slot"
-            market_value_before = _market_value()
-            account_equity_before_buy = cash + market_value_before
-            if account_equity_before_buy <= 0 or max_exposure_pct <= 0:
-                execution_stats["buy_exposure"] += len(selected)
-                for _item in day_selection:
-                    if _item["status"] == "candidate":
-                        _item["status"] = "rejected"
-                        _item["reason"] = "exposure"
-                selection_log.append({
-                    "date": str(d_str)[:10],
-                    "signal_count": len(day_selection),
-                    "slots_available": slots,
-                    "candidates": day_selection,
-                })
-                return
-            target_position_value = account_equity_before_buy * max_exposure_pct / max_positions
-            max_exposure_value = account_equity_before_buy * max_exposure_pct
-            exposure_capacity = max_exposure_value - market_value_before
-            if exposure_capacity <= 0:
-                execution_stats["buy_exposure"] += len(selected)
-                for _item in day_selection:
-                    if _item["status"] == "candidate":
-                        _item["status"] = "rejected"
-                        _item["reason"] = "exposure"
-                selection_log.append({
-                    "date": str(d_str)[:10],
-                    "signal_count": len(day_selection),
-                    "slots_available": slots,
-                    "candidates": day_selection,
-                })
-                return
-
-            weights = np.repeat(1 / len(selected), len(selected))
-            if config.position_sizing == "score_weight":
-                raw = np.array([max(x[2], 0.0) for x in selected], dtype=float)
-                if raw.sum() > 0:
-                    weights = raw / raw.sum()
-            total_budget = min(cash, exposure_capacity, target_position_value * len(selected))
-
-            for (idx, sym, _score), weight in zip(selected, weights):
-                if len(positions) >= max_positions:
-                    _count("buy_no_slot")
-                    _item = sel_map.get(sym)
-                    if _item and _item["status"] == "candidate":
-                        _item["status"] = "rejected"; _item["reason"] = "no_slot"
-                    break
-                current_market_value = _market_value()
-                current_equity = cash + current_market_value
-                current_exposure_capacity = current_equity * max_exposure_pct - current_market_value
-                allocation = min(total_budget * float(weight), target_position_value, cash, current_exposure_capacity)
-                if allocation <= 0:
-                    _count("buy_exposure")
-                    _item = sel_map.get(sym)
-                    if _item and _item["status"] == "candidate":
-                        _item["status"] = "rejected"; _item["reason"] = "exposure"
-                    continue
-                entry_price = _refill_price(idx, "buy", float(entry_prices[idx]))
-                shares = np.floor(allocation / (entry_price * (1 + buy_cost_pct)) / 100) * 100
-                entry_value = shares * entry_price * (1 + buy_cost_pct)
-                if shares <= 0:
-                    _count("buy_lot_size")
-                    _item = sel_map.get(sym)
-                    if _item and _item["status"] == "candidate":
-                        _item["status"] = "rejected"; _item["reason"] = "lot_size"
-                    continue
-                if entry_value > cash + 1e-6:
-                    _count("buy_cash")
-                    _item = sel_map.get(sym)
-                    if _item and _item["status"] == "candidate":
-                        _item["status"] = "rejected"; _item["reason"] = "cash"
-                    continue
-                if entry_value > current_exposure_capacity + 1e-6:
-                    _count("buy_exposure")
-                    _item = sel_map.get(sym)
-                    if _item and _item["status"] == "candidate":
-                        _item["status"] = "rejected"; _item["reason"] = "exposure"
-                    continue
-                cash -= entry_value
-                positions[sym] = {
-                    "symbol": sym,
-                    "name": str(names[idx] or ""),
-                    "entry_date": self._date_str(panel_dates[idx]),
-                    "entry_signal_date": entry_signal_dates[idx] or self._date_str(panel_dates[idx]),
-                    "entry_signal_id": _resolve_signal_id(panel, idx, entry_signal_ids),
-                    "entry_price": entry_price,
-                    "entry_value": entry_value,
-                    "shares": shares,
-                    "lots": shares / 100,
-                    "position_pct": entry_value / account_equity_before_buy if account_equity_before_buy > 0 else 0.0,
-                    "entry_score": _score,
-                    "max_high": entry_price,
-                    "hold_days": 0,
-                    "pending_exit_reason": None,
-                    "pending_exit_signal_date": None,
-                    "blocked_exit_days": 0,
-                }
-                _item = sel_map.get(sym)
-                if _item and _item["status"] == "candidate":
-                    _item["status"] = "selected"
-            # ── 写入选股日志 ──
-            selection_log.append({
-                "date": str(d_str)[:10],
-                "signal_count": len(day_selection),
-                "slots_available": slots,
-                "candidates": day_selection,
-            })
-
-        for d_idx, d_str in enumerate(all_dates):
-            if d_idx % 20 == 0:
-                if cancel_event is not None and cancel_event.is_set():
-                    logger.info("回测被用户取消 (第 %d/%d 天)", d_idx, len(all_dates))
-                    break
-                if progress_cb is not None:
-                    try:
-                        progress_cb({
-                            "day": d_idx + 1,
-                            "total": len(all_dates),
-                            "date": str(d_str)[:10],
-                            "equity": round(cash + _market_value(), 2),
-                        })
-                    except Exception:
-                        pass
-
-            idxs = date_to_indices[d_str]
-            row_by_symbol = {str(panel_symbols[i]): i for i in idxs}
-            sold_today: set[str] = set()
-
-            for pos in positions.values():
-                pos["hold_days"] += 1
-
-            # 统一执行顺序 (不分口径): 风控(止损/移动止损/止盈) → 计划出场(signal/max_hold/end) → 建仓。
-            # 风控是保护性离场, 必须最先; 计划出场次之; 建仓最后 (卖出释放的现金/仓位先用于满足新买)。
-            # 当天新建仓不会被风控误杀 (_process_risk_exits 跳过 entry_date == d_str 的仓位)。
-            _process_risk_exits(d_str, row_by_symbol, sold_today)
-            _process_scheduled_exits(d_idx, d_str, row_by_symbol, sold_today)
-            if d_idx < len(all_dates) - 1:
-                _process_entries(d_str, idxs, sold_today)
-
-            for sym, pos in positions.items():
-                idx = row_by_symbol.get(sym)
-                if idx is not None:
-                    hi = float(high_prices[idx])
-                    if _valid_price(hi):
-                        pos["max_high"] = max(float(pos.get("max_high", pos["entry_price"])), hi)
-
-            for i in idxs:
-                c = float(close_prices[i])
-                if c > 0 and np.isfinite(c):
-                    last_close[str(panel_symbols[i])] = c
-
-            market_value = _market_value()
-            equity = cash + market_value
-            peak = max(peak, equity)
-            dd = (equity - peak) / peak if peak > 0 else 0.0
-            exposure = market_value / equity if equity > 0 else 0.0
-            equity_curve.append({
-                "date": d_str[:10],
-                "value": round(float(equity), 2),
-                "cash": round(float(cash), 2),
-                "positions": len(positions),
-                "exposure": round(float(exposure), 4),
-            })
-            drawdown_curve.append({"date": d_str[:10], "value": round(float(dd), 4)})
-
-        stats = self._calc_portfolio_stats(equity_curve, trades, config.initial_capital)
-        stats["execution"] = execution_stats
-        stats["selection_log"] = selection_log
-        stats["pending_exit_positions"] = sum(1 for p in positions.values() if p.get("pending_exit_reason"))
-        per_symbol = self._calc_per_symbol(trades)
-        return SimResult(
-            equity_curve=equity_curve,
-            drawdown_curve=drawdown_curve,
-            trades=trades,
-            per_symbol_stats=per_symbol,
-            stats=stats,
-        )
-
-    # ── 净值曲线 ──────────────────────────────────────
-
-
