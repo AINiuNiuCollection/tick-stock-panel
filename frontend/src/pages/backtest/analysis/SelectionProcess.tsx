@@ -15,6 +15,7 @@ const REASON_LABELS: Record<string, string> = {
   lot_size: '不足一手',
   cash: '资金不足',
   cooldown: '连亏冷却',
+  regime_filter: '市场环境过滤',
   buy_suspended: '停牌',
   buy_invalid_price: '无效价格',
   buy_limit_up: '涨停',
