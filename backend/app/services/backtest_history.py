@@ -4,7 +4,7 @@
 - data/backtest_history/records.json  — 索引(元信息列表, 轻量)
 - data/backtest_history/{record_id}.json — 完整记录(config + labels + stats + result)
 
-保留最近 100 条, 超出自动删除最旧记录及其文件。
+保留最近 500 条, 超出自动删除最旧记录及其文件。
 
 与 CandidateStore 同模式(文件存储 + 线程锁 + 原子写入), 但:
 - CandidateStore 存的是 config + metrics 摘要(无净值/交易);
@@ -22,7 +22,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-MAX_RECORDS = 100
+MAX_RECORDS = 500
 MAX_NAME_LENGTH = 120
 HISTORY_DIR = "backtest_history"
 INDEX_FILE = "records.json"
