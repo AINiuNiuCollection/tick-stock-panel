@@ -186,12 +186,15 @@ export function SelectionProcess({ data }: { data: BacktestData }) {
                   data-date-idx={idx}
                   onClick={() => setSelectedDate(d)}
                   className={cn(
-                    'cursor-pointer border-b border-border/50 px-3 py-2 text-xs transition-colors',
+                    'relative cursor-pointer border-b border-border/50 px-3 py-2 text-xs transition-colors',
                     isActive
                       ? 'bg-accent/10 text-foreground font-semibold'
                       : 'text-secondary hover:bg-base/80'
                   )}
                 >
+                  {buyCount > 0 && (
+                    <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-red-500" />
+                  )}
                   <div>{d}</div>
                   <div className={cn('mt-0.5 text-[10px]', isActive ? 'text-red-500' : 'text-muted')}>
                     买入{buyCount} / 信号{dayLog.signal_count}
