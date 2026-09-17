@@ -1188,6 +1188,12 @@ class StrategyBacktestService:
         matrix_data_cache_status = "none"
         matrix_data_cache_timing_ms: Mapping[str, float] = {}
 
+        # ── regime_filter 过滤信号收集 ──
+        # 被市场环境过滤拦截的信号按信号日分组, 回测后映射到买入日注入 selection_log,
+        # 使前端"选股过程"Tab 日期连续且能看到被拦截的原因。
+        regime_rejected_by_signal_date: dict[str, list[dict]] = {}
+        all_trade_dates: list[str] = []
+
         # 加载 warmup + 正式区间。矩阵策略的 warmup 由协议解析，不再依赖策略名称。
         warmup_days = max(120, int(max(feature_plan.warmup_bars, 1) * 1.6))
         load_start = config.start - timedelta(days=warmup_days)
@@ -1359,7 +1365,10 @@ class StrategyBacktestService:
             except ValueError as e:
                 return _err(str(e))
             if _rm is not None:
+                _regime_rejected_tids = np.flatnonzero(entry_time_mask & ~_rm)
                 entry_time_mask = entry_time_mask & _rm
+            else:
+                _regime_rejected_tids = None
             exit_time_mask = self._matrix_date_range_mask(
                 market_data.timestamp_labels,
                 config.start,
@@ -1398,6 +1407,23 @@ class StrategyBacktestService:
                 )
             except ValueError as e:
                 return _err(str(e))
+
+            # 收集被 regime_filter 过滤的信号 (在 apply_time_masks 清零前)
+            if _regime_rejected_tids is not None and _regime_rejected_tids.size > 0:
+                all_trade_dates = [str(lbl)[:10] for lbl in market_data.timestamp_labels]
+                for _t in _regime_rejected_tids:
+                    _asset_ids = np.flatnonzero(signal_matrix.entry[_t])
+                    if _asset_ids.size == 0:
+                        continue
+                    _date_lbl = str(market_data.timestamp_labels[_t])[:10]
+                    for _a in _asset_ids:
+                        _sym = str(market_data.symbols[_a])
+                        _nm = str(market_data.names[_a]) if market_data.names is not None else _sym
+                        _sc = float(signal_matrix.score[_t, _a]) if signal_matrix.score is not None else 0.0
+                        regime_rejected_by_signal_date.setdefault(_date_lbl, []).append({
+                            "symbol": _sym, "name": _nm, "score": round(_sc, 4),
+                            "rank": None, "status": "rejected", "reason": "regime_filter",
+                        })
 
             sim_market_data = slice_market_data_matrix(market_data, start_id, stop_id)
             sim_signal_matrix = slice_signal_matrix(signal_matrix, start_id, stop_id)
@@ -1443,6 +1469,7 @@ class StrategyBacktestService:
                 start_id = prepared.start_id
                 stop_id = prepared.stop_id
                 reference_price = prepared.reference_price
+                _regime_rejected_tids = None  # prepared 已预过滤, 无 regime 收集
                 panel_rows = int(np.isfinite(market_data.close[start_id:stop_id]).sum())
                 panel_columns = len(feature_plan.matrix_columns)
             else:
@@ -1463,7 +1490,10 @@ class StrategyBacktestService:
                 except ValueError as e:
                     return _err(str(e))
                 if _rm is not None:
+                    _regime_rejected_tids = np.flatnonzero(entry_time_mask & ~_rm)
                     entry_time_mask = entry_time_mask & _rm
+                else:
+                    _regime_rejected_tids = None
                 exit_time_mask = self._matrix_date_range_mask(
                     market_data.timestamp_labels,
                     config.start,
@@ -1516,6 +1546,23 @@ class StrategyBacktestService:
                         )
             except (TypeError, ValueError) as e:
                 return _err(f"矩阵策略信号计算失败: {e}")
+
+            # 收集被 regime_filter 过滤的信号 (在 apply_time_masks 清零前)
+            if _regime_rejected_tids is not None and _regime_rejected_tids.size > 0:
+                all_trade_dates = [str(lbl)[:10] for lbl in market_data.timestamp_labels]
+                for _t in _regime_rejected_tids:
+                    _asset_ids = np.flatnonzero(signal_matrix.entry[_t])
+                    if _asset_ids.size == 0:
+                        continue
+                    _date_lbl = str(market_data.timestamp_labels[_t])[:10]
+                    for _a in _asset_ids:
+                        _sym = str(market_data.symbols[_a])
+                        _nm = str(market_data.names[_a]) if market_data.names is not None else _sym
+                        _sc = float(signal_matrix.score[_t, _a]) if signal_matrix.score is not None else 0.0
+                        regime_rejected_by_signal_date.setdefault(_date_lbl, []).append({
+                            "symbol": _sym, "name": _nm, "score": round(_sc, 4),
+                            "rank": None, "status": "rejected", "reason": "regime_filter",
+                        })
 
             sim_market_data = slice_market_data_matrix(market_data, start_id, stop_id)
             sim_signal_matrix = slice_signal_matrix(signal_matrix, start_id, stop_id)
@@ -1587,6 +1634,23 @@ class StrategyBacktestService:
                         if allowed
                     ]
                     regime_row_mask = panel.get_column("date").is_in(allowed_dates).fill_null(False)
+                    # 收集被 regime_filter 过滤的信号
+                    _regime_rejected_mask = entry_mask & ~regime_row_mask
+                    if _regime_rejected_mask.any():
+                        all_trade_dates = [str(d)[:10] for d in date_values]
+                        for row in panel.filter(_regime_rejected_mask).select(
+                            "date", "symbol", "name", "score"
+                        ).iter_rows(named=True):
+                            _d = str(row["date"])[:10]
+                            _sc = float(row.get("score") or 0)
+                            regime_rejected_by_signal_date.setdefault(_d, []).append({
+                                "symbol": str(row["symbol"]),
+                                "name": str(row.get("name") or ""),
+                                "score": round(_sc, 4),
+                                "rank": None,
+                                "status": "rejected",
+                                "reason": "regime_filter",
+                            })
                     formal_candidate_mask = formal_candidate_mask & regime_row_mask
                     entry_mask = entry_mask & regime_row_mask
             raw_exit_mask = self._build_signal_mask(panel, exit_signals, "_exit")
@@ -1650,6 +1714,38 @@ class StrategyBacktestService:
             )
         timing_ms["simulate"] = round((time.perf_counter() - t_sim) * 1000, 1)
         timing_ms["statistics"] = float(result.stats.pop("statistics_ms", 0.0))
+
+        # ── 注入被 regime_filter 过滤的信号到 selection_log ──
+        if regime_rejected_by_signal_date:
+            _date_idx = {d: i for i, d in enumerate(all_trade_dates)}
+            _regime_by_buy_date: dict[str, list[dict]] = {}
+            for _sig_date, _candidates in regime_rejected_by_signal_date.items():
+                if matcher_config.entry_fill == "open_t+1":
+                    _idx = _date_idx.get(_sig_date)
+                    if _idx is not None and _idx + 1 < len(all_trade_dates):
+                        _buy_date = all_trade_dates[_idx + 1]
+                    else:
+                        continue
+                else:
+                    _buy_date = _sig_date
+                _regime_by_buy_date.setdefault(_buy_date, []).extend(_candidates)
+
+            _sel_log = result.stats.get("selection_log", [])
+            _existing_by_date = {e["date"]: e for e in _sel_log}
+            for _buy_date, _candidates in _regime_by_buy_date.items():
+                if _buy_date in _existing_by_date:
+                    _entry = _existing_by_date[_buy_date]
+                    _entry["candidates"].extend(_candidates)
+                    _entry["signal_count"] += len(_candidates)
+                else:
+                    _sel_log.append({
+                        "date": _buy_date,
+                        "signal_count": len(_candidates),
+                        "slots_available": 0,
+                        "candidates": _candidates,
+                    })
+            _sel_log.sort(key=lambda x: x["date"])
+            result.stats["selection_log"] = _sel_log
 
         # 检查是否被取消
         if cancel_event is not None and cancel_event.is_set():
