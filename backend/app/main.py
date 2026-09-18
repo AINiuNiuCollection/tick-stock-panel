@@ -27,6 +27,7 @@ from app.api import (
     lots,
     market_amv,
     market_recap,
+    memo,
     mining,
     monitor_rules,
     overview,
@@ -489,6 +490,7 @@ app.include_router(ext_data.router)
 app.include_router(financials.router)
 app.include_router(stock_analysis.router)
 app.include_router(market_recap.router)
+app.include_router(memo.router)
 app.include_router(settings_api.router)
 app.include_router(strategy.router)
 app.include_router(signals.router)
