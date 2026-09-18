@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Settings2, RotateCcw, Save, ChevronDown, Filter, Star, TrendingUp, Sparkles, Download, Layers, Plus, Trash2 } from 'lucide-react'
 import { api, type StrategyDetail, type StrategyParamDef, type CompositeChildInfo, type ScoringDirection } from '@/lib/api'
@@ -189,6 +189,11 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
   const [scoring, setScoring] = useState<Record<string, number>>({})
   const [scoringDirections, setScoringDirections] = useState<Record<string, ScoringDirection>>({})
   const [stopLoss, setStopLoss] = useState<number | null>(null)
+  // 移动止损/回撤止盈: 与"回测-高级策略设置-风控"口径一致
+  // 存储格式: trailing_stop=-0.08(负小数), activate/drawdown=0.10/0.03(正小数)
+  const [trailingStop, setTrailingStop] = useState<number | null>(null)
+  const [trailingTakeProfitActivate, setTrailingTakeProfitActivate] = useState<number | null>(null)
+  const [trailingTakeProfitDrawdown, setTrailingTakeProfitDrawdown] = useState<number | null>(null)
   const [maxHoldDays, setMaxHoldDays] = useState<number | null>(null)
   const [entrySignals, setEntrySignals] = useState<string[]>([])
   const [exitSignals, setExitSignals] = useState<string[]>([])
@@ -228,6 +233,9 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
         setScoring(d.scoring)
         setScoringDirections(d.scoring_directions ?? {})
         setStopLoss(d.stop_loss)
+        setTrailingStop(d.trailing_stop)
+        setTrailingTakeProfitActivate(d.trailing_take_profit_activate)
+        setTrailingTakeProfitDrawdown(d.trailing_take_profit_drawdown)
         setMaxHoldDays(d.max_hold_days)
         setEntrySignals(d.entry_signals ?? [])
         setExitSignals(d.exit_signals ?? [])
@@ -277,6 +285,9 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
           scoring_replace: true,
         } : {}),
         stop_loss: stopLoss,
+        trailing_stop: trailingStop,
+        trailing_take_profit_activate: trailingTakeProfitActivate,
+        trailing_take_profit_drawdown: trailingTakeProfitDrawdown,
         max_hold_days: maxHoldDays,
         entry_signals: entrySignals,
         exit_signals: exitSignals,
@@ -315,6 +326,9 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
       setScoring(d.scoring)
       setScoringDirections(d.scoring_directions ?? {})
       setStopLoss(d.stop_loss)
+      setTrailingStop(d.trailing_stop)
+      setTrailingTakeProfitActivate(d.trailing_take_profit_activate)
+      setTrailingTakeProfitDrawdown(d.trailing_take_profit_drawdown)
       setMaxHoldDays(d.max_hold_days)
       setEntrySignals(d.entry_signals ?? [])
       setExitSignals(d.exit_signals ?? [])
@@ -588,6 +602,58 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
                           <input type="number" value={stopLoss ?? ''} onChange={e => setStopLoss(e.target.value === '' ? null : Number(e.target.value))} step={0.01} min={-0.5} max={0}
                             className="w-16 h-6 px-1.5 rounded bg-base border border-border text-[11px] font-mono text-foreground text-center focus:outline-none focus:border-accent/50" />
                           <span className="text-[10px] text-muted">{stopLoss != null ? `${(stopLoss * 100).toFixed(1)}%` : '—'}</span>
+                        </div>
+                        {/* 移动止损/回撤止盈: 口径与"回测-高级策略设置-风控"完全一致
+                            - 移动止损: 用户输入百分比(如8), 存储 -0.08(负小数); 引擎 peak*(1-abs(pct))
+                            - 回撤止盈启动: 用户输入百分比(如10), 存储 0.10(正小数); 引擎 peak/entry-1 >= abs(activate)
+                            - 回撤止盈回撤: 用户输入百分比(如3), 存储 0.03(正小数); 引擎 peak*(1-drawdown)
+                            空值=None=不启用, 与引擎 `is not None` 判断对齐 */}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] text-secondary w-20 shrink-0">移动止损</span>
+                          <input
+                            type="number"
+                            value={trailingStop == null ? '' : String(Math.abs(Number(trailingStop)) * 100)}
+                            onChange={e => {
+                              const v = e.target.value
+                              setTrailingStop(v === '' ? null : -Math.abs(Number(v)) / 100)
+                            }}
+                            step={0.5} min={0.5} max={50}
+                            placeholder="空=不启用"
+                            className="w-16 h-6 px-1.5 rounded bg-base border border-border text-[11px] font-mono text-foreground text-center focus:outline-none focus:border-accent/50" />
+                          <span className="text-[10px] text-muted">%</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] text-secondary w-20 shrink-0">止盈启动</span>
+                          <input
+                            type="number"
+                            value={trailingTakeProfitActivate == null ? '' : String(Math.abs(Number(trailingTakeProfitActivate)) * 100)}
+                            onChange={e => {
+                              const v = e.target.value
+                              const next = v === '' ? null : Math.abs(Number(v)) / 100
+                              setTrailingTakeProfitActivate(next)
+                              // 联动: 回撤不能超过启动值
+                              if (next != null && trailingTakeProfitDrawdown != null && trailingTakeProfitDrawdown > next) {
+                                setTrailingTakeProfitDrawdown(next)
+                              }
+                            }}
+                            step={0.5} min={1} max={200}
+                            placeholder="空=不启用"
+                            className="w-16 h-6 px-1.5 rounded bg-base border border-border text-[11px] font-mono text-foreground text-center focus:outline-none focus:border-accent/50" />
+                          <span className="text-[10px] text-muted">%</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] text-secondary w-20 shrink-0">止盈回撤</span>
+                          <input
+                            type="number"
+                            value={trailingTakeProfitDrawdown == null ? '' : String(Math.abs(Number(trailingTakeProfitDrawdown)) * 100)}
+                            onChange={e => {
+                              const v = e.target.value
+                              setTrailingTakeProfitDrawdown(v === '' ? null : Math.abs(Number(v)) / 100)
+                            }}
+                            step={0.5} min={0.5} max={50}
+                            placeholder="空=不启用"
+                            className="w-16 h-6 px-1.5 rounded bg-base border border-border text-[11px] font-mono text-foreground text-center focus:outline-none focus:border-accent/50" />
+                          <span className="text-[10px] text-muted">%</span>
                         </div>
                         <div className="flex items-center gap-1.5">
                           <span className="text-[11px] text-secondary w-12 shrink-0">持有</span>
