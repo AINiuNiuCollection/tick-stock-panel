@@ -56,6 +56,7 @@ import {
   PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
+  Notebook,
 } from 'lucide-react'
 import { Logo } from './Logo'
 import { api, type CapabilityMatrix, type IndexQuote } from '@/lib/api'
@@ -103,6 +104,7 @@ const nav = [
   { to: '/signals',    label: '信号库',   icon: Zap },
   { to: '/review',      label: '复盘',   icon: BookOpenCheck },
   { to: '/indices', label: '指数', icon: BarChart3 },
+  { to: '/memo',       label: '备忘录', icon: Notebook },
   { to: '/data',       label: '数据',   icon: Database },
 ] as const
 
