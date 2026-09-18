@@ -77,3 +77,75 @@ body {
   -moz-osx-font-smoothing: auto;
   text-rendering: optimizeLegibility;
 }
+
+/* === 备忘录富文本编辑器 === */
+.memo-content-editor:empty::before {
+  content: attr(data-placeholder);
+  color: hsl(var(--fg-muted));
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.memo-content-editor:focus {
+  outline: none;
+}
+
+/* 行线背景 (类似笔记本横线) */
+.memo-ruled-lines {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 27px,
+    hsl(var(--border)) 27px,
+    hsl(var(--border)) 28px
+  );
+  background-attachment: local;
+  padding-bottom: 4px;
+  line-height: 28px !important;
+}
+
+/* 编辑器内容样式 */
+.memo-content-editor ul {
+  list-style: disc;
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+.memo-content-editor ol {
+  list-style: decimal;
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+.memo-content-editor li {
+  margin: 0.25em 0;
+}
+
+.memo-content-editor hr {
+  border: none;
+  border-top: 1px solid hsl(var(--border));
+  margin: 1em 0;
+}
+
+/* 卡片内容预览样式 */
+.memo-content-preview {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.memo-content-preview ul,
+.memo-content-preview ol {
+  list-style: disc;
+  padding-left: 1.2em;
+  margin: 0.2em 0;
+}
+
+.memo-content-preview ol {
+  list-style: decimal;
+}
+
+.memo-content-preview img {
+  max-width: 100%;
+}
