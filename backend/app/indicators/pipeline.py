@@ -1652,7 +1652,7 @@ def run_pipeline(data_dir: Path | None = None,
                         existing = pl.read_parquet(out)
                         existing = existing.filter(~pl.col("symbol").is_in(list(sym_set)))
                         date_df_storage = pl.concat([existing, date_df_storage], how="diagonal_relaxed")
-                    date_df_storage = date_df_storage.sort(["symbol"])
+                    date_df_storage = date_df_storage.unique(subset=["symbol", "date"], keep="last").sort(["symbol"])
                     publication.write_parquet(date_df_storage, out)
                     written += date_df.height
                 logger.info("除权重算: %d 只, 共写入 %d 行", len(sym_set), written)
@@ -1766,7 +1766,7 @@ def run_pipeline(data_dir: Path | None = None,
                             existing = pl.read_parquet(out)
                             existing = existing.filter(~pl.col("symbol").is_in(batch_syms))
                             date_df_storage = pl.concat([existing, date_df_storage], how="diagonal_relaxed")
-                        date_df_storage = date_df_storage.sort(["symbol"])
+                        date_df_storage = date_df_storage.unique(subset=["symbol", "date"], keep="last").sort(["symbol"])
                         publication.write_parquet(date_df_storage, out)
                         written += date_df_storage.height
                 else:
@@ -1826,7 +1826,10 @@ def run_pipeline(data_dir: Path | None = None,
                     ds_str = ds.isoformat() if hasattr(ds, "isoformat") else str(ds)
                     out = base / f"date={ds_str}" / "part.parquet"
                     out.parent.mkdir(parents=True, exist_ok=True)
-                    publication.write_parquet(date_df.sort(["symbol"]), out)
+                    publication.write_parquet(
+                        date_df.unique(subset=["symbol", "date"], keep="last").sort(["symbol"]),
+                        out,
+                    )
             gc.collect()
             logger.info("全量暂存合并完成: %d 个日期分区", len(unique_dates))
     finally:

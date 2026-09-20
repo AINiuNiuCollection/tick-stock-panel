@@ -34,6 +34,7 @@ import {
   HelpCircle,
   Star,
   Link2,
+  Eye,
 } from 'lucide-react'
 import { api, type MemoEntry, type MemoType } from '@/lib/api'
 import { PageHeader } from '@/components/PageHeader'
@@ -184,6 +185,16 @@ export function Memo() {
   const closeEditor = useCallback(() => {
     setShowEditor(false)
     setEditing(null)
+  }, [])
+
+  const [viewedMemo, setViewedMemo] = useState<MemoEntry | null>(null)
+
+  const showMemoContent = useCallback((item: MemoEntry) => {
+    setViewedMemo(item)
+  }, [])
+
+  const hideMemoContent = useCallback(() => {
+    setViewedMemo(null)
   }, [])
 
   const toggleSelect = useCallback((id: string) => {
@@ -370,6 +381,7 @@ export function Memo() {
                     onDelete={() => deleteMut.mutate(item.id)}
                     onTogglePin={() => pinMut.mutate({ id: item.id, pinned: !item.pinned })}
                     onToggleTodo={() => toggleTodoDone(item)}
+                    onView={() => showMemoContent(item)}
                   />
                 ))}
               </AnimatePresence>
@@ -377,6 +389,57 @@ export function Memo() {
           )}
         </div>
       </div>
+
+      {/* 查看备忘录模态框 */}
+      {viewedMemo && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[105] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            className="bg-surface rounded-2xl border border-border p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold text-foreground">
+                {viewedMemo.title || '备忘录内容'}
+              </h3>
+              <button
+                onClick={hideMemoContent}
+                className="p-1.5 rounded-lg text-muted hover:bg-elevated hover:text-foreground transition-colors"
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div
+              className="text-sm text-foreground leading-relaxed memo-content-preview"
+              style={{ overflow: 'visible', display: 'block', WebkitLineClamp: 'unset', WebkitBoxOrient: 'unset' }}
+              dangerouslySetInnerHTML={{ __html: stripDangerousHtml(viewedMemo.content) }}
+            />
+
+            <div className="mt-4 flex items-center justify-between">
+              <span className="text-[10px] text-muted">
+                创建于 {(viewedMemo.created_at || '').slice(0, 16).replace('T', ' ')}
+              </span>
+              <div className="flex items-center gap-2">
+                {viewedMemo.tags.map(tag => (
+                  <span
+                    key={tag}
+                    className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-elevated text-muted"
+                  >
+                    #{tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* 全屏编辑器 */}
       <AnimatePresence>
@@ -459,9 +522,10 @@ interface CardProps {
   onDelete: () => void
   onTogglePin: () => void
   onToggleTodo: () => void
+  onView: () => void
 }
 
-function MemoCard({ item, selected, symbolNameMap, onToggleSelect, onEdit, onDelete, onTogglePin, onToggleTodo }: CardProps) {
+function MemoCard({ item, selected, symbolNameMap, onToggleSelect, onEdit, onDelete, onTogglePin, onToggleTodo, onView }: CardProps) {
   const meta = TYPE_META[item.type] ?? TYPE_META.note
   const Icon = meta.icon
   const isTodo = item.type === 'todo'
@@ -498,34 +562,43 @@ function MemoCard({ item, selected, symbolNameMap, onToggleSelect, onEdit, onDel
         </div>
 
         <div className="flex-1 min-w-0">
-          {/* 标签行 */}
-          <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
-            {item.pinned && (
-              <Pin className="h-3 w-3 text-amber-500 fill-amber-500 shrink-0" />
-            )}
-            {item.title && (
-              <span className="text-sm font-semibold text-foreground truncate max-w-[300px]">
-                {item.title}
-              </span>
-            )}
-            {item.tags.map(tag => (
-              <span
-                key={tag}
-                className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-elevated text-muted"
-              >
-                #{tag}
-              </span>
-            ))}
-            {item.related_symbol?.map(sym => (
-              <span key={sym} className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-blue-50 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400">
-                {sym}{symbolNameMap[sym] ? ` ${symbolNameMap[sym]}` : ''}
-              </span>
-            ))}
-            {item.related_strategy?.map(strat => (
-              <span key={strat} className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400">
-                {strat}
-              </span>
-            ))}
+          {/* 标签行 + 查看按钮 */}
+          <div className="flex items-center justify-between gap-1.5 flex-wrap mb-0.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {item.pinned && (
+                <Pin className="h-3 w-3 text-amber-500 fill-amber-500 shrink-0" />
+              )}
+              {item.title && (
+                <span className="text-sm font-semibold text-foreground truncate max-w-[300px]">
+                  {item.title}
+                </span>
+              )}
+              {item.tags.map(tag => (
+                <span
+                  key={tag}
+                  className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-elevated text-muted"
+                >
+                  #{tag}
+                </span>
+              ))}
+              {item.related_symbol?.map(sym => (
+                <span key={sym} className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-blue-50 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400">
+                  {sym}{symbolNameMap[sym] ? ` ${symbolNameMap[sym]}` : ''}
+                </span>
+              ))}
+              {item.related_strategy?.map(strat => (
+                <span key={strat} className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400">
+                  {strat}
+                </span>
+              ))}
+            </div>
+            <button
+              onClick={onView}
+              className="p-1.5 rounded hover:bg-elevated text-muted hover:text-accent transition-colors shrink-0"
+              title="查看备忘录"
+            >
+              <Eye className="h-3.5 w-3.5" />
+            </button>
           </div>
           {/* 正文 HTML */}
           <div

@@ -31,7 +31,7 @@ from app.strategy.scoring import (
 )
 from app.services.ndjson_heartbeat import with_heartbeat
 
-router = APIRouter(prefix="/api/strategies", tags=["strategies"])
+router = APIRouter(prefix="/api/screener", tags=["screener"])
 logger = logging.getLogger(__name__)
 
 # ── Helpers ──────────────────────────────────────────────────────────
