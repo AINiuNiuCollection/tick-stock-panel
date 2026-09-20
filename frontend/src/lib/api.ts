@@ -4140,3 +4140,19 @@ export interface AnalysisMenu {
   updated_at?: string | null
   builtin?: boolean
 }
+
+// ===== Memo types =====
+export type MemoType = 'note' | 'bug' | 'param' | 'idea' | 'todo' | 'insight'
+
+export interface MemoEntry {
+  id: string
+  title: string
+  content: string
+  tags: string[]
+  type: MemoType
+  pinned: boolean
+  related_symbol?: string[]
+  related_strategy?: string[]
+  created_at: string
+  updated_at: string
+}
