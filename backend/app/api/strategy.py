@@ -207,10 +207,11 @@ def _strategy_detail(
         "exit_signals": overrides.get("exit_signals", s.exit_signals) if overrides else s.exit_signals,
         "minute_exit_trigger_supported_signals": sorted(MINUTE_EXIT_TRIGGER_SIGNALS),
         "stop_loss": overrides.get("stop_loss", s.stop_loss) if overrides else s.stop_loss,
-        "take_profit": getattr(s, "take_profit", None),
-        "trailing_stop": getattr(s, "trailing_stop", None),
-        "trailing_take_profit_activate": getattr(s, "trailing_take_profit_activate", None),
-        "trailing_take_profit_drawdown": getattr(s, "trailing_take_profit_drawdown", None),
+        "take_profit": overrides.get("take_profit", getattr(s, "take_profit", None)) if overrides else getattr(s, "take_profit", None),
+        # 移动止损/回撤止盈: 优先读用户保存的 overrides, 回退到策略模块常量
+        "trailing_stop": overrides.get("trailing_stop", getattr(s, "trailing_stop", None)) if overrides else getattr(s, "trailing_stop", None),
+        "trailing_take_profit_activate": overrides.get("trailing_take_profit_activate", getattr(s, "trailing_take_profit_activate", None)) if overrides else getattr(s, "trailing_take_profit_activate", None),
+        "trailing_take_profit_drawdown": overrides.get("trailing_take_profit_drawdown", getattr(s, "trailing_take_profit_drawdown", None)) if overrides else getattr(s, "trailing_take_profit_drawdown", None),
         "max_hold_days": overrides.get("max_hold_days", s.max_hold_days) if overrides else s.max_hold_days,
         "cooldown_loss_streak": overrides.get("cooldown_loss_streak", s.cooldown_loss_streak) if overrides else s.cooldown_loss_streak,
         "cooldown_days": overrides.get("cooldown_days", s.cooldown_days) if overrides else s.cooldown_days,
@@ -921,11 +922,11 @@ async def build_strategy_stream(req: BuildRequest, request: Request):
     async def event_generator():
         gen = AIStrategyGenerator()
         chunks: list[str] = []
-        yield json.dumps({"type": "meta", "strategy_id": req.strategy_id, "step": req.step}, ensure_ascii=False)
+        yield json.dumps({"type": "meta", "strategy_id": req.strategy_id, "step": req.step}, ensure_ascii=False) + "\n"
         try:
             async for chunk in gen.stream(prompt):
                 chunks.append(chunk)
-                yield json.dumps({"type": "delta", "content": chunk}, ensure_ascii=False)
+                yield json.dumps({"type": "delta", "content": chunk}, ensure_ascii=False) + "\n"
             result = gen.validate_code("".join(chunks))
             if gen.needs_structural_repair(result):
                 result = await gen.repair_code(result["code"], result["error"])
@@ -933,20 +934,14 @@ async def build_strategy_stream(req: BuildRequest, request: Request):
                 result = _normalize_build_result(result, req.strategy_id, req.name, req.description)
             elif req.strategy_id:
                 result = _normalize_build_result(result, req.strategy_id)
-            yield json.dumps({"type": "result", **result}, ensure_ascii=False)
+            yield json.dumps({"type": "result", **result}, ensure_ascii=False) + "\n"
         except RuntimeError as e:
-            yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)
+            yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n"
         except Exception as e:
-            yield json.dumps({"type": "error", "message": f"AI生成失败: {e}"}, ensure_ascii=False)
-
-    # 与复盘/个股/财务/轮动的流式端点同口径: 事件行不带换行, 由外层统一补换行。
-    # with_heartbeat 插入的 ping 行本身不带换行, 事件行若自带换行, ping 会与下一行粘成一行。
-    async def stream_gen():
-        async for line in with_heartbeat(event_generator()):
-            yield line + "\n"
+            yield json.dumps({"type": "error", "message": f"AI生成失败: {e}"}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(
-        stream_gen(),
+        with_heartbeat(event_generator()),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
