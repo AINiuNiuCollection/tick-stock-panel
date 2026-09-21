@@ -540,6 +540,134 @@ function PluginKeyConfig({ plugin }: { plugin: PluginDataSourceItem }) {
   )
 }
 
+/** 插件配置表单 (非 API Key 类, 如本地数据路径)。
+ *  先探后存: 后端调用插件的 probe_config 验证, 无效不落盘; preferences.json 存储。 */
+function PluginConfigForm({ plugin }: { plugin: PluginDataSourceItem }) {
+  const qc = useQueryClient()
+  const [saved, setSaved] = useState(false)
+
+  // 加载当前配置
+  const configQuery = useQuery({
+    queryKey: ['plugin-config', plugin.name],
+    queryFn: () => api.getPluginConfig(plugin.name),
+    staleTime: 30_000,
+  })
+
+  // 本地表单状态, 初始化为已保存的值或字段默认值
+  const fields = plugin.config_fields ?? []
+  const currentConfig = configQuery.data?.config ?? {}
+  const [formValues, setFormValues] = useState<Record<string, string>>({})
+
+  // 当 query 加载完成后同步初始值
+  const [initialized, setInitialized] = useState(false)
+  if (!initialized && configQuery.data) {
+    const init: Record<string, string> = {}
+    for (const f of fields) {
+      init[f.key] = String(currentConfig[f.key] ?? f.default ?? '')
+    }
+    setFormValues(init)
+    setInitialized(true)
+  }
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: QK.dataSources })
+    qc.invalidateQueries({ queryKey: QK.capabilityMatrix })
+    qc.invalidateQueries({ queryKey: QK.capabilities })
+    qc.invalidateQueries({ queryKey: ['plugin-config', plugin.name] })
+  }
+
+  const save = useMutation({
+    mutationFn: () => api.savePluginConfig(plugin.name, formValues),
+    onSuccess: (data) => {
+      invalidate()
+      if (data.ok) {
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+      }
+    },
+    onError: (e: Error) => toast(`保存失败: ${e.message}`, 'error'),
+  })
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2">
+        <Save className="h-3.5 w-3.5 text-secondary" />
+        <h3 className="text-xs font-medium text-foreground">配置</h3>
+      </div>
+
+      <p className="text-xs text-secondary leading-relaxed mb-4">
+        {plugin.install_hint}
+      </p>
+
+      {/* 当前状态 */}
+      <div className="flex items-center gap-2 mb-4">
+        {plugin.available ? (
+          <>
+            <CheckCircle2 className="h-4 w-4 text-bear shrink-0" />
+            <span className="text-sm font-medium shrink-0">已配置</span>
+          </>
+        ) : (
+          <>
+            <AlertCircle className="h-4 w-4 text-muted shrink-0" />
+            <span className="text-sm font-medium text-muted shrink-0">未配置</span>
+            <span className="text-xs text-muted/70 truncate" title={plugin.status}>{plugin.status}</span>
+          </>
+        )}
+      </div>
+
+      {/* 表单 */}
+      <form
+        onSubmit={(e) => { e.preventDefault(); save.mutate() }}
+        className="space-y-3"
+      >
+        {fields.map((f) => (
+          <div key={f.key}>
+            <label className="block text-[10px] uppercase tracking-widest text-muted mb-1">
+              {f.label}
+              {f.required && <span className="text-danger ml-0.5">*</span>}
+            </label>
+            <input
+              type="text"
+              placeholder={f.help || ''}
+              value={formValues[f.key] ?? ''}
+              onChange={(e) => {
+                setFormValues((prev) => ({ ...prev, [f.key]: e.target.value }))
+                if (saved) setSaved(false)
+              }}
+              autoComplete="off"
+              className="w-full px-3 py-2 rounded-input bg-base border border-border text-sm focus:outline-none focus:border-accent transition-colors duration-150 ease-smooth"
+            />
+            {f.help && (
+              <p className="mt-1 text-[10px] text-muted/60 leading-relaxed">{f.help}</p>
+            )}
+          </div>
+        ))}
+        <button
+          type="submit"
+          disabled={save.isPending}
+          className="w-full h-9 rounded-xl bg-accent text-white text-sm font-semibold flex items-center justify-center gap-2 hover:bg-accent/90 disabled:opacity-40 transition-all"
+        >
+          {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+          {save.isPending ? '验证中...' : saved ? '已保存' : '保存并检测'}
+        </button>
+      </form>
+
+      {/* 验证失败提示 */}
+      {save.data && !save.data.ok && (
+        <div className="mt-3 text-xs text-danger flex items-center gap-1.5">
+          <AlertCircle className="h-3 w-3 shrink-0" />
+          {save.data.error || '配置无效,未保存'}
+        </div>
+      )}
+      {save.isError && (
+        <div className="mt-3 text-xs text-danger">
+          保存失败:{String((save.error as Error).message)}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** 能力芯片: 三态 — 服务中(高亮+勾) / 已适配(灰) / 档位锁定(锁, 仅 TickFlow) */
 function CapabilityChips({ caps, servingSet, isTickFlow }: {
   caps: CapabilityRoute[]
@@ -780,8 +908,8 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
               <div
                 key={item.name}
                 onClick={() => {
-                  // 未就绪插件仅当支持界面配 Key 时可点开(进详情配置); 其余不可选
-                  if (pluginUnavailable && !plugin?.api_key_env) return
+                  // 未就绪插件仅当支持界面配置(Key 或 config_fields)时可点开; 其余不可选
+                  if (pluginUnavailable && !plugin?.api_key_env && !(plugin?.config_fields?.length)) return
                   setSelected(item.name)
                   // 只有用户自定义源 (YAML) 才进编辑器; tickflow 和插件不可编辑
                   if (customNames.has(item.name)) {
@@ -789,7 +917,7 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
                   }
                 }}
                 className={`relative text-left rounded-lg border px-3.5 py-3 transition-all ${
-                  pluginUnavailable && !plugin?.api_key_env
+                  pluginUnavailable && !plugin?.api_key_env && !(plugin?.config_fields?.length)
                     ? 'border-border/40 bg-elevated/10 opacity-70'
                     : isSelected
                       ? 'border-accent/50 bg-accent/5 ring-1 ring-accent/20 cursor-pointer'
@@ -1038,8 +1166,8 @@ function PluginDetail({ plugin, isActive, matrixCaps, servingSet }: {
       {/* 主体: 操作 + Key 配置 (左) | 能力适配表 (右), 布局对齐 TickFlow 详情 */}
       <div className="mt-5 pt-5 border-t border-border grid grid-cols-1 lg:grid-cols-[1fr_1.15fr] gap-6 items-start">
         <div className="min-w-0">
-          {/* 独立状态行仅用于无 Key 配置区的插件; 有 Key 区时「状态」行已展示, 避免重复 */}
-          {!plugin.available && !plugin.api_key_env && (
+          {/* 独立状态行仅用于无 Key/配置区的插件; 有配置区时「状态」行已展示, 避免重复 */}
+          {!plugin.available && !plugin.api_key_env && !(plugin.config_fields?.length) && (
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted">{plugin.status}</span>
             </div>
@@ -1049,6 +1177,13 @@ function PluginDetail({ plugin, isActive, matrixCaps, servingSet }: {
           {plugin.api_key_env && (
             <div className={plugin.available ? 'mt-4' : ''}>
               <PluginKeyConfig plugin={plugin} />
+            </div>
+          )}
+
+          {/* 非Key配置表单 (声明了 config_fields 的插件, 如本地数据路径) */}
+          {plugin.config_fields && plugin.config_fields.length > 0 && (
+            <div className={plugin.available ? 'mt-4' : ''}>
+              <PluginConfigForm plugin={plugin} />
             </div>
           )}
         </div>
