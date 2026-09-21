@@ -578,6 +578,7 @@ def _register_one_plugin(manifest: dict) -> None:
         "homepage": manifest.get("homepage", ""),
         "api_key_env": manifest.get("api_key_env", ""),
         "api_key_masked": _plugin_key_masked(name, manifest.get("api_key_env", "")),
+        "config_fields": list(manifest.get("config_fields", []) or []),
     }
     if not available:
         return  # 依赖没装: 不注册, 但状态已记录供 UI 显示
