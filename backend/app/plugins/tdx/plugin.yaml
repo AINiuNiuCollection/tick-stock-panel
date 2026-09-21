@@ -1,0 +1,24 @@
+# 通达信本地数据插件 — 解析盘后下载的 .day/.lc1/.lc5 二进制文件及 gbbq 除权除息。
+# 纯 Python 标准库实现 (runtime: none), 无额外依赖。
+# 需在设置页配置通达信 vipdoc 目录路径 (config_fields), 未配置时插件灰显不可切换。
+
+name: tdx
+display_name: "通达信本地数据"
+runtime: none
+entry: app.plugins.tdx.provider:TdxProvider
+check: app.plugins.tdx.provider:availability
+datasets: [daily, minute, adj_factor]
+description: "解析通达信盘后下载的本地二进制数据。日线(.day: 32字节/记录, 价格×100整数存储)、分钟线(.lc1 1分钟/.lc5 5分钟: 32字节/记录, float32价格)、除权除息(gbbq: 送转/分红/配股→单事件比值 ex_factor)。数据为 T+1 盘后快照,不含实时行情。symbol 从文件名推导交易所后缀,日K返回不复权原始价(前复权由本地 adj_factor + enriched 管道处理),volume 统一转手(股÷100),分钟 datetime 为北京墙钟 naive。"
+install_hint: "在下方配置通达信 vipdoc 目录路径(通达信安装目录下的 vipdoc 文件夹,如 D:/new_tdx/vipdoc)"
+config_fields:
+  - key: vipdoc_dir
+    label: "通达信 vipdoc 目录"
+    type: path
+    required: true
+    help: "通达信安装目录下的 vipdoc 文件夹,如 D:/new_tdx/vipdoc"
+  - key: gbbq_path
+    label: "gbbq 文件路径(可选)"
+    type: path
+    required: false
+    default: ""
+    help: "股本变更权息文件,留空则自动取 {vipdoc_dir}/../T0002/hq_cache/gbbq"
