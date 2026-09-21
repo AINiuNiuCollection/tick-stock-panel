@@ -1107,3 +1107,36 @@ def set_financial_sync_time(table: str, iso_ts: str) -> None:
     times = get_financial_sync_times()
     times[table] = iso_ts
     save({"financial_sync_times": times})
+
+
+# ===== 插件配置 (非敏感, 如本地数据路径) =====
+# 存储格式: { "plugin_config": { "<plugin_name>": { "key": value, ... }, ... } }
+# 与 secrets_store 区分: secrets 存敏感 Key (0600), plugin_config 存非敏感路径配置。
+
+def get_plugin_config(plugin_name: str) -> dict:
+    """读取指定插件的配置字典。未配置返回空 dict。"""
+    all_configs = load().get("plugin_config", {}) or {}
+    return all_configs.get(plugin_name, {}) or {}
+
+
+def set_plugin_config(plugin_name: str, config: dict) -> dict:
+    """保存指定插件的配置(合并写入, 不清除其他插件配置)。
+
+    对 config 内的 key 做白名单过滤: 只保留字符串/数字/布尔等 JSON 原生类型。
+    """
+    import json
+    # 确保值都是 JSON 可序列化的原生类型
+    clean = {}
+    for k, v in (config or {}).items():
+        if v is None or isinstance(v, (str, int, float, bool)):
+            clean[k] = v
+        else:
+            try:
+                json.dumps(v)
+                clean[k] = v
+            except (TypeError, ValueError):
+                pass
+    all_configs = load().get("plugin_config", {}) or {}
+    all_configs[plugin_name] = clean
+    save({"plugin_config": all_configs})
+    return clean
