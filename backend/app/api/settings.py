@@ -1940,3 +1940,84 @@ def update_review_push(req: ReviewPushIn) -> dict:
     if req.mode is not None:
         mode = preferences.set_review_push_mode(req.mode)
     return {"review_push_channels": saved, "review_push_mode": mode}
+
+
+# ============================================================
+# 插件配置 (非 API Key 类, 如本地数据路径)
+# ============================================================
+
+class PluginConfigIn(BaseModel):
+    """插件配置保存请求体。
+
+    config 为任意 key-value 字典, 值限 JSON 原生类型 (str/int/float/bool)。
+    保存前会调用插件的 probe_config (如存在) 先探后存。
+    """
+    plugin: str
+    config: dict
+
+
+@router.get("/plugin-config/{name}")
+def get_plugin_config(name: str) -> dict:
+    """读取指定插件的配置(非敏感, 如本地数据路径)。"""
+    from app.data_providers import custom as custom_sources
+
+    manifest = custom_sources.plugin_manifest(name)
+    if manifest is None or not custom_sources.is_builtin(name):
+        raise HTTPException(status_code=404, detail=f"插件 '{name}' 不存在")
+    from app.services import preferences
+    return {
+        "ok": True,
+        "plugin": name,
+        "config": preferences.get_plugin_config(name),
+        "config_fields": manifest.get("config_fields", []),
+    }
+
+
+@router.post("/plugin-config")
+def save_plugin_config(req: PluginConfigIn) -> dict:
+    """保存插件配置(先探后存, 对齐 /plugin-key 语义)。
+
+    流程: 调用插件的 probe_config(如有) 验证配置 → 有效才写 preferences.json
+    → load_all 重扫, 插件即刻变为可切换。
+    """
+    import importlib
+
+    from app.data_providers import custom as custom_sources
+    from app.services import preferences
+
+    name = req.plugin.strip().lower()
+    manifest = custom_sources.plugin_manifest(name)
+    if manifest is None or not custom_sources.is_builtin(name):
+        raise HTTPException(status_code=404, detail=f"插件 '{name}' 不存在")
+    if not manifest.get("config_fields"):
+        raise HTTPException(status_code=400, detail=f"插件 '{name}' 不支持界面配置")
+
+    # 先探后存: 如果插件提供了 probe_config 函数, 调用验证
+    check_ref = manifest.get("check", "")
+    if check_ref and ":" in check_ref:
+        # 从 check 路径推导 provider 模块路径, 尝试调用 probe_config
+        module_path = check_ref.split(":")[0]
+        try:
+            mod = importlib.import_module(module_path)
+            probe_fn = getattr(mod, "probe_config", None)
+            if callable(probe_fn):
+                ok, message = probe_fn(req.config)
+                if not ok:
+                    return {"ok": False, "reason": "invalid", "error": message}
+        except Exception as e:
+            logger.warning("插件 %s probe_config 调用失败: %s", name, e)
+            # 探测失败不阻止保存(允许用户先存路径再安装通达信)
+
+    # 保存配置
+    saved = preferences.set_plugin_config(name, req.config)
+    # 重扫插件状态
+    custom_sources.load_all()
+    status = next((p for p in custom_sources.list_plugins() if p["name"] == name), None)
+    return {
+        "ok": True,
+        "plugin_name": name,
+        "config": saved,
+        "plugin_available": bool(status and status.get("available")),
+        "plugin": status,
+    }
+
