@@ -35,12 +35,18 @@ import {
   Star,
   Link2,
   Eye,
+  Clock,
+  RefreshCw,
+  CandlestickChart,
+  Image as ImageIcon,
 } from 'lucide-react'
 import { api, type MemoEntry, type MemoType } from '@/lib/api'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { cn } from '@/lib/cn'
 import { toast } from '@/components/Toast'
+import { KChartDialog, type KChartData } from '@/components/memo/KChartDialog'
+import { parseKChartFromSvg } from '@/components/memo/kchart-svg'
 
 // ---- 类型元数据 ----
 const TYPE_META: Record<MemoType, { label: string; icon: typeof Bug; color: string; bg: string }> = {
@@ -188,6 +194,7 @@ export function Memo() {
   }, [])
 
   const [viewedMemo, setViewedMemo] = useState<MemoEntry | null>(null)
+  const { handleContainerClick: handleDetailImgClick, lightbox: detailImgLightbox } = useImageLightbox()
 
   const showMemoContent = useCallback((item: MemoEntry) => {
     setViewedMemo(item)
@@ -399,33 +406,39 @@ export function Memo() {
           className="fixed inset-0 z-[105] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
         >
           <div
-            className="bg-surface rounded-2xl border border-border p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl"
+            className="bg-surface rounded-2xl border border-border max-w-2xl w-full max-h-[90vh] overflow-hidden shadow-2xl flex flex-col"
             role="dialog"
             aria-modal="true"
           >
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xl font-semibold text-foreground">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+              <h3 className="text-xl font-semibold text-foreground truncate">
                 {viewedMemo.title || '备忘录内容'}
               </h3>
               <button
                 onClick={hideMemoContent}
-                className="p-1.5 rounded-lg text-muted hover:bg-elevated hover:text-foreground transition-colors"
+                className="p-1.5 rounded-lg text-muted hover:bg-elevated hover:text-foreground transition-colors shrink-0 ml-4"
                 aria-label="关闭"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
+            <div className="overflow-y-auto px-6 py-4 flex-1">
+
             <div
               className="text-sm text-foreground leading-relaxed memo-content-preview"
               style={{ overflow: 'visible', display: 'block', WebkitLineClamp: 'unset', WebkitBoxOrient: 'unset' }}
               dangerouslySetInnerHTML={{ __html: stripDangerousHtml(viewedMemo.content) }}
+              onClick={handleDetailImgClick}
             />
 
             <div className="mt-4 flex items-center justify-between">
-              <span className="text-[10px] text-muted">
-                创建于 {(viewedMemo.created_at || '').slice(0, 16).replace('T', ' ')}
-              </span>
+              <div className="flex items-center gap-3 text-[10px] text-muted">
+                <span>创建于 {(viewedMemo.created_at || '').slice(0, 16).replace('T', ' ')}</span>
+                {viewedMemo.updated_at && viewedMemo.updated_at !== viewedMemo.created_at && (
+                  <span>更新于 {(viewedMemo.updated_at || '').slice(0, 16).replace('T', ' ')}</span>
+                )}
+              </div>
               <div className="flex items-center gap-2">
                 {viewedMemo.tags.map(tag => (
                   <span
@@ -436,6 +449,7 @@ export function Memo() {
                   </span>
                 ))}
               </div>
+            </div>
             </div>
           </div>
         </motion.div>
@@ -459,6 +473,9 @@ export function Memo() {
           />
         )}
       </AnimatePresence>
+
+      {/* 详情页图片放大弹窗 */}
+      {detailImgLightbox}
 
       {/* 批量删除确认对话框 */}
       <AnimatePresence>
@@ -531,6 +548,8 @@ function MemoCard({ item, selected, symbolNameMap, onToggleSelect, onEdit, onDel
   const isTodo = item.type === 'todo'
   const isDone = isTodo && item.content.startsWith('~~')
   const timeStr = (item.created_at || '').slice(5, 16).replace('T', ' ')
+  const updatedStr = (item.updated_at || '').slice(5, 16).replace('T', ' ')
+  const hasUpdate = item.updated_at && item.updated_at !== item.created_at
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   return (
@@ -609,11 +628,20 @@ function MemoCard({ item, selected, symbolNameMap, onToggleSelect, onEdit, onDel
             dangerouslySetInnerHTML={{ __html: stripDangerousHtml(item.content) }}
           />
           <div className="flex items-center gap-2 mt-1">
-            <span className="text-[10px] text-muted">{timeStr}</span>
+            <span className="inline-flex items-center gap-0.5 text-[10px] text-muted">
+              <Clock className="h-2.5 w-2.5" />
+              {timeStr}
+            </span>
+            {hasUpdate && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] text-muted/70">
+                <RefreshCw className="h-2.5 w-2.5" />
+                {updatedStr}
+              </span>
+            )}
           </div>
         </div>
 
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+        <div className="flex items-center gap-0.5 transition-opacity shrink-0">
           {isTodo && (
             <button
               onClick={onToggleTodo}
@@ -714,6 +742,69 @@ function stripDangerousHtml(html: string): string {
     .replace(/javascript:/gi, '')
 }
 
+// ---- 图片放大查看 (Lightbox) ----
+
+/** 图片放大弹窗 */
+function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-sm flex items-center justify-center p-8"
+        onClick={onClose}
+      >
+        <img
+          src={src}
+          alt={alt}
+          className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        />
+      </div>
+      <button
+        onClick={onClose}
+        className="fixed top-4 right-4 z-[201] p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+        title="关闭 (Esc)"
+      >
+        <X className="h-5 w-5" />
+      </button>
+    </>
+  )
+}
+
+/** 图片点击委托: 监听容器内 img[data-memo-img] 的点击, 弹出放大弹窗 */
+function useImageLightbox() {
+  const [lightboxImg, setLightboxImg] = useState<{ src: string; alt: string } | null>(null)
+
+  const handleContainerClick = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (target.tagName === 'IMG' && target.getAttribute('data-memo-img')) {
+      e.preventDefault()
+      e.stopPropagation()
+      setLightboxImg({
+        src: (target as HTMLImageElement).src,
+        alt: target.getAttribute('alt') || '',
+      })
+    }
+  }, [])
+
+  const lightbox = lightboxImg ? (
+    <ImageLightbox
+      src={lightboxImg.src}
+      alt={lightboxImg.alt}
+      onClose={() => setLightboxImg(null)}
+    />
+  ) : null
+
+  return { handleContainerClick, lightbox }
+}
+
 // ---- 全屏沉浸式富文本编辑器 ----
 interface EditorProps {
   editing: MemoEntry | null
@@ -738,14 +829,19 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
   const [relatedStrategy, setRelatedStrategy] = useState<string[]>(editing?.related_strategy ?? [])
   const [showTags, setShowTags] = useState(false)
   const [showLink, setShowLink] = useState(false)
-  const [showRuled, setShowRuled] = useState(false)
+  const [showRuled, setShowRuled] = useState(true)
   const [showHighlightPicker, setShowHighlightPicker] = useState(false)
   const [showMarkers, setShowMarkers] = useState(false)
+  const [fmtState, setFmtState] = useState<{ bold: boolean; highlight: boolean }>({ bold: false, highlight: false })
+  const [showKChart, setShowKChart] = useState(false)
+  const [editingKChart, setEditingKChart] = useState<{ data: KChartData; element: HTMLElement } | null>(null)
+  const { handleContainerClick: handleImgClick, lightbox: imgLightbox } = useImageLightbox()
 
   const editorRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
   const contentRef = useRef<string>('')
   const initRef = useRef(false)
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   // 关注列表 & 策略列表
   const { data: watchlistData } = useQuery({
@@ -793,6 +889,47 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, type, tags, relatedSymbol, relatedStrategy])
 
+  // 追踪选区格式状态 (加粗/底色等高亮)
+  useEffect(() => {
+    const updateFmt = () => {
+      const sel = window.getSelection()
+      if (!sel || sel.rangeCount === 0) return
+      const range = sel.getRangeAt(0)
+      if (!editorRef.current?.contains(range.commonAncestorContainer)) {
+        // 选区不在编辑器内, 清除高亮
+        setFmtState({ bold: false, highlight: false })
+        return
+      }
+      try {
+        // 检测当前选区是否有底色:
+        // queryCommandValue('backColor') 在 Chrome 会返回编辑器容器的 computed background-color,
+        // 而非 execCommand 设置的 inline style, 导致加粗后误判为有底色。
+        // 正确做法: 遍历选区祖先链, 只检查 inline style 中的 background-color。
+        let hasHighlight = false
+        let node: Node | null = sel.anchorNode
+        while (node && node !== editorRef.current) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const el = node as HTMLElement
+            const bg = el.style.backgroundColor
+            if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
+              hasHighlight = true
+              break
+            }
+          }
+          node = node.parentNode
+        }
+        setFmtState({
+          bold: document.queryCommandState('bold'),
+          highlight: hasHighlight,
+        })
+      } catch {
+        // queryCommandState 可能在某些浏览器抛异常
+      }
+    }
+    document.addEventListener('selectionchange', updateFmt)
+    return () => document.removeEventListener('selectionchange', updateFmt)
+  }, [])
+
   const extractTags = useCallback((text: string): string[] => {
     const matches = text.match(/#([\u4e00-\u9fa5a-zA-Z0-9_]+)/g) || []
     return [...new Set(matches.map(m => m.slice(1)))]
@@ -829,6 +966,9 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
     if (editorRef.current) {
       contentRef.current = editorRef.current.innerHTML
     }
+    // execCommand 后 selectionchange 可能不触发 (选区没动, 只有 DOM 变了)
+    // 手动派发事件让 updateFmt 重新检测格式状态
+    document.dispatchEvent(new Event('selectionchange'))
   }, [])
 
   const handleBold = () => execCmd('bold')
@@ -841,17 +981,121 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
 
   const handleHighlight = (color: string) => {
     if (color === 'transparent') {
-      execCmd('removeFormat')
+      // 不使用 execCommand 移除底色:
+      // Chrome 中 execCommand('backColor', 'transparent') 会在外层包一个 transparent span,
+      // 内层带色的 span 不受影响, 背景色仍然可见。
+      // 改为直接遍历 DOM 清除 inline background-color。
+      editorRef.current?.focus()
+      const sel = window.getSelection()
+      if (!sel || !editorRef.current) {
+        setShowHighlightPicker(false)
+        return
+      }
+
+      if (sel.isCollapsed) {
+        // 光标折叠态: 从锚点向上遍历祖先, 清除第一个带 inline bg 的元素
+        let node: Node | null = sel.anchorNode
+        while (node && node !== editorRef.current) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const el = node as HTMLElement
+            if (el.style.backgroundColor) {
+              el.style.backgroundColor = ''
+              break
+            }
+          }
+          node = node.parentNode
+        }
+      } else if (sel.rangeCount > 0) {
+        // 选区展开态: 清除选区内所有元素的 inline background-color
+        const range = sel.getRangeAt(0)
+        if (editorRef.current.contains(range.commonAncestorContainer)) {
+          const root = (range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+            ? range.commonAncestorContainer.parentElement
+            : range.commonAncestorContainer) as HTMLElement
+          // 检查 root 自身
+          if (root && root !== editorRef.current && root.style.backgroundColor) {
+            root.style.backgroundColor = ''
+          }
+          // 检查所有后代元素
+          if (root) {
+            const elements = root.querySelectorAll('*')
+            elements.forEach((el) => {
+              const htmlEl = el as HTMLElement
+              if (htmlEl.style.backgroundColor && range.intersectsNode(htmlEl)) {
+                htmlEl.style.backgroundColor = ''
+              }
+            })
+          }
+        }
+      }
+
+      if (editorRef.current) {
+        contentRef.current = editorRef.current.innerHTML
+      }
+      // 手动更新格式状态
+      setFmtState(prev => ({ ...prev, highlight: false }))
+      // 派发 selectionchange 让 updateFmt 重新检测
+      document.dispatchEvent(new Event('selectionchange'))
     } else {
+      // hiliteColor 在 Firefox 生效, backColor 在 Chrome 生效
       execCmd('hiliteColor', color)
+      execCmd('backColor', color)
     }
     setShowHighlightPicker(false)
+  }
+
+  // ---- 插入图片 ----
+  const handleInsertImage = () => {
+    imageInputRef.current?.click()
+  }
+
+  const handleImageSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    // 限制 2MB
+    if (file.size > 2 * 1024 * 1024) {
+      toast('图片大小不能超过 2MB')
+      e.target.value = ''
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      editorRef.current?.focus()
+      // 插入缩略图: 小方块, 点击放大查看
+      const imgHtml = `<img src="${dataUrl}" alt="${file.name}" data-memo-img="1" style="width:120px;height:120px;object-fit:cover;border-radius:8px;margin:0.5em 0.25em;cursor:pointer;border:1px solid hsl(var(--border));vertical-align:middle;" title="点击放大查看" />`
+      document.execCommand('insertHTML', false, imgHtml)
+      if (editorRef.current) {
+        contentRef.current = editorRef.current.innerHTML
+      }
+    }
+    reader.readAsDataURL(file)
+    // 清空 input 以便重复选择同一文件
+    e.target.value = ''
   }
 
   // 插入 OneNote 风格标记
   const handleInsertMarker = (html: string) => {
     execCmd('insertHTML', html)
     setShowMarkers(false)
+  }
+
+  // 插入手绘 K 线图
+  const handleInsertKChart = (svg: string) => {
+    execCmd('insertHTML', svg)
+  }
+
+  // 双击已插入的 K 线图重新编辑
+  const handleKChartDoubleClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    const svgEl = target.closest('svg[data-kchart]') as HTMLElement | null
+    if (!svgEl) return
+    e.preventDefault()
+    const data = parseKChartFromSvg(svgEl)
+    if (data) {
+      setEditingKChart({ data, element: svgEl })
+      setShowKChart(true)
+    }
   }
 
   const meta = TYPE_META[type]
@@ -941,8 +1185,8 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
           </div>
 
           {/* 富文本工具栏 */}
-          <div className="flex items-center gap-0.5 px-4 py-1.5 border-b border-border shrink-0 bg-muted/20 overflow-x-auto">
-            <ToolbarBtn onClick={handleBold} title="加粗 (Ctrl+B)">
+          <div className="flex items-center gap-0.5 px-4 py-1.5 border-b border-border shrink-0 bg-muted/20 flex-wrap">
+            <ToolbarBtn onClick={handleBold} title="加粗 (Ctrl+B)" active={fmtState.bold}>
               <Bold className="h-4 w-4" />
             </ToolbarBtn>
 
@@ -951,7 +1195,7 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
               <ToolbarBtn
                 onClick={() => setShowHighlightPicker(s => !s)}
                 title="文字底色"
-                active={showHighlightPicker}
+                active={showHighlightPicker || fmtState.highlight}
               >
                 <Highlighter className="h-4 w-4" />
               </ToolbarBtn>
@@ -1018,6 +1262,19 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
                 )}
               </AnimatePresence>
             </div>
+
+            <ToolbarDivider />
+
+            <ToolbarBtn
+              onClick={() => { setEditingKChart(null); setShowKChart(true) }}
+              title="插入手绘 K 线图"
+            >
+              <CandlestickChart className="h-4 w-4" />
+            </ToolbarBtn>
+
+            <ToolbarBtn onClick={handleInsertImage} title="插入图片 (最大 2MB)">
+              <ImageIcon className="h-4 w-4" />
+            </ToolbarBtn>
 
             <ToolbarDivider />
 
@@ -1090,11 +1347,21 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
                   contentRef.current = editorRef.current.innerHTML
                 }
               }}
+              onDoubleClick={handleKChartDoubleClick}
+              onClick={handleImgClick}
               className={cn(
                 'w-full min-h-[40vh] text-base leading-relaxed bg-transparent text-foreground focus:outline-none cursor-text',
                 'memo-content-editor',
                 showRuled && 'memo-ruled-lines',
               )}
+            />
+            {/* 隐藏的图片上传 input */}
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+              onChange={handleImageSelected}
+              className="hidden"
             />
           </div>
 
@@ -1172,6 +1439,31 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
           </div>
         </div>
       </motion.div>
+
+      {/* 手绘 K 线图对话框 */}
+      <AnimatePresence>
+        {showKChart && (
+          <KChartDialog
+            initialData={editingKChart?.data}
+            onClose={() => { setShowKChart(false); setEditingKChart(null) }}
+            onInsert={(svg) => {
+              if (editingKChart?.element) {
+                // 编辑模式: 替换原有 SVG
+                editingKChart.element.outerHTML = svg
+                if (editorRef.current) {
+                  contentRef.current = editorRef.current.innerHTML
+                }
+              } else {
+                // 新建模式: 插入
+                handleInsertKChart(svg)
+              }
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* 图片放大弹窗 */}
+      {imgLightbox}
     </>
   )
 }
@@ -1196,7 +1488,7 @@ function ToolbarBtn({
       className={cn(
         'p-1.5 rounded-md transition-colors',
         active
-          ? 'bg-accent/15 text-accent'
+          ? 'bg-accent text-white shadow-sm'
           : 'text-muted hover:bg-elevated hover:text-foreground',
       )}
     >
