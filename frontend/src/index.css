@@ -127,6 +127,55 @@ body {
   margin: 1em 0;
 }
 
+/* 手绘 K 线图样式 */
+.memo-content-editor svg[data-kchart] {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.5em 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* 编辑器内普通图片 */
+.memo-content-editor img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  margin: 0.5em 0;
+}
+
+/* 编辑器内缩略图 (data-memo-img): 保持小方块, 不被 max-width 拉伸 */
+.memo-content-editor img[data-memo-img] {
+  width: 120px;
+  height: 120px;
+  max-width: 120px;
+  object-fit: cover;
+  border-radius: 8px;
+  margin: 0.5em 0.25em;
+  cursor: pointer;
+  border: 1px solid hsl(var(--border));
+  vertical-align: middle;
+}
+
+/* 预览模式缩略图 */
+.memo-content-preview img[data-memo-img] {
+  width: 80px;
+  height: 80px;
+  max-width: 80px;
+  object-fit: cover;
+  border-radius: 6px;
+  margin: 0.25em;
+  cursor: pointer;
+  border: 1px solid hsl(var(--border));
+  vertical-align: middle;
+}
+
+.memo-content-preview svg[data-kchart] {
+  max-width: 100%;
+  height: auto;
+}
+
 /* 卡片内容预览样式 */
 .memo-content-preview {
   overflow: hidden;
