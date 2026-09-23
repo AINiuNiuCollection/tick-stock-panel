@@ -195,6 +195,7 @@ export function Memo() {
 
   const [viewedMemo, setViewedMemo] = useState<MemoEntry | null>(null)
   const { handleContainerClick: handleDetailImgClick, lightbox: detailImgLightbox } = useImageLightbox()
+  const [detailLightboxSrc, setDetailLightboxSrc] = useState<{ src: string; alt: string } | null>(null)
 
   const showMemoContent = useCallback((item: MemoEntry) => {
     setViewedMemo(item)
@@ -432,6 +433,25 @@ export function Memo() {
               onClick={handleDetailImgClick}
             />
 
+            {/* 详情页图片附件缩略图栏 */}
+            {extractImagesFromContent(viewedMemo.content).length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border">
+                {extractImagesFromContent(viewedMemo.content).map((img, i) => (
+                  <div
+                    key={i}
+                    className="cursor-pointer"
+                    onClick={() => setDetailLightboxSrc({ src: img.src, alt: img.alt })}
+                  >
+                    <img
+                      src={img.src}
+                      alt={img.alt}
+                      className="w-20 h-20 object-cover rounded-lg border border-border"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="mt-4 flex items-center justify-between">
               <div className="flex items-center gap-3 text-[10px] text-muted">
                 <span>创建于 {(viewedMemo.created_at || '').slice(0, 16).replace('T', ' ')}</span>
@@ -476,6 +496,13 @@ export function Memo() {
 
       {/* 详情页图片放大弹窗 */}
       {detailImgLightbox}
+      {detailLightboxSrc && (
+        <ImageLightbox
+          src={detailLightboxSrc.src}
+          alt={detailLightboxSrc.alt}
+          onClose={() => setDetailLightboxSrc(null)}
+        />
+      )}
 
       {/* 批量删除确认对话框 */}
       <AnimatePresence>
@@ -805,6 +832,22 @@ function useImageLightbox() {
   return { handleContainerClick, lightbox }
 }
 
+/** 从 content HTML 中提取 data-memo-images 容器内的图片 */
+function extractImagesFromContent(html: string): { src: string; alt: string }[] {
+  try {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(html, 'text/html')
+    const container = doc.querySelector('div[data-memo-images]')
+    if (!container) return []
+    return Array.from(container.querySelectorAll('img[data-memo-img]')).map(img => ({
+      src: img.getAttribute('src') || '',
+      alt: img.getAttribute('alt') || '',
+    })).filter(img => img.src)
+  } catch {
+    return []
+  }
+}
+
 // ---- 全屏沉浸式富文本编辑器 ----
 interface EditorProps {
   editing: MemoEntry | null
@@ -835,7 +878,8 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
   const [fmtState, setFmtState] = useState<{ bold: boolean; highlight: boolean }>({ bold: false, highlight: false })
   const [showKChart, setShowKChart] = useState(false)
   const [editingKChart, setEditingKChart] = useState<{ data: KChartData; element: HTMLElement } | null>(null)
-  const { handleContainerClick: handleImgClick, lightbox: imgLightbox } = useImageLightbox()
+  const [imgVersion, setImgVersion] = useState(0)
+  const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null)
 
   const editorRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
@@ -1061,18 +1105,56 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
     const reader = new FileReader()
     reader.onload = () => {
       const dataUrl = reader.result as string
-      editorRef.current?.focus()
-      // 插入缩略图: 小方块, 点击放大查看
-      const imgHtml = `<img src="${dataUrl}" alt="${file.name}" data-memo-img="1" style="width:120px;height:120px;object-fit:cover;border-radius:8px;margin:0.5em 0.25em;cursor:pointer;border:1px solid hsl(var(--border));vertical-align:middle;" title="点击放大查看" />`
-      document.execCommand('insertHTML', false, imgHtml)
-      if (editorRef.current) {
-        contentRef.current = editorRef.current.innerHTML
+      const el = editorRef.current
+      if (!el) return
+      // 查找或创建隐藏的图片容器
+      let imgContainer = el.querySelector<HTMLDivElement>('div[data-memo-images]')
+      if (!imgContainer) {
+        imgContainer = document.createElement('div')
+        imgContainer.setAttribute('data-memo-images', '1')
+        imgContainer.style.display = 'none'
+        el.appendChild(imgContainer)
       }
+      // 在容器中追加 img 标签
+      const img = document.createElement('img')
+      img.src = dataUrl
+      img.setAttribute('data-memo-img', '1')
+      img.setAttribute('alt', file.name)
+      imgContainer.appendChild(img)
+      contentRef.current = el.innerHTML
+      // 触发重新渲染缩略图栏
+      setImgVersion(v => v + 1)
     }
     reader.readAsDataURL(file)
-    // 清空 input 以便重复选择同一文件
     e.target.value = ''
   }
+
+  // 删除编辑器中的图片
+  const handleDeleteImage = (index: number) => {
+    const el = editorRef.current
+    if (!el) return
+    const imgContainer = el.querySelector<HTMLDivElement>('div[data-memo-images]')
+    if (!imgContainer) return
+    const imgs = imgContainer.querySelectorAll('img[data-memo-img]')
+    if (imgs[index]) {
+      imgs[index].remove()
+      contentRef.current = el.innerHTML
+      setImgVersion(v => v + 1)
+    }
+  }
+
+  // 从编辑器隐藏容器中提取图片列表
+  const editorImages = useMemo(() => {
+    const el = editorRef.current
+    if (!el) return []
+    const imgContainer = el.querySelector<HTMLDivElement>('div[data-memo-images]')
+    if (!imgContainer) return []
+    return Array.from(imgContainer.querySelectorAll<HTMLImageElement>('img[data-memo-img]')).map(img => ({
+      src: img.src,
+      alt: img.getAttribute('alt') || '',
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imgVersion])
 
   // 插入 OneNote 风格标记
   const handleInsertMarker = (html: string) => {
@@ -1348,13 +1430,45 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
                 }
               }}
               onDoubleClick={handleKChartDoubleClick}
-              onClick={handleImgClick}
               className={cn(
                 'w-full min-h-[40vh] text-base leading-relaxed bg-transparent text-foreground focus:outline-none cursor-text',
                 'memo-content-editor',
                 showRuled && 'memo-ruled-lines',
               )}
             />
+
+            {/* 图片附件缩略图栏 */}
+            {editorImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border">
+                {editorImages.map((img, i) => (
+                  <div
+                    key={i}
+                    className="relative group"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setLightboxSrc({ src: img.src, alt: img.alt })
+                    }}
+                  >
+                    <img
+                      src={img.src}
+                      alt={img.alt}
+                      className="w-20 h-20 object-cover rounded-lg border border-border cursor-pointer"
+                    />
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeleteImage(i)
+                      }}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-destructive text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                      title="删除图片"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* 隐藏的图片上传 input */}
             <input
               ref={imageInputRef}
@@ -1463,7 +1577,13 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
       </AnimatePresence>
 
       {/* 图片放大弹窗 */}
-      {imgLightbox}
+      {lightboxSrc && (
+        <ImageLightbox
+          src={lightboxSrc.src}
+          alt={lightboxSrc.alt}
+          onClose={() => setLightboxSrc(null)}
+        />
+      )}
     </>
   )
 }
