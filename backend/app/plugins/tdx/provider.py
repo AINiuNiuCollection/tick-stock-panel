@@ -245,6 +245,7 @@ class TdxProvider:
         start_time: date | str | None = None,
         end_time: date | str | None = None,
         asset_type: str = "stock",
+        on_chunk_done: Callable[[pl.DataFrame], None] | None = None,
     ) -> pl.DataFrame:
         """读取 gbbq + 日K前收盘 → 单事件比值 ex_factor。
 
@@ -316,6 +317,8 @@ class TdxProvider:
         result = normalize_adj_factors(ex_factor_df, source="tdx")
         if asset_type and "asset_type" not in result.columns:
             result = result.with_columns(pl.lit(asset_type).alias("asset_type"))
+        if on_chunk_done:
+            on_chunk_done(result)
         return result
 
     # ============================================================
