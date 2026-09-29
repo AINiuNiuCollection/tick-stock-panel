@@ -182,3 +182,103 @@ body {
 .memo-content-preview img {
   max-width: 100%;
 }
+
+/* === 知识库内容渲染 === */
+.knowledge-content h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 1.2em 0 0.5em;
+  color: hsl(var(--fg-primary));
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.knowledge-content h3 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin: 1em 0 0.4em;
+  color: hsl(var(--fg-primary));
+}
+
+.knowledge-content p {
+  margin: 0.5em 0;
+}
+
+.knowledge-content ul,
+.knowledge-content ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.knowledge-content ul {
+  list-style: disc;
+}
+
+.knowledge-content ol {
+  list-style: decimal;
+}
+
+.knowledge-content li {
+  margin: 0.25em 0;
+}
+
+.knowledge-content strong {
+  font-weight: 600;
+  color: hsl(var(--fg-primary));
+}
+
+.knowledge-content code {
+  font-family: theme('fontFamily.mono');
+  font-size: 0.85em;
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  background: hsl(var(--elevated));
+}
+
+.knowledge-content blockquote {
+  margin: 0.8em 0;
+  padding: 0.5em 1em;
+  border-left: 3px solid hsl(var(--accent));
+  background: hsl(var(--accent) / 0.05);
+  border-radius: 0 4px 4px 0;
+}
+
+.knowledge-content blockquote p {
+  margin: 0.2em 0;
+  color: hsl(var(--fg-secondary));
+}
+
+.knowledge-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.8125rem;
+}
+
+.knowledge-content th {
+  text-align: left;
+  padding: 0.4em 0.6em;
+  border-bottom: 2px solid hsl(var(--border));
+  font-weight: 600;
+  color: hsl(var(--fg-primary));
+  background: hsl(var(--elevated) / 0.5);
+}
+
+.knowledge-content td {
+  padding: 0.4em 0.6em;
+  border-bottom: 1px solid hsl(var(--border));
+  color: hsl(var(--fg-secondary));
+}
+
+.knowledge-content tr:hover td {
+  background: hsl(var(--elevated) / 0.3);
+}
+
+.knowledge-content svg {
+  max-width: 100%;
+  height: auto;
+  margin: 0.8em 0;
+  border-radius: 6px;
+  border: 1px solid hsl(var(--border) / 0.5);
+}
+
