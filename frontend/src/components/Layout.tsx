@@ -105,6 +105,7 @@ const nav = [
   { to: '/review',      label: '复盘',   icon: BookOpenCheck },
   { to: '/indices', label: '指数', icon: BarChart3 },
   { to: '/memo',       label: '备忘录', icon: Notebook },
+  { to: '/knowledge',  label: '知识库', icon: BookOpenCheck },
   { to: '/data',       label: '数据',   icon: Database },
 ] as const
 
