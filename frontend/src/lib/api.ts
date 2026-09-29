@@ -3912,9 +3912,33 @@ export const api = {
     request<{ tag: string; count: number }[]>('/api/memo/tags'),
   exportMemos: (year: number, month: number) =>
     request<{ content: string }>(`/api/memo/export?year=${year}&month=${month}`),
+
+  // ===== Knowledge (知识库) =====
+  listKnowledge: (params?: { category?: string; q?: string; limit?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.category) qs.set('category', params.category)
+    if (params?.q) qs.set('q', params.q)
+    if (params?.limit != null) qs.set('limit', String(params.limit))
+    const s = qs.toString()
+    return request<{ items: KnowledgeEntry[]; total: number }>(`/api/knowledge${s ? `?${s}` : ''}`)
+  },
+  getKnowledge: (id: string) =>
+    request<KnowledgeEntry>(`/api/knowledge/${id}`),
+  getKnowledgeCategories: () =>
+    request<{ category: string; label: string; count: number }[]>('/api/knowledge/categories'),
 }
 
-// ===== Pipeline =====
+// ===== Knowledge types =====
+export type KnowledgeCategory = 'basics' | 'indicators' | 'patterns' | 'strategies' | 'risk' | 'terms' | 'macro'
+
+export interface KnowledgeEntry {
+  id: string
+  category: KnowledgeCategory
+  title: string
+  summary: string
+  content: string
+  tags: string[]
+}
 export interface PipelineJob {
   id: string
   status: 'pending' | 'running' | 'succeeded' | 'failed'
