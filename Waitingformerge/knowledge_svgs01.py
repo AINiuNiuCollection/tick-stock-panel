@@ -1,3 +1,5 @@
+D:\CodeHub\github-tick-stock\tick-stock-panel\backend\app\services
+
 """知识库 SVG 插图生成模块。
 
 每个函数返回一个自包含的 SVG 字符串，嵌入知识库条目的 Markdown 内容中。
