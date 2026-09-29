@@ -10,8 +10,7 @@
 - d < 今天 且 时刻 ≥ d 15:00 → 尾盘定版 (close_final) → 完整
 - batch 权威行中仅夹杂少量零成交实时行 → 停牌残留 → 忽略
 - d == 今天         → 实时更新中, 属正常, 不校验
-- 分区缺失的工作日  → 缺口 (工作日近似; 节假日误报的代价是一次空范围拉取,
-  merge-upsert 空写, 无害)
+- 分区缺失的工作日  → 缺口 (已排除 A 股法定节假日, 避免休市日误报为停机缺口)
 
 检测成本: 每分区只读 parquet 元数据 statistics (不解压数据页), 实测 ~0.5ms/分区。
 """
@@ -166,13 +165,39 @@ def _partition_is_snapshot(day: date, part_dir: Path, quote_ts_max_ms: int | Non
 
 
 def _candidate_days(today: date, lookback_days: int) -> list[date]:
-    """最近 lookback_days 自然日内、严格早于今天的工作日 (节假日近似, 误报无害)。"""
+    """最近 lookback_days 自然日内、严格早于今天的工作日 (排除 A 股节假日)。"""
     days: list[date] = []
     for offset in range(1, lookback_days + 1):
         d = today - timedelta(days=offset)
-        if d.weekday() < 5:
+        if d.weekday() < 5 and d not in _CN_HOLIDAYS:
             days.append(d)
     return sorted(days)
+
+
+# A 股休市节假日 (非周末的法定假日)。
+# 每年元旦/春节/清明/劳动节/端午/中秋/国庆的具体安排由国务院发布, 这里按
+# 公告收录; 调休周末补班不影响此集合 (只关心"本该交易日但市场休市"的日期)。
+_CN_HOLIDAYS: set[date] = {
+    # 2026
+    date(2026, 1, 1),                     # 元旦
+    date(2026, 2, 16), date(2026, 2, 17), date(2026, 2, 18),  # 春节 (周一~周三)
+    date(2026, 2, 19), date(2026, 2, 20), date(2026, 2, 23), date(2026, 2, 24),  # 春节调休
+    date(2026, 4, 6),                     # 清明
+    date(2026, 5, 1),                     # 劳动节
+    date(2026, 6, 19),                    # 端午
+    date(2026, 9, 25),                    # 中秋
+    date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7), date(2026, 10, 8),  # 国庆
+    # 2025
+    date(2025, 1, 1),                     # 元旦
+    date(2025, 1, 28), date(2025, 1, 29), date(2025, 1, 30), date(2025, 1, 31),  # 春节
+    date(2025, 2, 3),                     # 春节
+    date(2025, 4, 4),                     # 清明
+    date(2025, 5, 1), date(2025, 5, 2),   # 劳动节
+    date(2025, 5, 5),                     # 劳动节
+    date(2025, 5, 31), date(2025, 6, 2),  # 端午
+    date(2025, 10, 1), date(2025, 10, 2), date(2025, 10, 3), date(2025, 10, 6), date(2025, 10, 7), date(2025, 10, 8),  # 国庆
+    date(2025, 10, 9),                    # 国庆调休
+}
 
 
 def scan_recent_integrity(
