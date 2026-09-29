@@ -39,6 +39,7 @@ const Regime = lazy(() => import('./pages/Regime').then(m => ({ default: m.Regim
 const AbnormalMoves = lazy(() => import('./pages/AbnormalMoves').then(m => ({ default: m.AbnormalMoves })))
 const Dev = lazy(() => import('./pages/Dev').then(m => ({ default: m.Dev })))
 const Memo = lazy(() => import('./pages/Memo').then(m => ({ default: m.Memo })))
+const Knowledge = lazy(() => import('./pages/Knowledge').then(m => ({ default: m.Knowledge })))
 
 const CORE_ROUTE_PATHS = new Set([
   '/',
@@ -68,6 +69,7 @@ const CORE_ROUTE_PATHS = new Set([
   '/settings',
   '/dev',
   '/memo',
+  '/knowledge',
   '/settings/keys',
   '/settings/ai',
   '/settings/queries',
@@ -154,6 +156,7 @@ export const router = createBrowserRouter([
       // 隐藏路由：开发者工具（不暴露在菜单，仅供调试）
       { path: 'dev', element: <Dev /> },
       { path: 'memo', element: <Memo /> },
+      { path: 'knowledge', element: <Knowledge /> },
       // 旧路由兼容重定向
       { path: 'settings/keys', element: <Navigate to="/settings?tab=data-sources" replace /> },
       { path: 'settings/ai', element: <Navigate to="/settings?tab=ai" replace /> },
