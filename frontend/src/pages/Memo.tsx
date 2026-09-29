@@ -910,6 +910,8 @@ function MemoEditor({ editing, onClose, onSave }: EditorProps) {
         el.innerHTML = initialContent
       }
       contentRef.current = initialContent
+      // 触发 editorImages 重算，使编辑已有备忘时图片缩略图栏正确显示
+      setImgVersion(v => v + 1)
     }
     // 延迟聚焦标题，避免动画期间焦点丢失
     const t = setTimeout(() => titleRef.current?.focus(), 100)
