@@ -22,6 +22,7 @@ from app.api import (
     factors,
     financials,
     indices,
+    knowledge,
     intraday,
     kline,
     lots,
@@ -491,6 +492,7 @@ app.include_router(financials.router)
 app.include_router(stock_analysis.router)
 app.include_router(market_recap.router)
 app.include_router(memo.router)
+app.include_router(knowledge.router)
 app.include_router(settings_api.router)
 app.include_router(strategy.router)
 app.include_router(signals.router)
