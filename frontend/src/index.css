@@ -184,24 +184,43 @@ body {
 }
 
 /* === 知识库内容渲染 === */
+.knowledge-content h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 1.5em 0 0.6em;
+  color: hsl(var(--fg-primary));
+  padding-bottom: 0.3em;
+  border-bottom: 2px solid hsl(var(--border));
+}
+
 .knowledge-content h2 {
-  font-size: 1rem;
+  font-size: 1.0625rem;
   font-weight: 600;
-  margin: 1.2em 0 0.5em;
+  margin: 1.4em 0 0.5em;
   color: hsl(var(--fg-primary));
   padding-bottom: 0.3em;
   border-bottom: 1px solid hsl(var(--border));
+  scroll-margin-top: 1rem;
 }
 
 .knowledge-content h3 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin: 1.1em 0 0.4em;
+  color: hsl(var(--fg-primary));
+  scroll-margin-top: 1rem;
+}
+
+.knowledge-content h4 {
   font-size: 0.875rem;
   font-weight: 600;
-  margin: 1em 0 0.4em;
+  margin: 0.9em 0 0.3em;
   color: hsl(var(--fg-primary));
 }
 
 .knowledge-content p {
   margin: 0.5em 0;
+  line-height: 1.8;
 }
 
 .knowledge-content ul,
@@ -220,6 +239,7 @@ body {
 
 .knowledge-content li {
   margin: 0.25em 0;
+  line-height: 1.7;
 }
 
 .knowledge-content strong {
@@ -235,17 +255,42 @@ body {
   background: hsl(var(--elevated));
 }
 
+.knowledge-content pre {
+  margin: 1em 0;
+  padding: 0.8em 1em;
+  background: hsl(var(--elevated) / 0.6);
+  border: 1px solid hsl(var(--border) / 0.5);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.knowledge-content pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  white-space: pre;
+}
+
+.knowledge-content hr {
+  margin: 1.5em 0;
+  border: none;
+  border-top: 1px solid hsl(var(--border));
+}
+
 .knowledge-content blockquote {
   margin: 0.8em 0;
-  padding: 0.5em 1em;
+  padding: 0.6em 1em;
   border-left: 3px solid hsl(var(--accent));
   background: hsl(var(--accent) / 0.05);
   border-radius: 0 4px 4px 0;
 }
 
 .knowledge-content blockquote p {
-  margin: 0.2em 0;
+  margin: 0.25em 0;
   color: hsl(var(--fg-secondary));
+  line-height: 1.7;
 }
 
 .knowledge-content table {
@@ -268,6 +313,7 @@ body {
   padding: 0.4em 0.6em;
   border-bottom: 1px solid hsl(var(--border));
   color: hsl(var(--fg-secondary));
+  line-height: 1.6;
 }
 
 .knowledge-content tr:hover td {
