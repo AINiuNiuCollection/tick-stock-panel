@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -14,6 +14,7 @@ import {
   Tag,
   X,
   Globe,
+  Library,
 } from 'lucide-react'
 import { api, type KnowledgeEntry, type KnowledgeCategory } from '@/lib/api'
 import { PageHeader } from '@/components/PageHeader'
@@ -32,9 +33,10 @@ const CATEGORY_META: Record<
   risk:       { label: '风控原则', icon: Shield,            color: 'text-red-500',     bg: 'bg-red-50 dark:bg-red-950/40' },
   terms:      { label: '术语词典', icon: BookMarked,        color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-950/40' },
   macro:      { label: '宏观经济', icon: Globe,             color: 'text-teal-500',    bg: 'bg-teal-50 dark:bg-teal-950/40' },
+  books:      { label: '书籍',     icon: Library,           color: 'text-purple-500',  bg: 'bg-purple-50 dark:bg-purple-950/40' },
 }
 
-const ALL_CATEGORIES: KnowledgeCategory[] = ['basics', 'indicators', 'patterns', 'strategies', 'risk', 'terms', 'macro']
+const ALL_CATEGORIES: KnowledgeCategory[] = ['basics', 'indicators', 'patterns', 'strategies', 'risk', 'terms', 'macro', 'books']
 
 // ---- 轻量 Markdown → HTML 渲染器 ----
 function renderMarkdown(md: string): string {
@@ -52,6 +54,8 @@ function renderMarkdown(md: string): string {
   let tableHeaderParsed = false
   let inList: 'ul' | 'ol' | null = null
   let inBlockquote = false
+  let inCode = false
+  let codeLang = ''
 
   const closeList = () => {
     if (inList) {
@@ -85,6 +89,30 @@ function renderMarkdown(md: string): string {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
 
+    // 代码块围栏 ``` 开启/关闭
+    if (line.trim().startsWith('```')) {
+      if (!inCode) {
+        closeList()
+        closeBlockquote()
+        closeTable()
+        inCode = true
+        codeLang = line.trim().slice(3).trim()
+        html.push(`<pre><code${codeLang ? ` class="language-${codeLang}"` : ''}>`)
+        continue
+      } else {
+        html.push('</code></pre>')
+        inCode = false
+        codeLang = ''
+        continue
+      }
+    }
+
+    // 代码块内容 — 原样输出, 不做行内转义
+    if (inCode) {
+      html.push(line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n')
+      continue
+    }
+
     // 空行
     if (line.trim() === '') {
       closeList()
@@ -99,6 +127,15 @@ function renderMarkdown(md: string): string {
       closeBlockquote()
       closeTable()
       html.push(svgBlocks[parseInt(svgMatch[1], 10)])
+      continue
+    }
+
+    // 水平线 ---
+    if (/^---+$/.test(line.trim()) && !line.includes('|')) {
+      closeList()
+      closeBlockquote()
+      closeTable()
+      html.push('<hr />')
       continue
     }
 
@@ -133,25 +170,33 @@ function renderMarkdown(md: string): string {
       closeTable()
     }
 
-    // 引用
-    if (line.startsWith('> ')) {
+    // 引用 (支持 > 和 > 连续行)
+    if (line.startsWith('>')) {
       if (inList) closeList()
       if (!inBlockquote) {
         html.push('<blockquote>')
         inBlockquote = true
       }
-      html.push(`<p>${inline(line.slice(2))}</p>`)
+      const content = line.replace(/^>\s?/, '')
+      if (content.trim() === '') {
+        html.push('<p>&nbsp;</p>')
+      } else {
+        html.push(`<p>${inline(content)}</p>`)
+      }
       continue
     } else {
       closeBlockquote()
     }
 
-    // 标题
-    const headingMatch = line.match(/^(#{2,3})\s+(.+)$/)
+    // 标题 H1~H4
+    const headingMatch = line.match(/^(#{1,4})\s+(.+)$/)
     if (headingMatch) {
       closeList()
       const level = headingMatch[1].length
-      html.push(`<h${level}>${inline(headingMatch[2])}</h${level}>`)
+      const text = headingMatch[2].trim()
+      // 为 H2/H3 生成 id 用于目录跳转
+      const slug = text.replace(/[^\u4e00-\u9fa5a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase()
+      html.push(`<h${level}${slug ? ` id="${slug}"` : ''}>${inline(text)}</h${level}>`)
       continue
     }
 
@@ -185,6 +230,7 @@ function renderMarkdown(md: string): string {
   closeList()
   closeBlockquote()
   closeTable()
+  if (inCode) html.push('</code></pre>')
 
   return html.join('')
 }
@@ -244,7 +290,7 @@ export function Knowledge() {
       <PageHeader
         title="知识库"
         subtitle={
-          <span>{total} 条 · 金融常识 · 技术指标 · 战法字典</span>
+          <span>{total} 条 · 金融常识 · 技术指标 · 战法 · 书籍</span>
         }
         right={
           <div className="relative">
@@ -351,7 +397,7 @@ export function Knowledge() {
         </aside>
 
         {/* 右侧内容区 */}
-        <div className="flex-1 overflow-y-auto px-5 py-4">
+        <div className={cn('flex-1 overflow-hidden', selectedEntry ? '' : 'overflow-y-auto px-5 py-4')}>
           {isLoading ? (
             <div className="h-full grid place-items-center text-sm text-muted">加载中...</div>
           ) : selectedEntry ? (
@@ -379,54 +425,113 @@ export function Knowledge() {
 function KnowledgeDetail({ entry, onClose }: { entry: KnowledgeEntry; onClose: () => void }) {
   const meta = CATEGORY_META[entry.category]
   const Icon = meta.icon
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [tocItems, setTocItems] = useState<{ id: string; text: string; level: number }[]>([])
+
+  const isLongContent = entry.content.length > 5000
+
+  // 渲染后提取 H2/H3 目录
+  useEffect(() => {
+    if (!isLongContent || !contentRef.current) {
+      setTocItems([])
+      return
+    }
+    const headings = contentRef.current.querySelectorAll('h2, h3')
+    const items: { id: string; text: string; level: number }[] = []
+    headings.forEach(h => {
+      const id = h.getAttribute('id')
+      if (id) {
+        items.push({ id, text: h.textContent || '', level: h.tagName === 'H2' ? 2 : 3 })
+      }
+    })
+    setTocItems(items)
+  }, [entry.id, entry.content, isLongContent])
+
+  const scrollToHeading = useCallback((id: string) => {
+    const el = document.getElementById(id)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [])
 
   return (
-    <div className="max-w-4xl mx-auto">
-      {/* 面包屑 + 关闭 */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-1.5 text-xs text-muted">
-          <span className={cn('inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]', meta.bg, meta.color)}>
-            <Icon className="h-3 w-3" />
-            {meta.label}
-          </span>
-          <ChevronRight className="h-3 w-3" />
-          <span className="text-foreground font-medium">{entry.title}</span>
-        </div>
-        <button
-          onClick={onClose}
-          className="p-1 rounded-md text-muted hover:bg-elevated hover:text-foreground transition-colors"
-          title="返回列表"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      {/* 标题 */}
-      <h1 className="text-xl font-semibold text-foreground mb-2">{entry.title}</h1>
-
-      {/* 摘要 */}
-      <p className="text-sm text-secondary mb-3 leading-relaxed">{entry.summary}</p>
-
-      {/* 标签 */}
-      {entry.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mb-4">
-          {entry.tags.map(tag => (
-            <span
-              key={tag}
-              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-elevated text-muted"
-            >
-              <Tag className="h-2.5 w-2.5" />
-              {tag}
-            </span>
-          ))}
-        </div>
+    <div className="flex h-full">
+      {/* 目录侧栏 (长文章) */}
+      {isLongContent && tocItems.length > 3 && (
+        <aside className="w-48 shrink-0 border-r border-border overflow-y-auto py-3 px-2 sticky top-0 h-full">
+          <div className="text-[10px] font-medium text-muted uppercase tracking-wider px-2 mb-1.5">目录</div>
+          <nav className="space-y-0.5">
+            {tocItems.map(item => (
+              <button
+                key={item.id}
+                onClick={() => scrollToHeading(item.id)}
+                className={cn(
+                  'block w-full text-left text-[11px] rounded transition-colors hover:bg-elevated hover:text-foreground truncate',
+                  item.level === 2 ? 'px-2 py-1 text-secondary font-medium' : 'pl-4 pr-2 py-0.5 text-muted',
+                )}
+                title={item.text}
+              >
+                {item.text}
+              </button>
+            ))}
+          </nav>
+        </aside>
       )}
 
-      {/* 正文 */}
-      <div
-        className="knowledge-content text-sm text-foreground leading-relaxed"
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.content) }}
-      />
+      {/* 正文区域 */}
+      <div className="flex-1 overflow-y-auto">
+        <div className={cn('mx-auto px-5 py-4', isLongContent ? 'max-w-3xl' : 'max-w-4xl')}>
+          {/* 面包屑 + 关闭 */}
+          <div className="flex items-center justify-between mb-3 sticky top-0 bg-surface/80 backdrop-blur-sm py-1 z-10">
+            <div className="flex items-center gap-1.5 text-xs text-muted min-w-0">
+              <span className={cn('inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] shrink-0', meta.bg, meta.color)}>
+                <Icon className="h-3 w-3" />
+                {meta.label}
+              </span>
+              <ChevronRight className="h-3 w-3 shrink-0" />
+              <span className="text-foreground font-medium truncate">{entry.title}</span>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1 rounded-md text-muted hover:bg-elevated hover:text-foreground transition-colors shrink-0 ml-2"
+              title="返回列表"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          {/* 标题 */}
+          <h1 className="text-xl font-semibold text-foreground mb-2">{entry.title}</h1>
+
+          {/* 摘要 */}
+          <p className="text-sm text-secondary mb-3 leading-relaxed">{entry.summary}</p>
+
+          {/* 标签 */}
+          {entry.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              {entry.tags.map(tag => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-elevated text-muted"
+                >
+                  <Tag className="h-2.5 w-2.5" />
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* 正文 */}
+          <div
+            ref={contentRef}
+            className="knowledge-content text-sm text-foreground"
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.content) }}
+          />
+
+          {/* 底部留白 */}
+          <div className="h-8" />
+        </div>
+      </div>
     </div>
   )
 }
