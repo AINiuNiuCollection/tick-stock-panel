@@ -39,7 +39,7 @@ from app.services.knowledge_svgs import (
 logger = logging.getLogger(__name__)
 
 # 允许的分类
-VALID_CATEGORIES = {"basics", "indicators", "patterns", "strategies", "risk", "terms", "macro"}
+VALID_CATEGORIES = {"basics", "indicators", "patterns", "strategies", "risk", "terms", "macro", "books"}
 
 CATEGORY_LABELS = {
     "basics": "金融常识",
@@ -49,6 +49,7 @@ CATEGORY_LABELS = {
     "risk": "风控原则",
     "terms": "术语词典",
     "macro": "宏观经济",
+    "books": "书籍",
 }
 
 
@@ -56,7 +57,7 @@ class KnowledgeStore:
     """知识库 JSON 存储 (原子写 + 实例锁, 首次自动种子)。"""
 
     # 种子数据版本 — 升级后已有 knowledge.json 会自动重建
-    _SEED_VERSION = 8
+    _SEED_VERSION = 9
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -626,5 +627,23 @@ def _build_seed() -> list[dict]:
         "## 机构资金跨资产流向\n\n全球机构投资者根据经济周期和风险偏好，在股票、债券、黄金、现金之间动态配置，形成 Risk On / Risk Off 轮动。\n\n## Risk On (风险偏好上升)\n\n| 资产 | 表现 |\n|------|------|\n| 股票 (成长/周期) | 上涨 |\n| 高收益债 | 上涨 |\n| 新兴市场 | 资金流入 |\n| 大宗商品 | 上涨 |\n| 黄金 | 偏弱 |\n| 美债/美元 | 偏弱 |\n\n## Risk Off (风险偏好下降)\n\n| 资产 | 表现 |\n|------|------|\n| 美债 | 上涨 (避险买入) |\n| 美元 | 上涨 |\n| 黄金 | 上涨 |\n| 股票 | 下跌 |\n| 高收益债 | 下跌 |\n| 新兴市场 | 资金外流 |\n\n## 驱动因素\n\n1. **经济周期**: 扩张期 Risk On，衰退期 Risk Off\n2. **美联储政策**: 加息周期偏 Risk Off，降息周期偏 Risk On\n3. **地缘政治**: 冲突升级 → Risk Off\n4. **信用利差**: 走阔 → Risk Off，收窄 → Risk On\n\n## 基金经理视角\n\n跨资产配置是宏观对冲基金的核心策略。判断 Risk On/Off 的实时指标组合：VIX + 信用利差 + DXY + 美债收益率。当 VIX < 15 + 信用利差收窄 + DXY 走弱 → 纯 Risk On 配置；当 VIX > 30 + 信用利差走阔 + DXY 走强 → 转向 Risk Off 防御。\n\n> 最危险的时刻是 Risk Off 信号出现但市场仍处于 Risk On 模式时——这是隐蔽风险累积期，随后往往出现剧烈的资产重新定价。",
         ["资金流向", "Risk On", "Risk Off", "资产配置"],
         svg=svg_institutional_flow())
+
+
+    # ---- 书籍 (books) ----
+    # 孙子兵法教学系列: 从 knowledge_books/ 目录读取 md 全文, 内容与代码分离
+    _books_dir = Path(__file__).parent / "knowledge_books"
+    _book_meta = {
+        "00_总纲.md":           ("《孙子兵法》教学·总纲",           "孙子兵法系统教学总纲——六阶进阶框架、学习路径、方法论",                ["孙子兵法", "决策学", "股市投资", "教学体系"]),
+        "01_第一阶_启蒙篇.md":  ("《孙子兵法》教学·第一阶 启蒙篇",  "知其然——知道孙子兵法是什么、从哪来、为什么2500年后还有人学",        ["孙子兵法", "启蒙", "决策学", "股市投资"]),
+        "02_第二阶_筑基篇.md":  ("《孙子兵法》教学·第二阶 筑基篇",  "建立完整思维框架，把零散格言串成可调用的决策体系",                  ["孙子兵法", "筑基", "五事七计", "思维框架"]),
+        "03_第三阶_明理篇.md":  ("《孙子兵法》教学·第三阶 明理篇",  "十三篇逐篇解读，理解每篇核心思想与股市投资对应",                    ["孙子兵法", "明理", "十三篇", "逐篇解读"]),
+        "04_第四阶_致用篇.md":  ("《孙子兵法》教学·第四阶 致用篇",  "孙子兵法在股市投资中的实战应用——从选股到退出的完整交易决策",        ["孙子兵法", "致用", "股市实战", "交易决策"]),
+        "05_第五阶_精进篇.md":  ("《孙子兵法》教学·第五阶 精进篇",  "从兵法到实战——真实战例、商业案例与股市实战推演",                  ["孙子兵法", "精进", "案例分析", "实战推演"]),
+        "06_第六阶_化境篇.md":  ("《孙子兵法》教学·第六阶 化境篇",  "融会贯通——让兵法思维融入骨髓，形成个人投资决策体系",              ["孙子兵法", "化境", "融会贯通", "决策体系"]),
+    }
+    for _fname, (_title, _summary, _tags) in _book_meta.items():
+        _fpath = _books_dir / _fname
+        if _fpath.exists():
+            add("books", _title, _summary, _fpath.read_text(encoding="utf-8"), _tags)
 
     return entries
