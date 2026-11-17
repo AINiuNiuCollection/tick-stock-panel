@@ -36,7 +36,7 @@ export function CzscResultTabs({ result }: Props) {
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className={`px-3 py-1.5 text-sm border-b-2 transition-colors ${
+            className={`px-3 py-1.5 text-sm font-medium border-b-2 transition-colors ${
               tab === t.key
                 ? 'border-primary text-foreground'
                 : 'border-transparent text-muted hover:text-foreground'
@@ -54,7 +54,7 @@ export function CzscResultTabs({ result }: Props) {
       </div>
 
       {result.warnings && result.warnings.length > 0 && (
-        <div className="text-xs text-amber-500 bg-amber-500/10 rounded-btn px-2 py-1">
+        <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/15 rounded-btn px-2 py-1">
           ⚠ {result.warnings.join('; ')}
         </div>
       )}
@@ -66,25 +66,25 @@ function FxTable({ list }: { list: CzscAnalyzeResult['fx_list'] }) {
   if (!list.length) return <div className="text-xs text-muted p-4">无分型数据</div>
   return (
     <table className="w-full text-xs">
-      <thead className="text-muted sticky top-0 bg-base">
+      <thead className="text-foreground sticky top-0 bg-elevated z-10 shadow-sm">
         <tr>
-          <th className="text-left p-1.5">时间</th>
-          <th className="text-left p-1.5">类型</th>
-          <th className="text-right p-1.5">高价</th>
-          <th className="text-right p-1.5">低价</th>
+          <th className="text-left p-1.5 font-medium">时间</th>
+          <th className="text-left p-1.5 font-medium">类型</th>
+          <th className="text-right p-1.5 font-medium">高价</th>
+          <th className="text-right p-1.5 font-medium">低价</th>
         </tr>
       </thead>
       <tbody>
         {list.map((fx, i) => (
-          <tr key={i} className="border-t border-border">
-            <td className="p-1.5">{fx.dt}</td>
+          <tr key={i} className="border-t border-border hover:bg-base/50">
+            <td className="p-1.5 text-foreground/90">{fx.dt}</td>
             <td className="p-1.5">
-              <span className={isTopMark(fx.mark) ? 'text-red-500' : 'text-green-500'}>
+              <span className={`font-medium ${isTopMark(fx.mark) ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
                 {isTopMark(fx.mark) ? '▲ 顶分型' : '▽ 底分型'}
               </span>
             </td>
-            <td className="p-1.5 text-right">{fx.high.toFixed(2)}</td>
-            <td className="p-1.5 text-right">{fx.low.toFixed(2)}</td>
+            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{fx.high.toFixed(2)}</td>
+            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{fx.low.toFixed(2)}</td>
           </tr>
         ))}
       </tbody>
@@ -96,29 +96,29 @@ function BiTable({ list }: { list: CzscAnalyzeResult['bi_list'] }) {
   if (!list.length) return <div className="text-xs text-muted p-4">无笔数据</div>
   return (
     <table className="w-full text-xs">
-      <thead className="text-muted sticky top-0 bg-base">
+      <thead className="text-foreground sticky top-0 bg-elevated z-10 shadow-sm">
         <tr>
-          <th className="text-left p-1.5">起始</th>
-          <th className="text-left p-1.5">结束</th>
-          <th className="text-left p-1.5">方向</th>
-          <th className="text-right p-1.5">高</th>
-          <th className="text-right p-1.5">低</th>
-          <th className="text-right p-1.5">长度</th>
-          <th className="text-right p-1.5">力度</th>
+          <th className="text-left p-1.5 font-medium">起始</th>
+          <th className="text-left p-1.5 font-medium">结束</th>
+          <th className="text-left p-1.5 font-medium">方向</th>
+          <th className="text-right p-1.5 font-medium">高</th>
+          <th className="text-right p-1.5 font-medium">低</th>
+          <th className="text-right p-1.5 font-medium">长度</th>
+          <th className="text-right p-1.5 font-medium">力度</th>
         </tr>
       </thead>
       <tbody>
         {list.map((bi, i) => (
-          <tr key={i} className="border-t border-border">
-            <td className="p-1.5">{bi.sdt}</td>
-            <td className="p-1.5">{bi.edt}</td>
-            <td className={`p-1.5 ${isUpDirection(bi.direction) ? 'text-red-500' : 'text-green-500'}`}>
+          <tr key={i} className="border-t border-border hover:bg-base/50">
+            <td className="p-1.5 text-foreground/90">{bi.sdt}</td>
+            <td className="p-1.5 text-foreground/90">{bi.edt}</td>
+            <td className={`p-1.5 font-medium ${isUpDirection(bi.direction) ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
               {isUpDirection(bi.direction) ? '↑ 上' : '↓ 下'}
             </td>
-            <td className="p-1.5 text-right">{bi.high.toFixed(2)}</td>
-            <td className="p-1.5 text-right">{bi.low.toFixed(2)}</td>
-            <td className="p-1.5 text-right">{bi.length}</td>
-            <td className="p-1.5 text-right">{bi.power != null ? bi.power.toFixed(3) : '-'}</td>
+            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{bi.high.toFixed(2)}</td>
+            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{bi.low.toFixed(2)}</td>
+            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{bi.length}</td>
+            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{bi.power != null ? bi.power.toFixed(3) : '-'}</td>
           </tr>
         ))}
       </tbody>
@@ -130,26 +130,26 @@ function ZsTable({ list }: { list: CzscAnalyzeResult['zs_list'] }) {
   if (!list.length) return <div className="text-xs text-muted p-4">无中枢数据</div>
   return (
     <table className="w-full text-xs">
-      <thead className="text-muted sticky top-0 bg-base">
+      <thead className="text-foreground sticky top-0 bg-elevated z-10 shadow-sm">
         <tr>
-          <th className="text-left p-1.5">起始</th>
-          <th className="text-left p-1.5">结束</th>
-          <th className="text-right p-1.5">下沿</th>
-          <th className="text-right p-1.5">上沿</th>
-          <th className="text-right p-1.5">级别</th>
-          <th className="text-left p-1.5">有效</th>
+          <th className="text-left p-1.5 font-medium">起始</th>
+          <th className="text-left p-1.5 font-medium">结束</th>
+          <th className="text-right p-1.5 font-medium">下沿</th>
+          <th className="text-right p-1.5 font-medium">上沿</th>
+          <th className="text-right p-1.5 font-medium">级别</th>
+          <th className="text-left p-1.5 font-medium">有效</th>
         </tr>
       </thead>
       <tbody>
         {list.map((zs, i) => (
-          <tr key={i} className="border-t border-border">
-            <td className="p-1.5">{zs.start_dt}</td>
-            <td className="p-1.5">{zs.end_dt}</td>
-            <td className="p-1.5 text-right">{zs.zs_range[0]?.toFixed(2)}</td>
-            <td className="p-1.5 text-right">{zs.zs_range[1]?.toFixed(2)}</td>
-            <td className="p-1.5 text-right">{zs.level}</td>
+          <tr key={i} className="border-t border-border hover:bg-base/50">
+            <td className="p-1.5 text-foreground/90">{zs.start_dt}</td>
+            <td className="p-1.5 text-foreground/90">{zs.end_dt}</td>
+            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{zs.zs_range[0]?.toFixed(2)}</td>
+            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{zs.zs_range[1]?.toFixed(2)}</td>
+            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{zs.level}</td>
             <td className="p-1.5">
-              <span className={zs.valid ? 'text-green-500' : 'text-muted'}>{zs.valid ? '✓' : '✗'}</span>
+              <span className={`font-medium ${zs.valid ? 'text-green-600 dark:text-green-400' : 'text-muted'}`}>{zs.valid ? '✓ 有效' : '✗ 无效'}</span>
             </td>
           </tr>
         ))}

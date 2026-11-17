@@ -21,6 +21,57 @@ function isUpDirection(direction: string): boolean {
   return direction === 'Direction.Up' || direction === '向上' || direction.includes('上')
 }
 
+/**
+ * 主题配色 — 对齐 czsc 库原生 lightweight-charts 主题 (czsc/utils/plotting/lightweight/_theme.py)。
+ * light "量化年鉴" 暖纸色调 / dark "Deep Cosmos" 深空配色, 与本工程 html.dark 切换联动。
+ * 中枢矩形色为本工程自定义 (czsc 原生不画中枢), 选用与 bi 笔色同系的靛蓝/淡蓝, 与 K 线红绿区分。
+ */
+interface ChartTheme {
+  background: string
+  text: string
+  grid: string
+  up: string       // K 线涨色 (阳线)
+  down: string     // K 线跌色 (阴线)
+  fx: string       // 分型标记色
+  bi: string       // 笔色
+  zsFill: string   // 中枢矩形填充
+  zsBorder: string // 中枢矩形边框
+  zsLine: string   // 中枢上下沿虚线
+}
+
+function getChartTheme(): ChartTheme {
+  const isDark = typeof document !== 'undefined'
+    && document.documentElement.classList.contains('dark')
+  if (isDark) {
+    // czsc dark "Deep Cosmos"
+    return {
+      background: '#0E1116',
+      text: '#EFEBE0',
+      grid: '#1F242E',
+      up: '#E94B3C',
+      down: '#5BB85B',
+      fx: '#E6A93B',     // SMA5 古铜色, 让分型标记与 K 线红绿区分
+      bi: '#A8B8E8',     // 笔淡蓝
+      zsFill: 'rgba(168, 184, 232, 0.18)',
+      zsBorder: 'rgba(168, 184, 232, 0.7)',
+      zsLine: 'rgba(168, 184, 232, 0.6)',
+    }
+  }
+  // czsc light "量化年鉴" 暖纸色
+  return {
+    background: '#FBF9F4',
+    text: '#1A1A17',
+    grid: '#E8E2D4',
+    up: '#C03A2B',
+    down: '#2E7D32',
+    fx: '#C78A2E',      // SMA5 古铜
+    bi: '#1F3C6E',      // 笔深靛蓝
+    zsFill: 'rgba(31, 60, 110, 0.18)',
+    zsBorder: 'rgba(31, 60, 110, 0.7)',
+    zsLine: 'rgba(31, 60, 110, 0.6)',
+  }
+}
+
 export interface CzscChartHandle {
   /** 导出当前图表为 base64 PNG dataURL (供 HTML 报告嵌入) */
   getDataURL: () => string | null
@@ -111,31 +162,48 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       },
     }))
 
-    // 中枢矩形 (markArea)
+    // 中枢矩形 (markArea) — czsc 中枢 = 至少 3 笔重叠的价格区间 [zd, zg]
+    // markArea[[{xAxis,yAxis},{xAxis,yAxis}], ...] 每个矩形由对角线两点定义 (左下 + 右上)
+    // itemStyle 必须写在 markArea 顶层 (对所有矩形生效), 写在点对象里会被 echarts 忽略
     const zsAreas = result.zs_list.map(zs => ([
-      {
-        xAxis: zs.start_dt,
-        yAxis: zs.zs_range[0],
-      },
-      {
-        xAxis: zs.end_dt,
-        yAxis: zs.zs_range[1],
-      },
+      { xAxis: zs.start_dt, yAxis: zs.zs_range[0] },
+      { xAxis: zs.end_dt,   yAxis: zs.zs_range[1] },
+    ]))
+
+    // 中枢上下沿水平虚线 (markLine) — 仅在中枢时间范围内绘制, 标注 zd/zg 数值
+    // 用两点连线格式 [[startCoord, endCoord], ...], 避免单点水平线横跨整个图表
+    const zsMarkLines = result.zs_list.flatMap(zs => ([
+      [
+        { coord: [zs.start_dt, zs.zs_range[0]] },
+        { coord: [zs.end_dt,   zs.zs_range[0]], label: { formatter: `zd ${zs.zs_range[0].toFixed(2)}`, color: '#2563eb', fontSize: 10, position: 'insideEndTop' } },
+      ],
+      [
+        { coord: [zs.start_dt, zs.zs_range[1]] },
+        { coord: [zs.end_dt,   zs.zs_range[1]], label: { formatter: `zg ${zs.zs_range[1].toFixed(2)}`, color: '#2563eb', fontSize: 10, position: 'insideEndTop' } },
+      ],
     ]))
 
     const option = {
-      backgroundColor: 'transparent',
+      // 强制白底, 保证 K 线红绿 / 中枢蓝 / 分型标记在暗色主题下也清晰可辨
+      backgroundColor: '#ffffff',
       tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-      legend: { data: ['K线', '分型', '笔', '中枢'], top: 0 },
-      grid: { left: '5%', right: '5%', top: 40, bottom: 60 },
+      legend: { data: ['K线', '分型', '笔', '中枢'], top: 0, textStyle: { color: '#1e293b' } },
+      grid: { left: '6%', right: '6%', top: 40, bottom: 60 },
       xAxis: {
         type: 'category',
         data: resolvedKlines.map(k => k.date),
+        axisLabel: { color: '#475569', fontSize: 11 },
+        axisLine: { lineStyle: { color: '#cbd5e1' } },
       },
-      yAxis: { scale: true, splitLine: { show: false } },
+      yAxis: {
+        scale: true,
+        splitLine: { show: true, lineStyle: { color: '#e2e8f0', type: 'dashed' } },
+        axisLabel: { color: '#475569', fontSize: 11 },
+        axisLine: { lineStyle: { color: '#cbd5e1' } },
+      },
       dataZoom: [
         { type: 'inside', start: 0, end: 100 },
-        { show: true, type: 'slider', top: '90%', start: 0, end: 100 },
+        { show: true, type: 'slider', top: '90%', start: 0, end: 100, textStyle: { color: '#475569' } },
       ],
       series: [
         ...(candleData.length ? [{
@@ -169,11 +237,16 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           markArea: {
             silent: true,
             itemStyle: {
-              color: 'rgba(59, 130, 246, 0.15)',
-              borderColor: 'rgba(59, 130, 246, 0.4)',
-              borderWidth: 1,
+              color: 'rgba(59, 130, 246, 0.35)',
+              borderColor: 'rgba(59, 130, 246, 0.9)',
+              borderWidth: 1.5,
             },
             data: zsAreas,
+          },
+          markLine: {
+            silent: true,
+            symbol: 'none',
+            data: zsMarkLines,
           },
         },
       ],
