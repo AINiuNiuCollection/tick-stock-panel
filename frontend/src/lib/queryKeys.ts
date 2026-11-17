@@ -127,6 +127,11 @@ export const QK = {
   sectorRotationIndexDaily:  (symbol: string) => ['sector-rotation-index-daily', symbol] as const,
   // 扩展表 schema 清单 (板块切换的资金流列选择器等)
   extSchemaAll:         ['ext-schema-all'] as const,
+
+  // czsc-serve 缠论分析 (自定义扩展, 不进入 SSE 失效列表)
+  czscHealth:           ['czsc-health'] as const,
+  czscAnalyze:          (symbol: string, freq: string, start?: string, end?: string) =>
+    ['czsc-analyze', symbol, freq, start ?? '', end ?? ''] as const,
 } as const
 
 // ===== SSE 应该 invalidate 的 key 前缀列表 =====

@@ -455,7 +455,106 @@ PORT=3018                      # 服务端口
 | [docs/market-phase.md](./docs/market-phase.md)                                                     | 市场情绪周期 6 阶段与概念/行业主线识别的口径与设计                   |
 | [docs/plugin-development.md](./docs/plugin-development.md)                                         | 数据源插件开发规范(以 stock-sdk / fuyao 为参考实现)                 |
 | [docs/secondary-development.md](./docs/secondary-development.md)                                   | 代码二次开发、前端插槽、后端策略接口与 AI 开发模板                   |
+| [czsc 集成](#-czsc-缠论分析集成可选)                                                                | 缠论分析 optional-dependency 直接集成：主源优先 + 东财兜底 + 线程池隔离 |
 | [backend/app/strategy/prompts/strategy-guide.md](./backend/app/strategy/prompts/strategy-guide.md) | 策略开发完整规范(AI 生成与手写)                                      |
+
+---
+
+## 🔌 czsc 缠论分析集成（可选）
+
+TSP 通过 **L2 二开路径**接入 [czsc](https://github.com/waditu/czsc) 缠论分析能力，主工程零侵入、可一键回退。czsc 作为 `[czsc]` optional-dependency 按需安装，不污染默认依赖树；缺失时 `/api/czsc/*` 端点返回 503 + 安装提示，不影响主功能。
+
+### 架构
+
+```text
+┌─────────────────────────┐      ┌─────────────────────────────────────┐
+│  TSP 前端 (React)        │      │  TSP 后端 (FastAPI)                  │
+│  /czsc 页 + 二级弹层     │ ──→  │  backend/app/custom/czsc/             │
+│  ECharts 渲染分型/笔/中枢│      │    ├─ __init__.py    (扩展注册)       │
+│                          │      │    ├─ routes.py      (APIRouter)      │
+│                          │      │    ├─ analyzer.py    (调 czsc.CZSC)   │
+│                          │      │    ├─ schemas.py     (Pydantic 契约)  │
+│                          │      │    ├─ converters.py  (RawBar 胶水)    │
+│                          │      │    └─ eastmoney_fallback.py (兜底源)  │
+│                          │      │                                       │
+│                          │      │  czsc 作为 [czsc] optional-dep        │
+│                          │      │  缺失 → 503 + 安装提示                │
+└─────────────────────────┘      └─────────────────────────────────────┘
+                                          ↑
+                          主工程 MarketDataProvider (优先, enriched 前复权)
+                          + EastmoneyFetcher (兜底, 公开 API 无 Key)
+                          线程池 run_in_executor 隔离 CPU 运算
+```
+
+- **后端**：`backend/app/custom/czsc/` 子包由 loader 自动发现，直接调用 czsc 库完成缠论分析。CPU 密集运算通过 `asyncio.run_in_executor` 线程池隔离，不阻塞事件循环。数据获取主源优先（复用主工程 `MarketDataProvider` 的 enriched 前复权口径），主源不可用时东财公开 API 兜底。
+- **前端**：`frontend/src/custom/czsc/` 通过扩展注册机制提供 `/czsc` 独立页 + 个股对话框 `stock-preview.footer` 二级弹层；参数（symbol/freq/区间/max_bi_num/min_bi_len/features/force_refresh）全可配置。
+- **能力检测**：`GET /api/czsc/capabilities` 返回 `{available, version, native_ready, eastmoney_fallback, install_hint}`，前端按此渲染入口。
+
+### 启用步骤
+
+```bash
+# 1. 安装 czsc optional-dependency (含 czsc._native Rust 扩展 + wbt/plotly 等运行时)
+cd backend
+uv sync --extra czsc            # 或 pip install "czsc>=1.0.2"
+
+# 2. 正常启动 TSP, 前端访问 /czsc 或个股对话框内打开缠论分析弹层
+./dev.sh
+
+# 3. 验证能力可用
+curl http://localhost:3018/api/czsc/capabilities
+# 期望: {"available": true, "version": "1.0.2", "native_ready": true, ...}
+```
+
+未装 czsc 时启动 TSP 不影响主功能，但 `/api/czsc/*` 返回 503：
+
+```json
+{"ok": false, "error": {"code": "CZSC_NOT_INSTALLED", "message": "czsc library not installed", "hint": "run: uv sync --extra czsc"}}
+```
+
+### 配置项（`backend/app/config.py` Settings）
+
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `czsc_enabled` | `true` | 是否激活 czsc 端点（设为 `false` 则所有 `/api/czsc/*` 返回 503） |
+| `czsc_eastmoney_fallback` | `true` | 主源不可用时是否回退到东财公开 API |
+| `czsc_analyze_timeout_s` | `30.0` | 单次分析超时（线程池 `run_in_executor` 包裹） |
+| `czsc_api_version` | `1` | 契约版本号（响应头 `X-Czsc-Api-Version`） |
+
+### 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `CZSC_SERVE_VERIFY_SSL` | 未设（=false） | 东财兜底源 SSL 校验开关；企业代理自签名证书环境保持默认；生产环境设为 `true` 强制校验 |
+
+### 关键文件
+
+| 位置 | 作用 |
+|---|---|
+| `backend/app/custom/czsc/__init__.py` | 扩展注册入口（`setup`/`startup`），loader 自动发现 |
+| `backend/app/custom/czsc/routes.py` | APIRouter，注册 `/api/czsc/{health,capabilities,analyze,analyze/stream,data/refresh}` |
+| `backend/app/custom/czsc/analyzer.py` | `AnalyzeRunner` 编排：取数（主源+东财兜底）+ czsc.CZSC 调用 + 线程池隔离 |
+| `backend/app/custom/czsc/schemas.py` | Pydantic v2 契约模型（与前端 `api.ts` 类型对齐，不依赖 czsc 库） |
+| `backend/app/custom/czsc/converters.py` | schema ↔ RawBar 边界胶水（符合 czsc 宪法） |
+| `backend/app/custom/czsc/eastmoney_fallback.py` | 东财 push2his 公开 API 兜底实现 |
+| `backend/pyproject.toml` | `[project.optional-dependencies].czsc = ["czsc>=1.0.2"]` |
+| `backend/app/config.py` | Settings 新增 `czsc_enabled` / `czsc_eastmoney_fallback` / `czsc_analyze_timeout_s` / `czsc_api_version` |
+| `frontend/src/custom/czsc/extension.tsx` | 前端扩展注册入口（路由 + 导航 + 插槽） |
+| `frontend/src/custom/czsc/CzscPage.tsx` | 独立分析页 |
+| `frontend/src/custom/czsc/CzscFooterEntry.tsx` | 个股对话框二级弹层入口 |
+| `frontend/src/custom/czsc/CzscChart.tsx` | ECharts K 线 + 分型/笔/中枢叠加 |
+| `frontend/src/lib/api.ts` | czsc 客户端函数 + 类型族 |
+
+### 回退
+
+未触碰主工程任何核心路由/Layout/registry/data_providers/parquet 缓存。回退零风险：
+
+```bash
+git checkout backend/pyproject.toml backend/app/config.py README.md
+rm -rf backend/app/custom/czsc/
+# 前端文件保持原状 (复用既有扩展机制, 无需回退)
+```
+
+> czsc 库本身的设计、宪法约束（Rust↔Python 行为一致）、模块结构详见 [czsc README](https://github.com/waditu/czsc)。
 
 ---
 

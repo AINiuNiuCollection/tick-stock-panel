@@ -63,6 +63,13 @@ desktop = [
     "pywebview>=5.0",
 ]
 
+# czsc 缠论分析扩展: czsc 含 Rust/PyO3 原生扩展 (czsc._native) + wbt/plotly 等重依赖,
+# 默认不安装, 仅启用缠论分析功能时按需安装。缺失时 /api/czsc/* 端点返回 503 + 安装提示。
+# 启用:`uv sync --extra czsc`
+czsc = [
+    "czsc>=1.0.2",
+]
+
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

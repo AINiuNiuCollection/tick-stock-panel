@@ -4209,3 +4209,177 @@ export interface MemoEntry {
   created_at: string
   updated_at: string
 }
+
+// ===== czsc-serve (缠论分析独立服务, 经主工程后端代理) =====
+// 服务不可达时后端返回 503, 前端按 ok:false 处理
+
+export interface CzscFx {
+  dt: string
+  mark: string  // Mark.G / Mark.D
+  fx: string    // FX.G / FX.D
+  high: number
+  low: number
+}
+
+export interface CzscBi {
+  sdt: string
+  edt: string
+  direction: string  // Direction.Up / Direction.Down
+  high: number
+  low: number
+  length: number
+  power: number | null
+}
+
+export interface CzscZs {
+  zs_range: number[]  // [low, high]
+  level: number
+  start_dt: string
+  end_dt: string
+  valid: boolean
+}
+
+export interface CzscAnalyzeResult {
+  ok: boolean
+  symbol: string
+  freq: string
+  bar_count: number
+  fx_list: CzscFx[]
+  bi_list: CzscBi[]
+  zs_list: CzscZs[]
+  signals: Record<string, unknown>
+  warnings?: string[] | null
+  source: string
+  cached: boolean
+}
+
+export interface CzscHealth {
+  ok: boolean
+  version?: string
+  czsc_native_available?: boolean
+  data_sources?: string[]
+  storage?: { cache_dir?: string; file_count?: number; size_mb?: number }
+}
+
+export interface CzscError {
+  ok: false
+  error: { code: string; message: string; hint?: string }
+}
+
+export interface CzscAnalyzeParams {
+  symbol: string
+  freq?: string
+  start_date?: string
+  end_date?: string
+  max_bi_num?: number
+  min_bi_len?: number
+  features?: string  // 逗号分隔: fx,bi,zs,signals
+  force_refresh?: boolean
+}
+
+/** 检查 czsc-serve 健康状态 (静默, 失败不弹 toast) */
+export async function fetchCzscHealth(): Promise<CzscHealth | null> {
+  try {
+    return await request<CzscHealth>('/api/czsc/health', { quiet: true, timeoutMs: 3_000 })
+  } catch {
+    return null
+  }
+}
+
+/** 同步分析 (适合日K等小数据量) */
+export async function fetchCzscAnalyze(params: CzscAnalyzeParams): Promise<CzscAnalyzeResult> {
+  const qs = new URLSearchParams()
+  qs.set('symbol', params.symbol)
+  if (params.freq) qs.set('freq', params.freq)
+  if (params.start_date) qs.set('start_date', params.start_date)
+  if (params.end_date) qs.set('end_date', params.end_date)
+  if (params.max_bi_num != null) qs.set('max_bi_num', String(params.max_bi_num))
+  if (params.min_bi_len != null) qs.set('min_bi_len', String(params.min_bi_len))
+  if (params.features) qs.set('features', params.features)
+  if (params.force_refresh) qs.set('force_refresh', 'true')
+  return request<CzscAnalyzeResult>(`/api/czsc/analyze?${qs}`, { timeoutMs: 60_000 })
+}
+
+/** SSE 流式分析回调类型 */
+export interface CzscStreamCallbacks {
+  onStatus?: (phase: string, symbol: string, barCount?: number, progress?: number) => void
+  onPartial?: (data: { fx_list?: CzscFx[]; bi_list?: CzscBi[]; zs_list?: CzscZs[]; progress: number }) => void
+  onDone?: (result: CzscAnalyzeResult) => void
+  onError?: (code: string, message: string) => void
+}
+
+/**
+ * SSE 流式分析 (适合分钟K等大数据量)。
+ * 返回一个 AbortController, 调用 .abort() 可中途取消。
+ */
+export function streamCzscAnalyze(
+  params: CzscAnalyzeParams,
+  callbacks: CzscStreamCallbacks,
+): AbortController {
+  const ctl = new AbortController()
+  const qs = new URLSearchParams()
+  qs.set('symbol', params.symbol)
+  if (params.freq) qs.set('freq', params.freq)
+  if (params.start_date) qs.set('start_date', params.start_date)
+  if (params.end_date) qs.set('end_date', params.end_date)
+  if (params.max_bi_num != null) qs.set('max_bi_num', String(params.max_bi_num))
+  if (params.min_bi_len != null) qs.set('min_bi_len', String(params.min_bi_len))
+  if (params.features) qs.set('features', params.features)
+  if (params.force_refresh) qs.set('force_refresh', 'true')
+
+  void (async () => {
+    try {
+      const res = await fetch(`/api/czsc/analyze/stream?${qs}`, { signal: ctl.signal })
+      if (!res.ok || !res.body) {
+        callbacks.onError?.('HTTP_ERROR', `HTTP ${res.status}`)
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let currentEvent = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6)
+            try {
+              const data = JSON.parse(dataStr)
+              if (currentEvent === 'status') {
+                callbacks.onStatus?.(data.phase, data.symbol, data.bar_count, data.progress)
+              } else if (currentEvent === 'partial') {
+                callbacks.onPartial?.(data)
+              } else if (currentEvent === 'done') {
+                callbacks.onDone?.(data.result)
+              } else if (currentEvent === 'error') {
+                callbacks.onError?.(data.code, data.message)
+              }
+            } catch {
+              // 忽略解析失败的行
+            }
+            currentEvent = ''
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      callbacks.onError?.('STREAM_FAILED', err instanceof Error ? err.message : String(err))
+    }
+  })()
+
+  return ctl
+}
+
+/** 主动刷新 czsc-serve 数据缓存 */
+export async function refreshCzscData(symbol: string, freq: string = '日线'): Promise<{ ok: boolean; cached_bars: number; latest_date: string | null }> {
+  return request('/api/czsc/data/refresh', {
+    method: 'POST',
+    body: JSON.stringify({ symbol, freq, force: true }),
+  })
+}

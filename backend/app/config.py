@@ -149,6 +149,18 @@ class Settings(BaseSettings):
     # 静态文件(前端 dist) — frozen: 资源目录的 static/; 非 frozen: frontend/dist
     static_dir: Path = _RESOURCE_ROOT / "static" if _IS_FROZEN else (_PROJECT_ROOT / "frontend" / "dist")
 
+    # czsc 缠论分析扩展 (可选, optional-dependency: uv sync --extra czsc)
+    # 启用后 /api/czsc/* 端点直接调用 czsc 库完成分析; 未安装时返回 503 + 安装提示
+    czsc_enabled: bool = Field(default=True, description="是否激活 czsc 缠论分析端点")
+    czsc_eastmoney_fallback: bool = Field(
+        default=True,
+        description="主工程数据源不可用时是否回退到东财公开 API 取数",
+    )
+    czsc_analyze_timeout_s: float = Field(
+        default=30.0, description="czsc 分析单次调用超时 (线程池 run_in_executor)"
+    )
+    czsc_api_version: int = Field(default=1, description="czsc 接口契约版本 (响应头 X-Czsc-Api-Version)")
+
     @model_validator(mode="after")
     def _resolve_paths(self) -> Settings:
         """确保 data_dir 是绝对路径（环境变量传入的相对路径基于项目根目录解析）。"""
