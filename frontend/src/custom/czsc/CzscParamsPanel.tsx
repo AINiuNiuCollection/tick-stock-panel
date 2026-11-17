@@ -2,6 +2,7 @@
  * 缠论分析参数面板 — 范围/级别/频率/特征全可配置 (Q8)
  */
 import { useState } from 'react'
+import { SymbolPicker } from '@/components/SymbolPicker'
 
 export interface CzscParams {
   symbol: string
@@ -63,11 +64,13 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
     <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3 p-3 bg-elevated rounded-btn">
       <label className="flex flex-col gap-1">
         <span className="text-xs text-muted">标的代码</span>
-        <input
+        <SymbolPicker
           value={symbol}
-          onChange={e => setSymbol(e.target.value)}
-          placeholder="600519.SH"
-          className="h-8 px-2 rounded-btn border border-border bg-base text-sm w-32"
+          onChange={setSymbol}
+          assetTypes="stock,etf,index"
+          size="sm"
+          placeholder="代码 / 名称"
+          className="w-56"
         />
       </label>
 

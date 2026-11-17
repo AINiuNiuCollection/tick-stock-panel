@@ -10,6 +10,16 @@ interface Props {
 
 type Tab = 'fx' | 'bi' | 'zs'
 
+/** 判断顶分型: czsc 1.0.2 返回 mark='顶分型' (旧版 'Mark.G') */
+function isTopMark(mark: string): boolean {
+  return mark === 'Mark.G' || mark === '顶分型' || mark.includes('顶')
+}
+
+/** 判断向上笔: czsc 1.0.2 返回 direction='向上' (旧版 'Direction.Up') */
+function isUpDirection(direction: string): boolean {
+  return direction === 'Direction.Up' || direction === '向上' || direction.includes('上')
+}
+
 export function CzscResultTabs({ result }: Props) {
   const [tab, setTab] = useState<Tab>('bi')
 
@@ -69,8 +79,8 @@ function FxTable({ list }: { list: CzscAnalyzeResult['fx_list'] }) {
           <tr key={i} className="border-t border-border">
             <td className="p-1.5">{fx.dt}</td>
             <td className="p-1.5">
-              <span className={fx.mark === 'Mark.G' ? 'text-red-500' : 'text-green-500'}>
-                {fx.mark === 'Mark.G' ? '▲ 顶分型' : '▽ 底分型'}
+              <span className={isTopMark(fx.mark) ? 'text-red-500' : 'text-green-500'}>
+                {isTopMark(fx.mark) ? '▲ 顶分型' : '▽ 底分型'}
               </span>
             </td>
             <td className="p-1.5 text-right">{fx.high.toFixed(2)}</td>
@@ -102,8 +112,8 @@ function BiTable({ list }: { list: CzscAnalyzeResult['bi_list'] }) {
           <tr key={i} className="border-t border-border">
             <td className="p-1.5">{bi.sdt}</td>
             <td className="p-1.5">{bi.edt}</td>
-            <td className={`p-1.5 ${bi.direction === 'Direction.Up' ? 'text-red-500' : 'text-green-500'}`}>
-              {bi.direction === 'Direction.Up' ? '↑ 上' : '↓ 下'}
+            <td className={`p-1.5 ${isUpDirection(bi.direction) ? 'text-red-500' : 'text-green-500'}`}>
+              {isUpDirection(bi.direction) ? '↑ 上' : '↓ 下'}
             </td>
             <td className="p-1.5 text-right">{bi.high.toFixed(2)}</td>
             <td className="p-1.5 text-right">{bi.low.toFixed(2)}</td>
