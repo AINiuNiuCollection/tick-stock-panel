@@ -46,6 +46,17 @@ class ZsItem(BaseModel):
     valid: bool = True
 
 
+class BarItem(BaseModel):
+    """K 线一根。dt 为字符串 (ISO datetime 或 date), OHLCV 数值。"""
+    dt: str
+    open: float
+    high: float
+    low: float
+    close: float
+    vol: float = 0.0
+    amount: float = 0.0
+
+
 class AnalyzeResult(BaseModel):
     """同步/流式分析最终结果。"""
     ok: bool = True
@@ -55,6 +66,7 @@ class AnalyzeResult(BaseModel):
     fx_list: list[FxItem] = Field(default_factory=list)
     bi_list: list[BiItem] = Field(default_factory=list)
     zs_list: list[ZsItem] = Field(default_factory=list)
+    bars: list[BarItem] = Field(default_factory=list)
     signals: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] | None = None
     source: str = "primary"

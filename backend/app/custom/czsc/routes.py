@@ -14,7 +14,7 @@ from datetime import date
 from typing import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.config import settings
 
@@ -52,18 +52,21 @@ def _build_error_response(code: str, message: str, hint: str | None = None, stat
     )
 
 
-def _build_success_response(data: dict, status: int = 200) -> JSONResponse:
+def _build_success_response(data: dict, status: int = 200) -> Response:
     """统一成功响应, 带契约版本头。
 
-    注意: starlette JSONResponse 默认用 stdlib json.dumps, 不识别 Pydantic 模型 / datetime /
-    Enum 等。调用方应先 model_dump() 把 Pydantic 模型转 dict; 这里加 default=str 作为最后
-    兜底, 把未识别对象 str() 化 (如 signals 中残留的 czsc Enum 值)。
+    注意: starlette JSONResponse 默认用 stdlib json.dumps 且不接受 default 参数,
+    不识别 Pydantic 模型 / datetime / Enum 等。调用方应先 model_dump() 把 Pydantic
+    模型转 dict; 这里用 json.dumps(data, default=str) 自行序列化后传 body 给
+    通用 Response (media_type=application/json), 让 starlette 自动设置正确的
+    Content-Length。default=str 兜底未识别对象 (如 signals 中残留的 czsc Enum 值)。
     """
-    return JSONResponse(
+    body = json.dumps(data, default=str, ensure_ascii=False).encode("utf-8")
+    return Response(
+        content=body,
         status_code=status,
-        content=data,
-        default=str,
         headers={"X-Czsc-Api-Version": str(API_VERSION)},
+        media_type="application/json",
     )
 
 
@@ -157,7 +160,7 @@ def build_router() -> APIRouter:
                 max_bi_num=max_bi_num, min_bi_len=min_bi_len,
                 features=feature_list,
             )
-            # fx_list/bi_list/zs_list 是 Pydantic 模型实例, starlette JSONResponse 默认
+            # fx_list/bi_list/zs_list/bars 是 Pydantic 模型实例, starlette JSONResponse 默认
             # json.dumps 不识别 Pydantic 模型, 这里统一 model_dump() 转 dict。
             payload = {
                 **result,
@@ -165,6 +168,7 @@ def build_router() -> APIRouter:
                 "fx_list": [f.model_dump() for f in result.get("fx_list", [])],
                 "bi_list": [b.model_dump() for b in result.get("bi_list", [])],
                 "zs_list": [z.model_dump() for z in result.get("zs_list", [])],
+                "bars": [bar.model_dump() for bar in result.get("bars", [])],
             }
             return _build_success_response(payload)
         except AnalyzerError as exc:

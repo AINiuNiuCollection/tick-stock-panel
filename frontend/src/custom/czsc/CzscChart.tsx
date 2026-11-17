@@ -28,15 +28,23 @@ export interface CzscChartHandle {
 
 interface Props {
   result: CzscAnalyzeResult
-  /** K 线数据 (symbol+freq+日期范围对应的 OHLC), 由调用方提供 */
+  /**
+   * K 线数据 (OHLCV), 由调用方提供。
+   * 若不传, 自动从 result.bars 推导 (后端 analyze 响应已含 bars 字段)。
+   * 兼容旧调用方传 {date, open, ...} 格式 (date 字段), 优先级高于 result.bars。
+   */
   klines?: Array<{ date: string; open: number; high: number; low: number; close: number; vol: number }>
   height?: number
 }
 
 export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
-  { result, klines = [], height = 480 },
+  { result, klines, height = 480 },
   ref,
 ) {
+  // 优先用显式传入的 klines; 否则从 result.bars 推导 (date 字段 = dt)
+  const resolvedKlines = klines && klines.length
+    ? klines
+    : (result.bars ?? []).map(b => ({ date: b.dt, open: b.open, high: b.high, low: b.low, close: b.close, vol: b.vol }))
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<echarts.ECharts | null>(null)
 
@@ -71,9 +79,9 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
   useEffect(() => {
     if (!chartRef.current) return
 
-    // K 线数据 (如未提供, 用分析结果中的分型/笔构造占位)
-    const candleData = klines.length
-      ? klines.map(k => [k.open, k.close, k.low, k.high])
+    // K 线数据 (优先用显式 klines, 否则从 result.bars 推导)
+    const candleData = resolvedKlines.length
+      ? resolvedKlines.map(k => [k.open, k.close, k.low, k.high])
       : []
 
     // 分型标记
@@ -122,7 +130,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       grid: { left: '5%', right: '5%', top: 40, bottom: 60 },
       xAxis: {
         type: 'category',
-        data: klines.map(k => k.date),
+        data: resolvedKlines.map(k => k.date),
       },
       yAxis: { scale: true, splitLine: { show: false } },
       dataZoom: [
@@ -172,7 +180,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     } as echarts.EChartsOption
 
     chartRef.current.setOption(option, true)
-  }, [result, klines])
+  }, [result, resolvedKlines])
 
   return <div ref={containerRef} style={{ width: '100%', height }} />
 })

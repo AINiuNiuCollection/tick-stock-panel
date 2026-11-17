@@ -245,6 +245,18 @@ def _analyze_sync(
     bi_list = [BiItem(**bi_to_dict(bi)) for bi in c.bi_list] if "bi" in features else []
     zs_list = [ZsItem(**zs_to_dict(zs)) for zs in c.zs_list] if "zs" in features else []
 
+    # K 线 bars (供前端图表渲染 candlestick + 作为 fx/bi/zs 坐标轴类目)
+    from .schemas import BarItem
+    bars_out: list[BarItem] = []
+    for bar in bars:
+        bars_out.append(BarItem(
+            dt=str(bar.dt),
+            open=float(bar.open), high=float(bar.high),
+            low=float(bar.low), close=float(bar.close),
+            vol=float(bar.vol) if bar.vol is not None else 0.0,
+            amount=float(bar.amount) if bar.amount is not None else 0.0,
+        ))
+
     signals: dict[str, Any] = {}
     if "signals" in features:
         try:
@@ -260,6 +272,7 @@ def _analyze_sync(
         "fx_list": fx_list,
         "bi_list": bi_list,
         "zs_list": zs_list,
+        "bars": bars_out,
         "signals": signals,
         "warnings": None,
         "source": source,

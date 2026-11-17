@@ -4237,6 +4237,20 @@ export interface CzscZs {
   start_dt: string
   end_dt: string
   valid: boolean
+  zd?: number  // 中枢下沿 (czsc 1.0.2)
+  zg?: number  // 中枢上沿
+  gg?: number  // 区间最高
+  dd?: number  // 区间最低
+}
+
+export interface CzscBar {
+  dt: string
+  open: number
+  high: number
+  low: number
+  close: number
+  vol: number
+  amount: number
 }
 
 export interface CzscAnalyzeResult {
@@ -4247,6 +4261,7 @@ export interface CzscAnalyzeResult {
   fx_list: CzscFx[]
   bi_list: CzscBi[]
   zs_list: CzscZs[]
+  bars: CzscBar[]
   signals: Record<string, unknown>
   warnings?: string[] | null
   source: string
