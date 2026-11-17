@@ -53,10 +53,16 @@ def _build_error_response(code: str, message: str, hint: str | None = None, stat
 
 
 def _build_success_response(data: dict, status: int = 200) -> JSONResponse:
-    """统一成功响应, 带契约版本头。"""
+    """统一成功响应, 带契约版本头。
+
+    注意: starlette JSONResponse 默认用 stdlib json.dumps, 不识别 Pydantic 模型 / datetime /
+    Enum 等。调用方应先 model_dump() 把 Pydantic 模型转 dict; 这里加 default=str 作为最后
+    兜底, 把未识别对象 str() 化 (如 signals 中残留的 czsc Enum 值)。
+    """
     return JSONResponse(
         status_code=status,
         content=data,
+        default=str,
         headers={"X-Czsc-Api-Version": str(API_VERSION)},
     )
 
@@ -151,7 +157,16 @@ def build_router() -> APIRouter:
                 max_bi_num=max_bi_num, min_bi_len=min_bi_len,
                 features=feature_list,
             )
-            return _build_success_response({**result, "ok": True})
+            # fx_list/bi_list/zs_list 是 Pydantic 模型实例, starlette JSONResponse 默认
+            # json.dumps 不识别 Pydantic 模型, 这里统一 model_dump() 转 dict。
+            payload = {
+                **result,
+                "ok": True,
+                "fx_list": [f.model_dump() for f in result.get("fx_list", [])],
+                "bi_list": [b.model_dump() for b in result.get("bi_list", [])],
+                "zs_list": [z.model_dump() for z in result.get("zs_list", [])],
+            }
+            return _build_success_response(payload)
         except AnalyzerError as exc:
             status = 503 if exc.code == "CZSC_NOT_INSTALLED" else 500
             hint = "run: uv sync --extra czsc" if exc.code == "CZSC_NOT_INSTALLED" else None
