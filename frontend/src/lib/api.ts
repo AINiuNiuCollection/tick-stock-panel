@@ -4253,6 +4253,13 @@ export interface CzscBar {
   amount: number
 }
 
+export interface CzscMacd {
+  dt: string
+  dif: number | null
+  dea: number | null
+  macd: number | null
+}
+
 export interface CzscAnalyzeResult {
   ok: boolean
   symbol: string
@@ -4262,6 +4269,7 @@ export interface CzscAnalyzeResult {
   bi_list: CzscBi[]
   zs_list: CzscZs[]
   bars: CzscBar[]
+  macd: CzscMacd[]
   signals: Record<string, unknown>
   warnings?: string[] | null
   source: string

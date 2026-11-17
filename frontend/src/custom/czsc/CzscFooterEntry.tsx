@@ -74,7 +74,7 @@ export function CzscFooterEntry({ symbol, name }: SlotProps) {
             ) : analyze.data ? (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                 <div className="lg:col-span-2 bg-elevated rounded-btn p-2">
-                  <CzscChart result={analyze.data} height={420} />
+                  <CzscChart result={analyze.data} height={560} />
                 </div>
                 <div className="bg-elevated rounded-btn p-2 max-h-[420px] overflow-auto">
                   <CzscResultTabs result={analyze.data} />

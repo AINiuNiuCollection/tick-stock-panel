@@ -57,6 +57,16 @@ class BarItem(BaseModel):
     amount: float = 0.0
 
 
+class MacdItem(BaseModel):
+    """MACD 一根。dif/dea/macd 为双线 + 柱值, 前 max(26,9)-1 根可能为 None。
+    参数固定 12/26/9 (对齐示例图 "MACD · 12/26/9")。
+    """
+    dt: str
+    dif: float | None = None    # DIFF = EMA12 - EMA26
+    dea: float | None = None    # DEA  = EMA(DIFF, 9)
+    macd: float | None = None   # MACD hist = 2 * (DIFF - DEA)
+
+
 class AnalyzeResult(BaseModel):
     """同步/流式分析最终结果。"""
     ok: bool = True
@@ -67,6 +77,7 @@ class AnalyzeResult(BaseModel):
     bi_list: list[BiItem] = Field(default_factory=list)
     zs_list: list[ZsItem] = Field(default_factory=list)
     bars: list[BarItem] = Field(default_factory=list)
+    macd: list[MacdItem] = Field(default_factory=list)
     signals: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] | None = None
     source: str = "primary"

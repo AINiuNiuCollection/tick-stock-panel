@@ -160,7 +160,7 @@ def build_router() -> APIRouter:
                 max_bi_num=max_bi_num, min_bi_len=min_bi_len,
                 features=feature_list,
             )
-            # fx_list/bi_list/zs_list/bars 是 Pydantic 模型实例, starlette JSONResponse 默认
+            # fx_list/bi_list/zs_list/bars/macd 是 Pydantic 模型实例, starlette JSONResponse 默认
             # json.dumps 不识别 Pydantic 模型, 这里统一 model_dump() 转 dict。
             payload = {
                 **result,
@@ -169,6 +169,7 @@ def build_router() -> APIRouter:
                 "bi_list": [b.model_dump() for b in result.get("bi_list", [])],
                 "zs_list": [z.model_dump() for z in result.get("zs_list", [])],
                 "bars": [bar.model_dump() for bar in result.get("bars", [])],
+                "macd": [m.model_dump() for m in result.get("macd", [])],
             }
             return _build_success_response(payload)
         except AnalyzerError as exc:

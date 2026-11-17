@@ -157,7 +157,9 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
       <button
         type="submit"
         disabled={loading || !symbol.trim()}
-        className="h-8 px-4 rounded-btn bg-primary text-primary-fg text-sm disabled:opacity-50 hover:opacity-90"
+        // 几何参考 hAdmin .btn-primary (圆角 3px / padding 4px 12px / font-weight 400 / 白字)
+        // 颜色按用户要求与本工程主题对齐: --accent 电光蓝 (非 hAdmin 紫)
+        className="h-8 min-w-[80px] px-3 py-1 rounded-[3px] bg-accent text-white text-sm font-normal leading-[1.42857143] transition-colors hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {loading ? '分析中…' : '分析'}
       </button>

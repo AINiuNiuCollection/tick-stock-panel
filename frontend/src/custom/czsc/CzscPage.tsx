@@ -1,12 +1,16 @@
 /**
  * 缠论分析独立页 (/czsc 路由)
  *
- * 布局: 参数面板 + ECharts 图表 + 结果 Tab 列表
+ * 布局: 参数面板 + ECharts 图表 (上) + 结果 Tab 列表 (下, 可滚动)
  * 数据流: 调主工程后端 /api/czsc/analyze (optional-dependency 直接集成, 非 czsc-serve)
+ *
+ * 持久化策略: 离开页面再返回时, 从 react-query 缓存中取出最后一次成功的
+ * czsc-analyze 结果作为初始展示 (gcTime 默认 5min, 足以覆盖常规切换);
+ * 同时把最后一次 params 持久化到 sessionStorage, 让返回后能 refetch 同一查询。
  */
-import { useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Download } from 'lucide-react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Download, GripHorizontal } from 'lucide-react'
 import { fetchCzscAnalyze, fetchCzscHealth, type CzscAnalyzeResult } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { PageHeader } from '@/components/PageHeader'
@@ -16,9 +20,96 @@ import { CzscChart, type CzscChartHandle } from './CzscChart'
 import { CzscResultTabs } from './CzscResultTabs'
 import { buildCzscHtml, buildCzscHtmlFilename, downloadCzscHtml } from './exportCzscHtml'
 
+const PARAMS_STORAGE_KEY = 'czsc:last-params'
+
+/** 从 react-query 缓存中取出最后一次成功的 czsc-analyze 结果 (按 dataUpdatedAt 降序取最新)。 */
+function pickLastAnalyzeFromCache(
+  qc: ReturnType<typeof useQueryClient>,
+): CzscAnalyzeResult | undefined {
+  const cache = qc.getQueryCache()
+  const all = cache.getAll()
+  let best: CzscAnalyzeResult | undefined
+  let bestTs = -1
+  for (const q of all) {
+    const key = q.queryKey
+    if (!Array.isArray(key) || key[0] !== 'czsc-analyze') continue
+    if (key[1] === 'idle') continue
+    const data = q.state.data as CzscAnalyzeResult | undefined
+    if (!data || !data.ok) continue
+    if (q.state.dataUpdatedAt > bestTs) {
+      bestTs = q.state.dataUpdatedAt
+      best = data
+    }
+  }
+  return best
+}
+
+/** 从 sessionStorage 取出最后一次分析的参数 (让返回后可继续 refetch 同一查询)。 */
+function loadLastParams(): CzscParams | null {
+  try {
+    const raw = sessionStorage.getItem(PARAMS_STORAGE_KEY)
+    if (!raw) return null
+    return JSON.parse(raw) as CzscParams
+  } catch {
+    return null
+  }
+}
+
 export function CzscPage() {
-  const [params, setParams] = useState<CzscParams | null>(null)
+  const qc = useQueryClient()
+  const [params, setParams] = useState<CzscParams | null>(() => loadLastParams())
   const chartRef = useRef<CzscChartHandle>(null)
+  // 图表区高度 (px), 可通过拖动分割条调节; 默认 520
+  const [chartHeight, setChartHeight] = useState<number>(() => {
+    const saved = typeof window !== 'undefined' ? sessionStorage.getItem('czsc:chart-height') : null
+    return saved ? Number(saved) : 520
+  })
+  const dragStateRef = useRef<{ startY: number; startH: number } | null>(null)
+
+  // 拖动开始: 记录起始 Y 与起始高度
+  const onResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    dragStateRef.current = { startY: e.clientY, startH: chartHeight }
+    ;(e.target as HTMLDivElement).setPointerCapture(e.pointerId)
+  }, [chartHeight])
+
+  // 拖动中: 实时更新 chartHeight
+  const onResizeMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragStateRef.current
+    if (!st) return
+    const delta = e.clientY - st.startY
+    // 限制最小 240 / 最大 900
+    const next = Math.min(900, Math.max(240, st.startH + delta))
+    setChartHeight(next)
+  }, [])
+
+  // 拖动结束: 持久化高度 + 清理
+  const onResizeEnd = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragStateRef.current) {
+      try {
+        sessionStorage.setItem('czsc:chart-height', String(chartHeight))
+      } catch {
+        // sessionStorage 满或禁用时忽略
+      }
+    }
+    dragStateRef.current = null
+    try {
+      ;(e.target as HTMLDivElement).releasePointerCapture(e.pointerId)
+    } catch {
+      // 已释放时忽略
+    }
+  }, [chartHeight])
+
+  // 持久化 params 到 sessionStorage (每次 setParams 时写)
+  useEffect(() => {
+    if (params) {
+      try {
+        sessionStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(params))
+      } catch {
+        // sessionStorage 满或禁用时忽略
+      }
+    }
+  }, [params])
 
   const health = useQuery({
     queryKey: QK.czscHealth,
@@ -43,7 +134,15 @@ export function CzscPage() {
     }),
     enabled: !!params,
     staleTime: 5 * 60_000,
+    // gcTime 默认 5min; 提高到 30min 让用户离开再返回更可能命中缓存
+    gcTime: 30 * 60_000,
   })
+
+  // 当前展示数据: 优先本次 analyze.data, 否则回退到 react-query 缓存中最后一次成功的分析结果
+  // 这样离开页面再返回 (params 已从 sessionStorage 恢复, 但查询可能还在 stale/refetching 中)
+  // 也能立即显示上次的图表, 不会出现空白。
+  const lastFromCache = pickLastAnalyzeFromCache(qc)
+  const displayData = analyze.data ?? lastFromCache
 
   const serveOk = health.data?.ok === true
 
@@ -72,10 +171,11 @@ export function CzscPage() {
         loading={analyze.isFetching}
       />
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-3 min-h-0">
-        <div className="lg:col-span-2 bg-elevated rounded-btn p-2 min-h-0">
-          {analyze.data ? (
-            <CzscChart ref={chartRef} result={analyze.data} height={520} />
+      {/* 上下布局: 图表在上, 可拖动分割条, 结果数据在下 (可滚动显示全部 fx/bi/zs 行) */}
+      <div className="flex-1 flex flex-col gap-1 min-h-0">
+        <div className="bg-elevated rounded-btn p-2 shrink-0" style={{ height: chartHeight }}>
+          {displayData ? (
+            <CzscChart ref={chartRef} result={displayData} height={chartHeight - 16} />
           ) : analyze.isFetching ? (
             <EmptyState title="分析中…" />
           ) : analyze.isError ? (
@@ -85,25 +185,39 @@ export function CzscPage() {
           )}
         </div>
 
-        <div className="bg-elevated rounded-btn p-2 min-h-0">
-          {analyze.data ? (
-            <CzscResultTabs result={analyze.data} />
+        {/* 可拖动分割条 — 鼠标上下拖动调节图表与数据区高度比例
+            虚线上下边框 + 中间抓手图标, 让分割条明显可见 */}
+        <div
+          onPointerDown={onResizeStart}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeEnd}
+          onPointerCancel={onResizeEnd}
+          className="shrink-0 flex items-center justify-center h-3 cursor-row-resize border-y border-dashed border-border hover:border-accent hover:bg-accent/10 transition-colors"
+          title="拖动调节上下区域高度"
+        >
+          <GripHorizontal className="h-3.5 w-3.5 text-muted" />
+        </div>
+
+        <div className="bg-elevated rounded-btn p-2 min-h-0 flex-1 overflow-hidden flex flex-col">
+          {displayData ? (
+            <CzscResultTabs result={displayData} />
           ) : (
             <EmptyState title="等待分析结果" />
           )}
         </div>
       </div>
 
-      {analyze.data && (
-        <div className="flex items-center justify-between gap-3">
+      {displayData && (
+        <div className="flex items-center justify-between gap-3 shrink-0">
           <div className="text-xs text-muted">
-            共 {analyze.data.bar_count} 根 K 线 · 数据源: {analyze.data.source}
-            {analyze.data.cached ? ' · 缓存' : ' · 实时'}
+            共 {displayData.bar_count} 根 K 线 · 数据源: {displayData.source}
+            {displayData.cached ? ' · 缓存' : ' · 实时'}
+            {!analyze.data && lastFromCache ? ' · 显示上次缓存结果' : ''}
           </div>
           <button
             type="button"
             onClick={() => {
-              const data = analyze.data
+              const data = displayData
               if (!data) return
               // 从 CzscChart 实例取当前图表 PNG; 若 chart 未渲染则 chartDataURL=null (导出表格-only 报告)
               const chartDataURL = chartRef.current?.getDataURL() ?? null

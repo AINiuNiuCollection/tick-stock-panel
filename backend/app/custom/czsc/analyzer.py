@@ -199,6 +199,67 @@ def _fetch_kline(
 
 # ===== czsc.CZSC 分析 (同步, 在线程池中执行) =====
 
+def _calc_ema(values: list[float], period: int) -> list[float | None]:
+    """EMA(N) 指数移动平均。前 period-1 个为 None, 之后用标准 EMA 递推:
+    EMA_t = (close_t * k) + EMA_{t-1} * (1-k), k = 2/(period+1)。
+    第一根有效 EMA 用前 period 根的简单平均作种子 (与 czsc/通用 MACD 一致)。
+    """
+    if not values:
+        return []
+    k = 2.0 / (period + 1)
+    out: list[float | None] = [None] * len(values)
+    if len(values) < period:
+        return out
+    seed = sum(values[:period]) / period
+    out[period - 1] = seed
+    prev = seed
+    for i in range(period, len(values)):
+        prev = values[i] * k + prev * (1 - k)
+        out[i] = prev
+    return out
+
+
+def _calc_macd(
+    closes: list[float],
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> list[tuple[float | None, float | None, float | None]]:
+    """计算 MACD(12,26,9): 返回 [(dif, dea, macd_hist), ...]。
+
+    - DIF  = EMA(fast) - EMA(slow)
+    - DEA  = EMA(DIF, signal)  (只在 DIF 有效段计算)
+    - HIST = 2 * (DIF - DEA)   (与示例图及 czsc/通达信一致)
+
+    前 slow-1 根 DIF 为 None, DEA 在 DIF 之前 signal-1 根为 None。
+    """
+    ema_fast = _calc_ema(closes, fast)
+    ema_slow = _calc_ema(closes, slow)
+    n = len(closes)
+    dif_arr: list[float | None] = [None] * n
+    first_valid = -1
+    for i in range(n):
+        if ema_fast[i] is not None and ema_slow[i] is not None:
+            dif_arr[i] = ema_fast[i] - ema_slow[i]  # type: ignore[operator]
+            if first_valid < 0:
+                first_valid = i
+    # DEA = EMA(DIF, signal), 仅在 DIF 有效段计算
+    dea_arr: list[float | None] = [None] * n
+    if first_valid >= 0:
+        dif_slice = [d for d in dif_arr[first_valid:] if d is not None]  # type: ignore[misc]
+        dea_slice = _calc_ema(dif_slice, signal)
+        # 映射回原数组下标 (dif_slice[0] 对应 first_valid)
+        for j, v in enumerate(dea_slice):
+            dea_arr[first_valid + j] = v
+    out: list[tuple[float | None, float | None, float | None]] = []
+    for i in range(n):
+        d = dif_arr[i]
+        e = dea_arr[i]
+        hist = None if (d is None or e is None) else 2 * (d - e)
+        out.append((d, e, hist))
+    return out
+
+
 def _analyze_sync(
     symbol: str,
     freq: str,
@@ -246,7 +307,7 @@ def _analyze_sync(
     zs_list = [ZsItem(**zs_to_dict(zs)) for zs in c.zs_list] if "zs" in features else []
 
     # K 线 bars (供前端图表渲染 candlestick + 作为 fx/bi/zs 坐标轴类目)
-    from .schemas import BarItem
+    from .schemas import BarItem, MacdItem
     bars_out: list[BarItem] = []
     for bar in bars:
         bars_out.append(BarItem(
@@ -255,6 +316,18 @@ def _analyze_sync(
             low=float(bar.low), close=float(bar.close),
             vol=float(bar.vol) if bar.vol is not None else 0.0,
             amount=float(bar.amount) if bar.amount is not None else 0.0,
+        ))
+
+    # MACD(12,26,9) — 前端示例图含 MACD 副图, 在后端计算避免前端重复实现 EMA。
+    closes = [b.close for b in bars_out]
+    macd_seq = _calc_macd(closes, 12, 26, 9)
+    macd_out: list[MacdItem] = []
+    for bar, (dif, dea, hist) in zip(bars_out, macd_seq):
+        macd_out.append(MacdItem(
+            dt=bar.dt,
+            dif=dif,
+            dea=dea,
+            macd=hist,
         ))
 
     signals: dict[str, Any] = {}
@@ -273,6 +346,7 @@ def _analyze_sync(
         "bi_list": bi_list,
         "zs_list": zs_list,
         "bars": bars_out,
+        "macd": macd_out,
         "signals": signals,
         "warnings": None,
         "source": source,
