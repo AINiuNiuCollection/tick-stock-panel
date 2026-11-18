@@ -71,6 +71,7 @@ class AnalyzeResult(BaseModel):
     """同步/流式分析最终结果。"""
     ok: bool = True
     symbol: str
+    symbol_name: str | None = None  # 中文名 (前端透传, 不查库)
     freq: str
     bar_count: int
     fx_list: list[FxItem] = Field(default_factory=list)

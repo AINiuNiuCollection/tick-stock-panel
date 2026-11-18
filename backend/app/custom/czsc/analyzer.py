@@ -268,6 +268,7 @@ def _analyze_sync(
     max_bi_num: int,
     min_bi_len: int,
     features: list[str],
+    symbol_name: str | None = None,
 ) -> dict[str, Any]:
     """同步分析 — 在线程池中调用, 不阻塞事件循环。
 
@@ -340,6 +341,7 @@ def _analyze_sync(
 
     return {
         "symbol": symbol,
+        "symbol_name": symbol_name,
         "freq": freq,
         "bar_count": len(bars),
         "fx_list": fx_list,
@@ -362,6 +364,7 @@ async def analyze_async(
     max_bi_num: int = DEFAULT_MAX_BI_NUM,
     min_bi_len: int = DEFAULT_MIN_BI_LEN,
     features: list[str] | None = None,
+    symbol_name: str | None = None,
 ) -> dict[str, Any]:
     """异步分析入口 — 通过线程池隔离 CPU 密集运算。
 
@@ -387,7 +390,7 @@ async def analyze_async(
             loop.run_in_executor(
                 None,
                 _analyze_sync,
-                symbol, freq, start, end, max_bi_num, min_bi_len, features,
+                symbol, freq, start, end, max_bi_num, min_bi_len, features, symbol_name,
             ),
             timeout=settings.czsc_analyze_timeout_s,
         )
@@ -414,6 +417,7 @@ async def analyze_stream(
     max_bi_num: int = DEFAULT_MAX_BI_NUM,
     min_bi_len: int = DEFAULT_MIN_BI_LEN,
     features: list[str] | None = None,
+    symbol_name: str | None = None,
 ):
     """流式分析异步生成器, 产出 SSE 事件 dict。
 
@@ -469,7 +473,7 @@ async def analyze_stream(
             loop.run_in_executor(
                 None,
                 _analyze_sync,
-                symbol, freq, start, end, max_bi_num, min_bi_len, features,
+                symbol, freq, start, end, max_bi_num, min_bi_len, features, symbol_name,
             ),
             timeout=settings.czsc_analyze_timeout_s,
         )

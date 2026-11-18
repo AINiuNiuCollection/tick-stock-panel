@@ -16,7 +16,7 @@ function fmtPct(v: number | null | undefined, digits = 2): string {
   return `${(v * 100).toFixed(digits)}%`
 }
 
-export function PanYangTradesTable({ trades }: Props) {
+export function ShangZhengTradesTable({ trades }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>('seq')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
 

@@ -59,35 +59,54 @@ export function CzscPage() {
   const qc = useQueryClient()
   const [params, setParams] = useState<CzscParams | null>(() => loadLastParams())
   const chartRef = useRef<CzscChartHandle>(null)
-  // 图表区高度 (px), 可通过拖动分割条调节; 默认 520
-  const [chartHeight, setChartHeight] = useState<number>(() => {
-    const saved = typeof window !== 'undefined' ? sessionStorage.getItem('czsc:chart-height') : null
-    return saved ? Number(saved) : 520
+  // 整体可拉伸容器高度 (px), 由 ResizeObserver 实时跟踪
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [containerHeight, setContainerHeight] = useState<number>(0)
+  // 图表区占比 (0.1 ~ 0.9), 默认 0.7 (70%)
+  const [chartRatio, setChartRatio] = useState<number>(() => {
+    const saved = typeof window !== 'undefined' ? sessionStorage.getItem('czsc:chart-ratio') : null
+    const n = saved ? Number(saved) : 0.7
+    return Number.isFinite(n) && n >= 0.1 && n <= 0.9 ? n : 0.7
   })
-  const dragStateRef = useRef<{ startY: number; startH: number } | null>(null)
+  const dragStateRef = useRef<{ startY: number; startRatio: number } | null>(null)
 
-  // 拖动开始: 记录起始 Y 与起始高度
-  const onResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    dragStateRef.current = { startY: e.clientY, startH: chartHeight }
-    ;(e.target as HTMLDivElement).setPointerCapture(e.pointerId)
-  }, [chartHeight])
-
-  // 拖动中: 实时更新 chartHeight
-  const onResizeMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const st = dragStateRef.current
-    if (!st) return
-    const delta = e.clientY - st.startY
-    // 限制最小 240 / 最大 900
-    const next = Math.min(900, Math.max(240, st.startH + delta))
-    setChartHeight(next)
+  // 监听整体容器高度变化 (窗口 resize / 父布局变化都会触发)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(entries => {
+      for (const e of entries) {
+        const h = e.contentRect.height
+        if (h > 0) setContainerHeight(h)
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
   }, [])
 
-  // 拖动结束: 持久化高度 + 清理
+  // 拖动开始: 记录起始 Y 与起始占比
+  const onResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    dragStateRef.current = { startY: e.clientY, startRatio: chartRatio }
+    ;(e.target as HTMLDivElement).setPointerCapture(e.pointerId)
+  }, [chartRatio])
+
+  // 拖动中: 按整体高度换算 delta 为占比增量
+  const onResizeMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragStateRef.current
+    if (!st || containerHeight <= 0) return
+    const delta = e.clientY - st.startY
+    const deltaRatio = delta / containerHeight
+    // 限制 10% ~ 90% (用户可让任一侧缩到很小)
+    const next = Math.min(0.9, Math.max(0.1, st.startRatio + deltaRatio))
+    setChartRatio(next)
+  }, [containerHeight])
+
+  // 拖动结束: 持久化占比 + 清理
   const onResizeEnd = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (dragStateRef.current) {
       try {
-        sessionStorage.setItem('czsc:chart-height', String(chartHeight))
+        sessionStorage.setItem('czsc:chart-ratio', String(chartRatio))
       } catch {
         // sessionStorage 满或禁用时忽略
       }
@@ -98,7 +117,7 @@ export function CzscPage() {
     } catch {
       // 已释放时忽略
     }
-  }, [chartHeight])
+  }, [chartRatio])
 
   // 持久化 params 到 sessionStorage (每次 setParams 时写)
   useEffect(() => {
@@ -124,6 +143,7 @@ export function CzscPage() {
       : ['czsc-analyze', 'idle'],
     queryFn: () => fetchCzscAnalyze({
       symbol: params!.symbol,
+      symbol_name: params!.symbol_name,
       freq: params!.freq,
       start_date: params!.start_date,
       end_date: params!.end_date,
@@ -171,11 +191,17 @@ export function CzscPage() {
         loading={analyze.isFetching}
       />
 
-      {/* 上下布局: 图表在上, 可拖动分割条, 结果数据在下 (可滚动显示全部 fx/bi/zs 行) */}
-      <div className="flex-1 flex flex-col gap-1 min-h-0">
-        <div className="bg-elevated rounded-btn p-2 shrink-0" style={{ height: chartHeight }}>
+      {/* 上下布局: 图表在上, 可拖动分割条, 结果数据在下 (可滚动显示全部 fx/bi/zs 行)。
+          chartRatio 控制图表占比 (默认 0.7), 拖动范围 0.1 ~ 0.9, 持久化 sessionStorage。
+          变更点1: 始终用 flex-grow 按占比分配, 不再用固定 px height, 确保占满整个页面高度。
+                   containerHeight 仅用于拖动增量计算, 不参与布局。 */}
+      <div ref={containerRef} className="flex-1 flex flex-col gap-1 min-h-0">
+        <div
+          className="bg-elevated rounded-btn p-2 min-h-0 flex flex-col"
+          style={{ flex: `${chartRatio} 1 0` }}
+        >
           {displayData ? (
-            <CzscChart ref={chartRef} result={displayData} height={chartHeight - 16} />
+            <CzscChart ref={chartRef} result={displayData} height="100%" />
           ) : analyze.isFetching ? (
             <EmptyState title="分析中…" />
           ) : analyze.isError ? (
@@ -198,7 +224,10 @@ export function CzscPage() {
           <GripHorizontal className="h-3.5 w-3.5 text-muted" />
         </div>
 
-        <div className="bg-elevated rounded-btn p-2 min-h-0 flex-1 overflow-hidden flex flex-col">
+        <div
+          className="bg-elevated rounded-btn p-2 min-h-0 overflow-hidden flex flex-col"
+          style={{ flex: `${1 - chartRatio} 1 0` }}
+        >
           {displayData ? (
             <CzscResultTabs result={displayData} />
           ) : (

@@ -2694,19 +2694,19 @@ export const api = {
     )
     return { presets: data.strategies, load_errors: data.load_errors }
   },
-  screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' = 'stock', timeframe: '1d' | '1m' = '1d') =>
+  screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' | 'index' = 'stock', timeframe: '1d' | '1m' = '1d') =>
     request<ScreenerResult>('/api/screener/run_preset', {
       method: 'POST',
       timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
       body: JSON.stringify({ strategy_id, pool, as_of: asOf ?? null, ext_columns: extColumns || null, asset_type: assetType, timeframe }),
     }),
-  screenerRunCustom: (conditions: string[], orderBy?: string, limit = 30, pool?: string[], extColumns?: string, assetType: 'stock' | 'etf' = 'stock') =>
+  screenerRunCustom: (conditions: string[], orderBy?: string, limit = 30, pool?: string[], extColumns?: string, assetType: 'stock' | 'etf' | 'index' = 'stock') =>
     request<ScreenerResult>('/api/screener/run', {
       method: 'POST',
       timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
       body: JSON.stringify({ conditions, order_by: orderBy, limit, pool, ext_columns: extColumns || null, asset_type: assetType }),
     }),
-  screenerRunAll: (asOf?: string, strategyIds?: string[], assetType: 'stock' | 'etf' = 'stock') =>
+  screenerRunAll: (asOf?: string, strategyIds?: string[], assetType: 'stock' | 'etf' | 'index' = 'stock') =>
     request<ScreenerRunAllSummary>(
       '/api/screener/run_all', { method: 'POST', timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS, body: JSON.stringify({ as_of: asOf ?? null, strategy_ids: strategyIds ?? null, asset_type: assetType, timeframe: '1d', summary_only: true }) },
     ),
@@ -4263,6 +4263,7 @@ export interface CzscMacd {
 export interface CzscAnalyzeResult {
   ok: boolean
   symbol: string
+  symbol_name?: string | null  // 中文名 (前端透传, 不查库)
   freq: string
   bar_count: number
   fx_list: CzscFx[]
@@ -4291,6 +4292,7 @@ export interface CzscError {
 
 export interface CzscAnalyzeParams {
   symbol: string
+  symbol_name?: string | null  // 中文名 (前端透传, 不查库)
   freq?: string
   start_date?: string
   end_date?: string
@@ -4313,6 +4315,7 @@ export async function fetchCzscHealth(): Promise<CzscHealth | null> {
 export async function fetchCzscAnalyze(params: CzscAnalyzeParams): Promise<CzscAnalyzeResult> {
   const qs = new URLSearchParams()
   qs.set('symbol', params.symbol)
+  if (params.symbol_name) qs.set('symbol_name', params.symbol_name)
   if (params.freq) qs.set('freq', params.freq)
   if (params.start_date) qs.set('start_date', params.start_date)
   if (params.end_date) qs.set('end_date', params.end_date)
@@ -4342,6 +4345,7 @@ export function streamCzscAnalyze(
   const ctl = new AbortController()
   const qs = new URLSearchParams()
   qs.set('symbol', params.symbol)
+  if (params.symbol_name) qs.set('symbol_name', params.symbol_name)
   if (params.freq) qs.set('freq', params.freq)
   if (params.start_date) qs.set('start_date', params.start_date)
   if (params.end_date) qs.set('end_date', params.end_date)

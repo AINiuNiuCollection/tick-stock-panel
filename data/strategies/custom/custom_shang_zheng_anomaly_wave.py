@@ -1,4 +1,4 @@
-"""潘扬-异动波段策略 (个人策略) — 上证指数择时信号
+"""上证-异动波段策略 (个人策略) — 上证指数择时信号
 
 反推自 D:\\MyFile\\潘扬-日线级别-异动波段策略.html 的 112 笔交易数据。
 
@@ -16,7 +16,7 @@
   实际交易标的 (如 512100.SH 中证1000ETF) 的盈亏由前端用信号日对齐到交易标的
   K 线重算 (matching=open_t+1, 信号次日开盘成交)。后端只负责信号生成 + 指数回测。
 
-均线天数 ma_period 参数化 (Q4 确认): 默认 5, 可配 5/10/20。
+均线天数 ma_period 参数化: 默认 5, 可配 5/10/20。
 """
 
 import numpy as np
@@ -29,9 +29,9 @@ from app.backtest.matrix import (
 )
 
 META = {
-    "id": "custom_panyang_anomaly_wave",
-    "name": "潘扬-异动波段(上证择时)",
-    "description": "上证指数异动动量择时信号 (反推自潘扬回测HTML, 逼近而非严格一致)",
+    "id": "custom_shang_zheng_anomaly_wave",
+    "name": "上证-异动波段(指数择时)",
+    "description": "上证指数异动动量择时信号 (反推自回测HTML, 逼近而非严格一致)",
     "tags": ["异动", "波段", "动量", "指数择时", "个人策略"],
     "asset_types": ["index"],
     "timeframes": ["1d"],
@@ -117,7 +117,7 @@ def _calc_momentum_pct(market: MarketDataMatrix, period: int) -> np.ndarray:
     return np.nan_to_num(bias, nan=0.0, posinf=0.0, neginf=0.0) * 100.0
 
 
-class PanYangAnomalyWaveMatrixStrategy:
+class ShangZhengAnomalyWaveMatrixStrategy:
     def required_fields(self) -> frozenset[str]:
         return frozenset({"close", "raw_close"})
 
@@ -158,4 +158,4 @@ class PanYangAnomalyWaveMatrixStrategy:
         )
 
 
-MATRIX_STRATEGY = PanYangAnomalyWaveMatrixStrategy()
+MATRIX_STRATEGY = ShangZhengAnomalyWaveMatrixStrategy()

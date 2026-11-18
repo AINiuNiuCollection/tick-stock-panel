@@ -74,7 +74,7 @@ function getChartTheme(): ChartTheme {
   const isDark = typeof document !== 'undefined'
     && document.documentElement.classList.contains('dark')
   if (isDark) {
-    // czsc dark "Deep Cosmos"
+    // czsc dark "Deep Cosmos" — 变更点3: 虚线/中枢边框加深
     return {
       background: '#0E1116',
       text: '#EFEBE0',
@@ -83,25 +83,25 @@ function getChartTheme(): ChartTheme {
       down: '#5BB85B',
       sma5: '#E6A93B',
       sma20: '#6EB6E4',
-      fx_dashed: '#8B8678',
+      fx_dashed: '#B5AE9A',     // 加深: #8B8678 → #B5AE9A (虚线对比度提升)
       bi: '#A8B8E8',
-      zsBorder: '#C29CF2',     // czsc dark 信号调色板第 5 色
-      zsLabel: '#C29CF2',
+      zsBorder: '#9D6FD4',      // 加深: #C29CF2 → #9D6FD4 (中枢边框更醒目)
+      zsLabel: '#9D6FD4',
     }
   }
-  // czsc light "量化年鉴" 暖纸色
+  // czsc light "量化年鉴" 暖纸色 — 变更点3: 虚线/中枢边框加深
   return {
-    background: '#F5F4EF',     // 采样示例图背景像素 (带极淡暖灰的近白色)
+    background: '#F5F4EF',
     text: '#1A1A17',
     grid: '#E8E2D4',
     up: '#C03A2B',
     down: '#2E7D32',
     sma5: '#C78A2E',
     sma20: '#2D6A8C',
-    fx_dashed: '#8B7E5E',
+    fx_dashed: '#6B5A3E',     // 加深: #8B7E5E → #6B5A3E
     bi: '#1F3C6E',
-    zsBorder: '#7B4FA8',      // czsc light 信号调色板第 5 色
-    zsLabel: '#7B4FA8',
+    zsBorder: '#5B3A88',      // 加深: #7B4FA8 → #5B3A88
+    zsLabel: '#5B3A88',
   }
 }
 
@@ -173,7 +173,11 @@ interface Props {
    * 兼容旧调用方传 {date, open, ...} 格式 (date 字段), 优先级高于 result.bars。
    */
   klines?: Array<{ date: string; open: number; high: number; low: number; close: number; vol: number }>
-  height?: number
+  /**
+   * 图表高度。传 number 为固定 px; 传 "100%" 则撑满父容器 (父容器需有确定高度)。
+   * 变更点1: 支持 "100%" 让图表区随父级 flex 占比动态伸缩, 不再需要外层传固定 px。
+   */
+  height?: number | string
 }
 
 export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
@@ -243,13 +247,16 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     // MACD 副图数据 (后端计算 EMA12/26/9, 前端仅消费)
     // - 柱状 hist: 红 (>=0) 绿 (<0)
     // - DIFF / DEA 两条折线, 对齐示例图 "MACD · 12/26/9"
+    //
+    // 变更点4: 前慢速 EMA 暖机段 (前 25 根 DIF/DEA 可能为 null) 视为 0, 让副图从首根显示,
+    //          不再出现"左侧忍让没有数据"的空白。这与 czsc/通达信惯例一致 (前段补 0 而非留空)。
     const macdList = result.macd ?? []
     const macdHistData = macdList.map(m => ({
-      value: m.macd,
+      value: m.macd ?? 0,
       itemStyle: { color: (m.macd ?? 0) >= 0 ? theme.up : theme.down },
     }))
-    const macdDiffData = macdList.map(m => m.dif)
-    const macdDeaData = macdList.map(m => m.dea)
+    const macdDiffData = macdList.map(m => m.dif ?? 0)
+    const macdDeaData = macdList.map(m => m.dea ?? 0)
 
     // 最后一根 bar 的 OHLC/CHG/VOL/MACD 数据, 用于右上角悬浮面板 (graphic 元素)
     const lastBar = resolvedKlines[resolvedKlines.length - 1]
@@ -263,23 +270,33 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     // 依次连接 fx_list 中每个分型的极值 (顶分型取 high, 底分型取 low),
     // 用 lines series 渲染整条折线, type='dashed', color=theme.fx_dashed。
     // 不再使用三角箭头 markPoint (示例图无箭头)。
+    //
+    // 变更点2: 只在顶底分型交替时画虚线 (跳过连续同向孤立分型),
+    //          避免出现"没有顶底分型也有虚线连接"的伪分型段。
+    //          连续同向: 同是顶或同是底时, 跳过当前点不画, 不推进 prev。
     const fxSorted = [...result.fx_list].sort((a, b) =>
       a.dt < b.dt ? -1 : a.dt > b.dt ? 1 : 0,
     )
     const fxSegments: Array<{ coords: [[string, number], [string, number]]; lineStyle: object }> = []
+    let prevFx = fxSorted[0]
     for (let i = 1; i < fxSorted.length; i++) {
-      const prev = fxSorted[i - 1]
       const curr = fxSorted[i]
-      const prevY = isTopMark(prev.mark) ? prev.high : prev.low
-      const currY = isTopMark(curr.mark) ? curr.high : curr.low
+      const prevIsTop = isTopMark(prevFx.mark)
+      const currIsTop = isTopMark(curr.mark)
+      // 同向分型: 跳过, 不画虚线也不推进 prev (保留前一个作锚点)
+      if (prevIsTop === currIsTop) continue
+      const prevY = prevIsTop ? prevFx.high : prevFx.low
+      const currY = currIsTop ? curr.high : curr.low
       fxSegments.push({
-        coords: [[prev.dt, prevY], [curr.dt, currY]],
+        coords: [[prevFx.dt, prevY], [curr.dt, currY]],
         lineStyle: {
           color: theme.fx_dashed,
-          width: 1.2,
+          width: 1.6,  // 变更点3: 加粗 1.2 → 1.6, 提升虚线可见度
           type: 'dashed' as const,
         },
       })
+      // 交替成功才推进 prev, 下一段从这里开始
+      prevFx = curr
     }
 
     // BI 笔实线 — 对齐示例图与 czsc 原生 bi: 连接每笔起止端点 (sdt→edt),
@@ -299,14 +316,20 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     // 中枢矩形 (markArea) — czsc 中枢 = 至少 3 笔重叠的价格区间 [zd, zg]
     // 对齐示例图: 紫色虚线边框, 无填充 (color='transparent'), 不画 zd/zg 数值标签
     // itemStyle 必须写在 markArea 顶层 (对所有矩形生效), 写在点对象里会被 echarts 忽略
-    const zsAreas = result.zs_list.map(zs => ([
+    //
+    // 变更点1: 只渲染 valid 中枢 (zs.valid !== false), 序号重新编号。
+    //          czsc 库 get_zs_seq 原始算法每笔必归某中枢 (含 is_valid=False 的重叠不足中枢),
+    //          此处按用户确认的 C 方案仅做渲染过滤, 不改算法。
+    const validZsList = result.zs_list.filter(zs => zs.valid !== false)
+    const zsAreas = validZsList.map(zs => ([
       { xAxis: zs.start_dt, yAxis: zs.zs_range[0] },
       { xAxis: zs.end_dt,   yAxis: zs.zs_range[1] },
     ]))
 
     // 中枢 ZS 序号标签 — markPoint 标在每个矩形顶部 (zg 价位) 位置, 显示 ZS1/ZS2/...
     // 对齐示例图右上角的 ZS1/ZS2/ZS3 灰色文字标注
-    const zsLabels = result.zs_list.map((zs, idx) => ({
+    // 序号基于过滤后的 validZsList 重新编号 (避免跳号)
+    const zsLabels = validZsList.map((zs, idx) => ({
       name: `ZS${idx + 1}`,
       coord: [zs.start_dt, zs.zs_range[1]],
       symbol: 'circle',
@@ -323,9 +346,12 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
 
     // 三栏布局: 主图 60% / 成交量 15% / MACD 20% (剩余 5% 留给 dataZoom 与边距)
     // 三个 grid 共享 category xAxis, 各自独立 yAxis。axisIndex 将 series 绑定到对应 grid。
-    // containLabel: true 让 echarts 把 y 轴标签宽度算进 grid 区域, 避免 MACD 负数标签 (-0.50) 被左侧裁切。
-    const gridLeft = 8
-    const gridRight = 16
+    // containLabel: true 让 echarts 把 y 轴标签宽度算进 grid 区域, 避免 MACD 负数标签 (-0.50) 被裁切。
+    //
+    // 变更点8: y 轴刻度改到右侧 (position:'right'), gridRight 加宽到 56 容纳刻度宽度,
+    //          gridLeft 减到 4 (左侧不再需要容纳刻度)。主图与 VOL/MACD 都改右侧, 三栏右侧对齐。
+    const gridLeft = 4
+    const gridRight = 56
     const mainGrid = { left: gridLeft, right: gridRight, top: 64, height: '52%', containLabel: true }
     const volGrid = { left: gridLeft, right: gridRight, top: '66%', height: '11%', containLabel: true }
     const macdGrid = { left: gridLeft, right: gridRight, top: '80%', height: '14%', containLabel: true }
@@ -334,6 +360,9 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     // 对齐示例图右侧黑色文字面板
     const graphicElements: echarts.EChartsOption['graphic'] = []
     // ===== 左上角股票标题 (对齐示例图: 大号 symbol + 灰色小字 "symbol 缠论结构 (freq)" + "freq · N BARS" + 图例) =====
+    // 变更点7: 加中文标识 — 主标题显示 "代码 中文名" (中文名来自前端透传 symbol_name);
+    //          副标题同样含中文, 让左上角 tag 不仅有编号也有中文标识。
+    const symbolDisplayName = result.symbol_name ? `${result.symbol} ${result.symbol_name}` : result.symbol
     graphicElements.push({
       type: 'group',
       left: gridLeft,
@@ -342,7 +371,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         {
           type: 'text',
           style: {
-            text: result.symbol,
+            text: symbolDisplayName,
             x: 0, y: 0,
             fill: theme.text,
             font: 'bold 18px Inter, "HarmonyOS Sans SC", sans-serif',
@@ -351,7 +380,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         {
           type: 'text',
           style: {
-            text: `${result.symbol} 缠论结构 (${result.freq})`,
+            text: `${symbolDisplayName} 缠论结构 (${result.freq})`,
             x: 0, y: 22,
             fill: theme.text,
             opacity: 0.5,
@@ -361,7 +390,6 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         {
           type: 'text',
           style: {
-            // 示例图: "日线 · 529 BARS  |  ━ SMA5  ━ SMA20  ┄ FX (DASHED)  ━ BI (SOLID)"
             text: `${result.freq} · ${result.bar_count} BARS    — SMA5    — SMA20    ┄ FX (DASHED)    — BI (SOLID)`,
             x: 0, y: 40,
             fill: theme.text,
@@ -465,7 +493,62 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     const option = {
       // 背景与文字色随 czsc 主题切换 (light #F5F4EF / dark 深空)
       backgroundColor: theme.background,
-      tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+      // 变更点6/2: tooltip formatter — 中文分行展示 + 涨跌幅% + SMA 两位小数 + dt 仅日期。
+      //   日期
+      //   开 xxxx.xx
+      //   收 xxxx.xx
+      //   高 xxxx.xx
+      //   低 xxxx.xx
+      //   涨跌 +x.xx%
+      //   SMA5 / SMA20 / VOL / MACD / DIFF / DEA
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross' },
+        formatter: (params: unknown) => {
+          if (!Array.isArray(params) || params.length === 0) return ''
+          const arr = params as Array<{ axisValue?: string; seriesName?: string; value?: unknown; color?: string; dataIndex?: number }>
+          const dt = arr[0]?.axisValue ?? ''
+          const dateStr = dt.slice(0, 10)  // 仅日期 YYYY-MM-DD
+          // 找当前 K 线 index 与前一根 close, 用于计算涨跌幅
+          const kIdx = arr.find(p => p.seriesName === 'K线')?.dataIndex ?? -1
+          const curK = kIdx >= 0 ? resolvedKlines[kIdx] : undefined
+          const prevK = kIdx >= 1 ? resolvedKlines[kIdx - 1] : undefined
+          const chgPct = curK && prevK
+            ? ((curK.close - prevK.close) / prevK.close) * 100
+            : null
+          const lines: string[] = [dateStr]
+          for (const p of arr) {
+            const nm = p.seriesName ?? ''
+            const v = p.value
+            if (nm === 'K线' && Array.isArray(v) && v.length >= 4) {
+              const [o, c, l, h] = v as number[]
+              lines.push(`开 ${o.toFixed(2)}`)
+              lines.push(`收 ${c.toFixed(2)}`)
+              lines.push(`高 ${h.toFixed(2)}`)
+              lines.push(`低 ${l.toFixed(2)}`)
+              if (chgPct != null) {
+                const sign = chgPct >= 0 ? '+' : ''
+                lines.push(`涨跌 ${sign}${chgPct.toFixed(2)}%`)
+              }
+            } else if (nm === 'SMA5' || nm === 'SMA20') {
+              const n = typeof v === 'number' ? v : null
+              lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
+            } else if (nm === 'VOL') {
+              const n = typeof v === 'number' ? v : null
+              lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
+            } else if (nm === 'MACD' || nm === 'DIFF' || nm === 'DEA') {
+              const n = typeof v === 'number' ? v : null
+              lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
+            } else if (nm === 'FX' || nm === 'BI') {
+              // lines series 不展示数值 (折线坐标已可视化)
+              continue
+            } else {
+              lines.push(`${nm} ${v != null ? String(v) : '—'}`)
+            }
+          }
+          return lines.join('<br/>')
+        },
+      },
       // 图例顺序与示例图对齐: SMA5 / SMA20 / FX (DASHED) / BI (SOLID) + 中枢
       legend: {
         data: ['K线', 'SMA5', 'SMA20', 'FX', 'BI', '中枢', 'VOL', 'MACD'],
@@ -513,29 +596,42 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       ],
       yAxis: [
         // 主图 yAxis (index 0) — 价格, scale 自适应
-        // axisLabel.width 固定为 56px, 让三个 grid 的 y 轴标签宽度一致,
-        // containLabel: true 时各 grid 左边缘对齐, 避免 MACD 副图左边缘比主图窄。
+        // 变更点8: 刻度改右侧 (position:'right') + 显示轴线 (axisLine.show:true)
+        //          + 刻度值 toFixed(2) 只保留两位小数。
+        //          axisLabel.width 固定 56px 让三栏右侧对齐。
         {
           scale: true,
+          position: 'right',
           splitLine: { show: true, lineStyle: { color: theme.grid, type: 'dashed' } },
-          axisLabel: { color: theme.text, fontSize: 11, width: 56 },
-          axisLine: { lineStyle: { color: theme.grid } },
+          axisLabel: {
+            color: theme.text, fontSize: 11, width: 56,
+            formatter: (v: number) => isFinite(v) ? v.toFixed(2) : '',
+          },
+          axisLine: { show: true, lineStyle: { color: theme.grid } },
         },
-        // VOL yAxis (index 1)
+        // VOL yAxis (index 1) — 变更点8: 同样改右侧 + 两位小数
         {
           gridIndex: 1,
+          position: 'right',
           splitNumber: 2,
           splitLine: { show: false },
-          axisLabel: { color: theme.text, fontSize: 10, width: 56 },
-          axisLine: { lineStyle: { color: theme.grid } },
+          axisLabel: {
+            color: theme.text, fontSize: 10, width: 56,
+            formatter: (v: number) => isFinite(v) ? v.toFixed(2) : '',
+          },
+          axisLine: { show: true, lineStyle: { color: theme.grid } },
         },
-        // MACD yAxis (index 2) — 含 0 轴
+        // MACD yAxis (index 2) — 含 0 轴, 变更点8: 同样改右侧 + 两位小数
         {
           gridIndex: 2,
+          position: 'right',
           splitNumber: 3,
           splitLine: { show: true, lineStyle: { color: theme.grid, type: 'dashed' } },
-          axisLabel: { color: theme.text, fontSize: 10, width: 56 },
-          axisLine: { lineStyle: { color: theme.grid } },
+          axisLabel: {
+            color: theme.text, fontSize: 10, width: 56,
+            formatter: (v: number) => isFinite(v) ? v.toFixed(2) : '',
+          },
+          axisLine: { show: true, lineStyle: { color: theme.grid } },
         },
       ],
       dataZoom: [
@@ -618,7 +714,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
             itemStyle: {
               color: 'transparent',            // 无填充, 对齐示例图
               borderColor: theme.zsBorder,
-              borderWidth: 1.2,
+              borderWidth: 1.6,                // 变更点3: 加粗 1.2 → 1.6
               borderType: 'dashed',
             },
             data: zsAreas,
@@ -673,10 +769,23 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     chartRef.current.setOption(option, true)
   }, [result, resolvedKlines, isDark])
 
-  // 高度变化时 (拖动分割条 / 父容器 resize) 同步 echarts 实例尺寸
+  // 高度变化时 (拖动分割条 / 父容器 resize) 同步 echarts 实例尺寸。
+  // 变更点1: height="100%" 时父容器尺寸变化由 ResizeObserver 捕获, 自动 resize echarts。
   useEffect(() => {
     chartRef.current?.resize()
   }, [height])
+
+  // 监听容器自身尺寸变化 (父级 flex 占比变动 / 窗口缩放), 自动 resize echarts。
+  // 覆盖 height="100%" 场景, 此时 height prop 不变但容器实际尺寸在变。
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || !chartRef.current || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      chartRef.current?.resize()
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   return <div ref={containerRef} style={{ width: '100%', height }} />
 })

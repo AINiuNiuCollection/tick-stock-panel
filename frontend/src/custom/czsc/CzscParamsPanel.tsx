@@ -6,6 +6,7 @@ import { SymbolPicker } from '@/components/SymbolPicker'
 
 export interface CzscParams {
   symbol: string
+  symbol_name?: string | null  // 中文名 (前端透传, 不查库)
   freq: string
   start_date?: string
   end_date?: string
@@ -33,6 +34,7 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
   const today = new Date().toISOString().slice(0, 10)
   const defaultStart = new Date(Date.now() - 365 * 86400 * 1000).toISOString().slice(0, 10)
   const [symbol, setSymbol] = useState(initialSymbol)
+  const [symbolName, setSymbolName] = useState<string | null>(null)
   const [freq, setFreq] = useState('日线')
   const [startDate, setStartDate] = useState(defaultStart)
   const [endDate, setEndDate] = useState(today)
@@ -50,6 +52,7 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
     if (!symbol.trim()) return
     onAnalyze({
       symbol: symbol.trim(),
+      symbol_name: symbolName,
       freq,
       start_date: startDate || undefined,
       end_date: endDate || undefined,
@@ -67,6 +70,7 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
         <SymbolPicker
           value={symbol}
           onChange={setSymbol}
+          onSelect={(_sym, name) => setSymbolName(name)}
           assetTypes="stock,etf,index"
           size="sm"
           placeholder="代码 / 名称"

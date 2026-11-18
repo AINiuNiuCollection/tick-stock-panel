@@ -40,7 +40,7 @@ import {
 const SHOW_STRATEGY_STORE = false
 
 export function Screener() {
-  const [assetType, setAssetType] = useState<'stock' | 'etf'>('stock')
+  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'index'>('stock')
   // 周期显示筛选: 全部 / 日线 / 分钟 — 只过滤卡片显示, 不影响池和执行;
   // 执行按每个策略自己声明的 timeframes 路由 (日线走盘后缓存, 分钟走本地分钟K分区)
   const [tfFilter, setTfFilter] = useState<'all' | '1d' | '1m'>('all')
@@ -528,7 +528,7 @@ export function Screener() {
   // asOf 确定后 + 策略列表就绪 + 策略池非空 → 自动跑一次 (受系统设置开关控制)
   // 缓存命中时秒加载; 未命中时, 仅当 screener_auto_run 开启才自动触发 runAll
   useEffect(() => {
-    // ETF 模式无股票盘后缓存/ runAll, 单策略走实时单跑, 不触发 runAll
+    // ETF/指数 模式无股票盘后缓存/ runAll, 单策略走实时单跑, 不触发 runAll
     // 分钟筛选视图下不跑日线缓存 (切回 全部/日线 视图时本 effect 会重新评估)
     if (assetType !== 'stock' || tfFilter === '1m') return
     if (!asOf || strategyPresets.length === 0 || !summaryQuery.isSuccess || runAll.isPending || dailyPoolIds.length === 0) return
@@ -564,7 +564,7 @@ export function Screener() {
     setShowAll(false)
     if (result?.strategy !== s.id || result.as_of !== asOf) setResult(null)
     const tf = s.timeframes?.includes('1m') ? '1m' as const : '1d' as const
-    // ETF 模式无股票盘后缓存、分钟策略走本地分钟分区 → 始终实时单跑。
+    // ETF/指数 模式无股票盘后缓存、分钟策略走本地分钟分区 → 始终实时单跑。
     // 传空日期让后端用自身的最新交易日 (ETF 与分钟分区跟股票 enriched 可能不同日)。
     if (assetType !== 'stock' || tf === '1m') {
       run.mutate({ id: s.id, date: '', timeframe: tf })
@@ -689,9 +689,10 @@ export function Screener() {
         subtitle="基于本地 enriched 表 · 毫秒级 SQL"
         right={
           <div className="flex items-center gap-2">
-            {/* 资产类型切换: 股票 / ETF (分钟策略 asset_types 仅股票, ETF 列表自然不含) */}
+            {/* 资产类型切换: 股票 / ETF / 指数 (分钟策略 asset_types 仅股票, ETF/指数列表自然不含;
+                指数策略如「上证-异动波段」信号源固定为指数, 交易标的由策略自身处理) */}
             <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
-              {(['stock', 'etf'] as const).map(t => (
+              {(['stock', 'etf', 'index'] as const).map(t => (
                 <button
                   key={t}
                   onClick={() => { setAssetType(t); setActiveStrategy(null); setResult(null); setShowAll(false) }}
@@ -701,7 +702,7 @@ export function Screener() {
                       : 'text-muted hover:text-secondary hover:bg-elevated'
                     }`}
                 >
-                  {t === 'stock' ? '股票' : 'ETF'}
+                  {t === 'stock' ? '股票' : t === 'etf' ? 'ETF' : '指数'}
                 </button>
               ))}
             </div>

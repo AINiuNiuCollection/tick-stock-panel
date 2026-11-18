@@ -1,5 +1,5 @@
 /**
- * 潘扬策略图表 — 净值曲线 + 买卖点标记 + K 线模式
+ * 上证策略图表 — 净值曲线 + 买卖点标记 + K 线模式
  *
  * mode='nav': 策略净值 vs 基准净值 (对齐 HTML chartNav)
  * mode='signals': 净值曲线上标记 B/S 买卖点 (对齐 HTML chartMain 的简化)
@@ -39,7 +39,7 @@ const SELL_COLOR = '#f59e0b'
 const UP_COLOR = '#e24b4a'
 const DN_COLOR = '#1d9e75'
 
-export function PanYangChart({ equityCurve, benchmarkCurve, trades, height, mode, klineRows }: Props) {
+export function ShangZhengChart({ equityCurve, benchmarkCurve, trades, height, mode, klineRows }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<echarts.ECharts | null>(null)
 

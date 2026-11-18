@@ -46,7 +46,8 @@ interface ControlledProps extends CommonProps {
   /** 受控模式: 表单内嵌时使用 */
   value: string
   onChange: (symbol: string) => void
-  onSelect?: never
+  /** 受控模式下选中下拉项时透传 name (可选, 用于显示中文名) */
+  onSelect?: (symbol: string, name: string) => void
 }
 
 interface UncontrolledProps extends CommonProps {
@@ -105,6 +106,7 @@ export function SymbolPicker(props: Props) {
   function handleSelect(r: SymbolPickerResult) {
     if (isControlled) {
       (props as ControlledProps).onChange(r.symbol)
+      ;(props as ControlledProps).onSelect?.(r.symbol, r.name)
       setQuery(r.symbol)
     } else {
       (props as UncontrolledProps).onSelect(r.symbol, r.name)

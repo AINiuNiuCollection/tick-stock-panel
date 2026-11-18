@@ -1,5 +1,5 @@
 /**
- * 潘扬-异动波段策略弹窗页 (/panyang 路由, window.open 打开)
+ * 上证-异动波段策略弹窗页 (/shangzheng 路由, window.open 打开)
  *
  * 跨资产回测:
  *   信号源 = 上证指数 000001.SH (写死, 后端在指数上算买卖信号)
@@ -16,11 +16,11 @@ import { useSearchParams } from 'react-router-dom'
 import { api, type StrategyBacktestResult, type StrategyBacktestTrade, type KlineRow } from '@/lib/api'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
-import { PanYangChart } from './PanYangChart'
-import { PanYangStats } from './PanYangStats'
-import { PanYangTradesTable } from './PanYangTradesTable'
+import { ShangZhengChart } from './ShangZhengChart'
+import { ShangZhengStats } from './ShangZhengStats'
+import { ShangZhengTradesTable } from './ShangZhengTradesTable'
 
-const STRATEGY_ID = 'custom_panyang_anomaly_wave'
+const STRATEGY_ID = 'custom_shang_zheng_anomaly_wave'
 const SIGNAL_SYMBOL = '000001.SH' // 上证指数, 写死
 
 const DEFAULT_TRADE_SYMBOL = '512100.SH' // 中证1000ETF
@@ -161,7 +161,7 @@ function remapTradesToTradeAsset(
   return { trades: remapped, equityCurve, stats }
 }
 
-export function PanYangPage() {
+export function ShangZhengPage() {
   const [searchParams] = useSearchParams()
 
   // 从 URL 读参数 (弹窗模式: run=1 时自动触发回测)
@@ -178,7 +178,7 @@ export function PanYangPage() {
 
   // 后端回测: 在上证指数上算信号
   const backtest = useQuery<StrategyBacktestResult>({
-    queryKey: ['panyang-signal', runKey],
+    queryKey: ['shangzheng-signal', runKey],
     queryFn: () =>
       api.strategyBacktestRun({
         strategy_id: STRATEGY_ID,
@@ -206,7 +206,7 @@ export function PanYangPage() {
 
   // 拉交易标的 K 线 (用于跨资产盈亏重算 + K 线图表)
   const kline = useQuery({
-    queryKey: ['panyang-trade-kline', tradeSymbol, startDate, endDate, runKey],
+    queryKey: ['shangzheng-trade-kline', tradeSymbol, startDate, endDate, runKey],
     queryFn: () =>
       api.klineDaily(tradeSymbol.trim(), undefined, { start: startDate, end: endDate }),
     enabled: runKey > 0 && !!tradeSymbol.trim() && !!backtest.data,
@@ -382,14 +382,14 @@ export function PanYangPage() {
       ) : (
         <>
           {/* 统计卡片 — 基于交易标的重算 */}
-          <PanYangStats stats={stats} strategyInfo={backtest.data.strategy_info} />
+          <ShangZhengStats stats={stats} strategyInfo={backtest.data.strategy_info} />
 
           {/* 净值对比图 — 策略净值(交易标的) vs 基准(交易标的自身) */}
           <section className="bg-elevated rounded-btn p-3">
             <div className="text-sm font-medium mb-2">
               净值对比（策略 vs {tradeSymbol} 基准）
             </div>
-            <PanYangChart
+            <ShangZhengChart
               equityCurve={equityCurve}
               benchmarkCurve={benchmarkCurve}
               trades={trades}
@@ -403,7 +403,7 @@ export function PanYangPage() {
             <div className="text-sm font-medium mb-2">
               买卖点 ({tradeSymbol} K线, 信号源 {SIGNAL_SYMBOL})
             </div>
-            <PanYangChart
+            <ShangZhengChart
               equityCurve={equityCurve}
               benchmarkCurve={[]}
               trades={trades}
@@ -416,7 +416,7 @@ export function PanYangPage() {
           {/* trades 表格 */}
           <section className="bg-elevated rounded-btn p-3 min-h-0 flex-1 overflow-hidden flex flex-col">
             <div className="text-sm font-medium mb-2">交易明细 ({trades.length} 笔, 基于 {tradeSymbol} 重算)</div>
-            <PanYangTradesTable trades={trades} />
+            <ShangZhengTradesTable trades={trades} />
           </section>
 
           <div className="text-xs text-muted shrink-0">

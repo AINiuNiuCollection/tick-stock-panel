@@ -950,7 +950,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   const [selectedStrategy, setSelectedStrategy] = useState<string | null>(saved?.selectedStrategy ?? null)
   const [strategyGroup, setStrategyGroup] = useState<StrategyGroup>('all')
   const [symbols, setSymbols] = useState(saved?.symbols ?? '')
-  const [assetType, setAssetType] = useState<'stock' | 'etf'>(saved?.assetType ?? 'stock')
+  const [assetType, setAssetType] = useState<'stock' | 'etf' | 'index'>(saved?.assetType ?? 'stock')
   const [start, setStart] = useState(saved?.start ?? THREE_MONTHS_AGO)
   const [end, setEnd] = useState(saved?.end ?? TODAY)
   // 成交口径: 建仓/清仓可独立配置。向后兼容老 matching (派生为 entry=exit=matching)。
@@ -1102,10 +1102,12 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
   const dataStatus = useDataStatus()
   const backtestDataStatus = assetType === 'etf'
     ? dataStatus.data?.etf_enriched
+    : assetType === 'index'
+    ? dataStatus.data?.index_enriched
     : dataStatus.data?.enriched
   const earliestDate = backtestDataStatus?.earliest_date ?? null
   const backtestDataUnavailable = dataStatus.isSuccess && !earliestDate
-  const backtestDataLabel = assetType === 'etf' ? 'ETF 指标数据' : '股票指标数据'
+  const backtestDataLabel = assetType === 'etf' ? 'ETF 指标数据' : assetType === 'index' ? '指数指标数据' : '股票指标数据'
 
   const resetConfigFromDetail = (detail: StrategyDetail) => {
     setStrategyParams(strategyDefaultParams(detail))
@@ -1721,7 +1723,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                     </span>
                   )}
                 </button>
-                {st.id === 'custom_panyang_anomaly_wave' && (
+                {st.id === 'custom_shang_zheng_anomaly_wave' && (
                   <button
                     type="button"
                     title="单独回测 — 上证指数跟踪 (弹窗)"
@@ -1738,7 +1740,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                         max_hold_days: '30',
                         cooldown_days: '5',
                       })
-                      window.open(`/panyang?${params.toString()}`, '_blank', 'width=1400,height=900,noopener,noreferrer')
+                      window.open(`/shangzheng?${params.toString()}`, '_blank', 'width=1400,height=900,noopener,noreferrer')
                     }}
                     className="px-1.5 py-1 ml-0.5 mr-1 text-[10px] rounded border border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
                   >
@@ -2857,7 +2859,7 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] text-muted">资产类型</span>
                     <div className="inline-flex h-8 rounded-btn border border-border overflow-hidden">
-                      {(['stock', 'etf'] as const).map(t => (
+                      {(['stock', 'etf', 'index'] as const).map(t => (
                         <button
                           key={t}
                           type="button"
@@ -2865,13 +2867,13 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
                           className={`h-full px-3 text-xs font-medium transition-colors cursor-pointer
                             ${assetType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:text-foreground'}`}
                         >
-                          {t === 'stock' ? '股票' : 'ETF'}
+                          {t === 'stock' ? '股票' : t === 'etf' ? 'ETF' : '指数'}
                         </button>
                       ))}
                     </div>
                     <span className="text-[11px] text-muted/70">ETF 仅技术类策略,读 ETF enriched</span>
                   </div>
-                  <StockPoolPicker value={symbols} onChange={setSymbols} assetType={assetType} />
+                  <StockPoolPicker value={symbols} onChange={setSymbols} assetType={assetType === 'index' ? 'stock' : assetType} />
                   <div className="text-[11px] leading-5 text-muted">默认全市场回测，由基础过滤、策略条件和买卖触发器筛选；需要单票调试或自选池回测时再限定股票池。</div>
                 </ConfigSection>
               )}

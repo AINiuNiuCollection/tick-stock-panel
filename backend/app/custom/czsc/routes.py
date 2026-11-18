@@ -149,6 +149,7 @@ def build_router() -> APIRouter:
         min_bi_len: int = Query(DEFAULT_MIN_BI_LEN, ge=3, le=30),
         features: str = Query("fx,bi,zs,signals"),
         force_refresh: bool = Query(False),
+        symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
     ) -> JSONResponse:
         """同步分析 (适合日K等小数据量)。"""
         _ = force_refresh  # 首版忽略, 每次重新取数; 二期可接缓存层
@@ -159,6 +160,7 @@ def build_router() -> APIRouter:
                 start=start_date, end=end_date,
                 max_bi_num=max_bi_num, min_bi_len=min_bi_len,
                 features=feature_list,
+                symbol_name=symbol_name,
             )
             # fx_list/bi_list/zs_list/bars/macd 是 Pydantic 模型实例, starlette JSONResponse 默认
             # json.dumps 不识别 Pydantic 模型, 这里统一 model_dump() 转 dict。
@@ -187,6 +189,7 @@ def build_router() -> APIRouter:
         min_bi_len: int = Query(DEFAULT_MIN_BI_LEN, ge=3, le=30),
         features: str = Query("fx,bi,zs,signals"),
         force_refresh: bool = Query(False),
+        symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
     ) -> StreamingResponse:
         """SSE 流式分析 (适合分钟K等大数据量)。"""
         _ = force_refresh
@@ -199,6 +202,7 @@ def build_router() -> APIRouter:
                     start=start_date, end=end_date,
                     max_bi_num=max_bi_num, min_bi_len=min_bi_len,
                     features=feature_list,
+                    symbol_name=symbol_name,
                 ):
                     event_type = event["event"]
                     payload = json.dumps(event["data"], ensure_ascii=False, default=str)

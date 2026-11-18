@@ -24,7 +24,7 @@ function fmtNum(v: number | null | undefined, digits = 2): string {
   return v.toFixed(digits)
 }
 
-export function PanYangStats({ stats, strategyInfo }: Props) {
+export function ShangZhengStats({ stats, strategyInfo }: Props) {
   const nTrades = stats.n_trades ?? stats.total_trades ?? 0
   const winRate = stats.win_rate
   const totalReturn = stats.total_return ?? stats.total
