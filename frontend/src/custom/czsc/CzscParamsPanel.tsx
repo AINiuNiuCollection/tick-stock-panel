@@ -1,8 +1,10 @@
 /**
  * 缠论分析参数面板 — 范围/级别/频率/特征全可配置 (Q8)
  */
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { SymbolPicker } from '@/components/SymbolPicker'
+import { api } from '@/lib/api'
 
 export interface CzscParams {
   symbol: string
@@ -42,6 +44,37 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
   const [minBiLen, setMinBiLen] = useState(7)
   const [features, setFeatures] = useState<string[]>(['fx', 'bi', 'zs', 'signals'])
   const [forceRefresh, setForceRefresh] = useState(false)
+
+  // 变更点3: 自动查中文名 — 用户手动输入代码 (不选下拉) 时 onSelect 不触发,
+  //          这里按 symbol 精确查 instrumentNames 补全 name。下拉选择时 onSelect
+  //          已设 symbolName, 此查询命中缓存不会覆盖 (useEffect 内判空才 set)。
+  const trimmedSymbol = symbol.trim()
+  const namesQuery = useQuery({
+    queryKey: ['czsc-symbol-name', trimmedSymbol],
+    queryFn: () => api.instrumentNames([trimmedSymbol]),
+    enabled: trimmedSymbol.length > 0,
+    staleTime: 5 * 60_000,
+  })
+  useEffect(() => {
+    // symbolName 已有值时不覆盖 (用户从下拉选的优先)
+    if (symbolName) return
+    const names = namesQuery.data?.names
+    if (names && trimmedSymbol && names[trimmedSymbol]) {
+      setSymbolName(names[trimmedSymbol])
+    }
+  }, [namesQuery.data, trimmedSymbol, symbolName])
+
+  // symbol 改变时清空 symbolName, 让自动查询重新补全 (除非用户从下拉选了新的)
+  // 用 SymbolPicker 的 onSelect 直接 setSymbolName, 这里只在 symbol 变且非下拉选择时清空
+  const prevSymbolRef = useRef<string>(initialSymbol)
+  useEffect(() => {
+    if (prevSymbolRef.current !== symbol) {
+      prevSymbolRef.current = symbol
+      // symbol 变化时清空 name, 触发自动查询重新补全;
+      // 若是下拉选择, onSelect 会紧接着 setSymbolName 覆盖。
+      setSymbolName(null)
+    }
+  }, [symbol])
 
   const toggleFeature = (key: string) => {
     setFeatures(prev => prev.includes(key) ? prev.filter(f => f !== key) : [...prev, key])
@@ -95,6 +128,9 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
           type="date"
           value={startDate}
           onChange={e => setStartDate(e.target.value)}
+          // color-scheme 让浏览器原生日期选择器适配 light/dark 主题,
+          // 否则 dark 主题下日历图标不可见且点击不弹日期方框。
+          style={{ colorScheme: 'dark light' }}
           className="h-8 px-2 rounded-btn border border-border bg-base text-sm"
         />
       </label>
@@ -105,6 +141,7 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
           type="date"
           value={endDate}
           onChange={e => setEndDate(e.target.value)}
+          style={{ colorScheme: 'dark light' }}
           className="h-8 px-2 rounded-btn border border-border bg-base text-sm"
         />
       </label>

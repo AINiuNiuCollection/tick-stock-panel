@@ -187,6 +187,7 @@ export function CzscPage() {
       )}
 
       <CzscParamsPanel
+        initialSymbol={params?.symbol ?? ''}
         onAnalyze={setParams}
         loading={analyze.isFetching}
       />
