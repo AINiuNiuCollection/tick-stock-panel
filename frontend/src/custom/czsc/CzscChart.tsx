@@ -513,10 +513,12 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       ],
       yAxis: [
         // 主图 yAxis (index 0) — 价格, scale 自适应
+        // axisLabel.width 固定为 56px, 让三个 grid 的 y 轴标签宽度一致,
+        // containLabel: true 时各 grid 左边缘对齐, 避免 MACD 副图左边缘比主图窄。
         {
           scale: true,
           splitLine: { show: true, lineStyle: { color: theme.grid, type: 'dashed' } },
-          axisLabel: { color: theme.text, fontSize: 11 },
+          axisLabel: { color: theme.text, fontSize: 11, width: 56 },
           axisLine: { lineStyle: { color: theme.grid } },
         },
         // VOL yAxis (index 1)
@@ -524,7 +526,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           gridIndex: 1,
           splitNumber: 2,
           splitLine: { show: false },
-          axisLabel: { color: theme.text, fontSize: 10 },
+          axisLabel: { color: theme.text, fontSize: 10, width: 56 },
           axisLine: { lineStyle: { color: theme.grid } },
         },
         // MACD yAxis (index 2) — 含 0 轴
@@ -532,7 +534,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           gridIndex: 2,
           splitNumber: 3,
           splitLine: { show: true, lineStyle: { color: theme.grid, type: 'dashed' } },
-          axisLabel: { color: theme.text, fontSize: 10 },
+          axisLabel: { color: theme.text, fontSize: 10, width: 56 },
           axisLine: { lineStyle: { color: theme.grid } },
         },
       ],
