@@ -67,8 +67,12 @@ def replace_with_retry(src: Path, dst: Path, *, attempts: int = 10, delay_s: flo
 
 
 def enriched_dirname(asset_type: str) -> str:
-    """asset_type → enriched parquet 目录名。ETF 走独立目录, 其余(stock)用日K enriched。"""
-    return "kline_etf_enriched" if asset_type == "etf" else "kline_daily_enriched"
+    """asset_type → enriched parquet 目录名。ETF/index 走独立目录, stock 用日K enriched。"""
+    if asset_type == "etf":
+        return "kline_etf_enriched"
+    if asset_type == "index":
+        return "kline_index_enriched"
+    return "kline_daily_enriched"
 
 
 # 盘中递推状态的最长窗口 (交易日): MA60 部分和 tail(59)、60 日动量 tail(60)

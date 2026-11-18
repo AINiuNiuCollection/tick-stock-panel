@@ -1699,25 +1699,53 @@ export function StrategyBacktest({ loadCandidate, onLoadConsumed }: {
               <span className="text-xs text-muted px-2 py-1">当前分组暂无策略</span>
             )}
             {filteredStrategyList.map(st => (
-              <button
+              <div
                 key={st.id}
-                onClick={() => setSelectedStrategy(st.id)}
-                className={`px-2 py-1 rounded-btn text-[11px] border transition-all duration-150 ease-smooth cursor-pointer
+                className={`relative inline-flex items-center rounded-btn text-[11px] border transition-all duration-150 ease-smooth
                   ${selectedStrategy === st.id
                     ? 'border-accent/50 bg-accent/10 text-accent shadow-[0_0_10px_rgba(59,130,246,0.1)]'
                     : 'border-border bg-base text-secondary hover:border-accent/40'
                   }`}
               >
-                <span className="font-medium">{st.name}</span>
-                {st.timeframes?.includes('1m') && (
-                  <span className="ml-1 text-[8px] px-1 py-px rounded border border-sky-500/30 bg-sky-500/10 text-sky-400">分钟</span>
+                <button
+                  onClick={() => setSelectedStrategy(st.id)}
+                  className="px-2 py-1 cursor-pointer flex items-center"
+                >
+                  <span className="font-medium">{st.name}</span>
+                  {st.timeframes?.includes('1m') && (
+                    <span className="ml-1 text-[8px] px-1 py-px rounded border border-sky-500/30 bg-sky-500/10 text-sky-400">分钟</span>
+                  )}
+                  {st.source && st.source !== 'builtin' && (
+                    <span className={`ml-1 text-[8px] px-1 py-px rounded border ${BADGE_CLS_MAP[st.source] ?? ''}`}>
+                      {SRC_MAP[st.source] ?? ''}
+                    </span>
+                  )}
+                </button>
+                {st.id === 'custom_panyang_anomaly_wave' && (
+                  <button
+                    type="button"
+                    title="单独回测 — 上证指数跟踪 (弹窗)"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const params = new URLSearchParams({
+                        run: '1',
+                        trade_symbol: '512100.SH',
+                        start: THREE_MONTHS_AGO,
+                        end: TODAY,
+                        buy_mom_thr: '2.0',
+                        mom_period: '5',
+                        ma_period: '5',
+                        max_hold_days: '30',
+                        cooldown_days: '5',
+                      })
+                      window.open(`/panyang?${params.toString()}`, '_blank', 'width=1400,height=900,noopener,noreferrer')
+                    }}
+                    className="px-1.5 py-1 ml-0.5 mr-1 text-[10px] rounded border border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
+                  >
+                    单独回测
+                  </button>
                 )}
-                {st.source && st.source !== 'builtin' && (
-                  <span className={`ml-1 text-[8px] px-1 py-px rounded border ${BADGE_CLS_MAP[st.source] ?? ''}`}>
-                    {SRC_MAP[st.source] ?? ''}
-                  </span>
-                )}
-              </button>
+              </div>
             ))}
             </div>
           </div>
