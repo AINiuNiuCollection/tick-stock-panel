@@ -74,10 +74,10 @@ function FxTable({ list }: { list: CzscAnalyzeResult['fx_list'] }) {
         style={{ backgroundColor: '#1f2937', color: '#ffffff' }}
       >
         <tr>
-          <th className="text-center p-2 font-bold text-base">时间</th>
-          <th className="text-center p-2 font-bold text-base">类型</th>
-          <th className="text-center p-2 font-bold text-base">高价</th>
-          <th className="text-center p-2 font-bold text-base">低价</th>
+          <th className="text-center p-2 font-bold text-base text-white">时间</th>
+          <th className="text-center p-2 font-bold text-base text-white">类型</th>
+          <th className="text-center p-2 font-bold text-base text-white">高价</th>
+          <th className="text-center p-2 font-bold text-base text-white">低价</th>
         </tr>
       </thead>
       <tbody>
@@ -110,13 +110,13 @@ function BiTable({ list }: { list: CzscAnalyzeResult['bi_list'] }) {
         style={{ backgroundColor: '#1f2937', color: '#ffffff' }}
       >
         <tr>
-          <th className="text-center p-2 font-bold text-base">起始</th>
-          <th className="text-center p-2 font-bold text-base">结束</th>
-          <th className="text-center p-2 font-bold text-base">方向</th>
-          <th className="text-center p-2 font-bold text-base">高</th>
-          <th className="text-center p-2 font-bold text-base">低</th>
-          <th className="text-center p-2 font-bold text-base">长度</th>
-          <th className="text-center p-2 font-bold text-base">力度</th>
+          <th className="text-center p-2 font-bold text-base text-white">起始</th>
+          <th className="text-center p-2 font-bold text-base text-white">结束</th>
+          <th className="text-center p-2 font-bold text-base text-white">方向</th>
+          <th className="text-center p-2 font-bold text-base text-white">高</th>
+          <th className="text-center p-2 font-bold text-base text-white">低</th>
+          <th className="text-center p-2 font-bold text-base text-white">长度</th>
+          <th className="text-center p-2 font-bold text-base text-white">力度</th>
         </tr>
       </thead>
       <tbody>
@@ -151,12 +151,12 @@ function ZsTable({ list }: { list: CzscAnalyzeResult['zs_list'] }) {
         style={{ backgroundColor: '#1f2937', color: '#ffffff' }}
       >
         <tr>
-          <th className="text-center p-2 font-bold text-base">起始</th>
-          <th className="text-center p-2 font-bold text-base">结束</th>
-          <th className="text-center p-2 font-bold text-base">下沿</th>
-          <th className="text-center p-2 font-bold text-base">上沿</th>
-          <th className="text-center p-2 font-bold text-base">级别</th>
-          <th className="text-center p-2 font-bold text-base">有效</th>
+          <th className="text-center p-2 font-bold text-base text-white">起始</th>
+          <th className="text-center p-2 font-bold text-base text-white">结束</th>
+          <th className="text-center p-2 font-bold text-base text-white">下沿</th>
+          <th className="text-center p-2 font-bold text-base text-white">上沿</th>
+          <th className="text-center p-2 font-bold text-base text-white">级别</th>
+          <th className="text-center p-2 font-bold text-base text-white">有效</th>
         </tr>
       </thead>
       <tbody>
@@ -194,17 +194,17 @@ function BsTable({ list }: { list: CzscBsPoint[] }) {
         style={{ backgroundColor: '#1f2937', color: '#ffffff' }}
       >
         <tr>
-          <th className="text-center p-2 font-bold text-base">日期</th>
-          <th className="text-center p-2 font-bold text-base">类型</th>
-          <th className="text-center p-2 font-bold text-base">方向</th>
-          <th className="text-center p-2 font-bold text-base">价位</th>
-          <th className="text-center p-2 font-bold text-base">关联中枢</th>
-          <th className="text-center p-2 font-bold text-base">背驰类型</th>
-          <th className="text-center p-2 font-bold text-base">命中条件</th>
-          <th className="text-center p-2 font-bold text-base">MACD面积 (前→今)</th>
-          <th className="text-center p-2 font-bold text-base">DIF高点 (前→今)</th>
-          <th className="text-center p-2 font-bold text-base">DEA高点 (前→今)</th>
-          <th className="text-center p-2 font-bold text-base">面积口径</th>
+          <th className="text-center p-2 font-bold text-base text-white">日期</th>
+          <th className="text-center p-2 font-bold text-base text-white">类型</th>
+          <th className="text-center p-2 font-bold text-base text-white">方向</th>
+          <th className="text-center p-2 font-bold text-base text-white">价位</th>
+          <th className="text-center p-2 font-bold text-base text-white">关联中枢</th>
+          <th className="text-center p-2 font-bold text-base text-white">背驰类型</th>
+          <th className="text-center p-2 font-bold text-base text-white">命中条件</th>
+          <th className="text-center p-2 font-bold text-base text-white">MACD面积 (前→今)</th>
+          <th className="text-center p-2 font-bold text-base text-white">DIF高点 (前→今)</th>
+          <th className="text-center p-2 font-bold text-base text-white">DEA高点 (前→今)</th>
+          <th className="text-center p-2 font-bold text-base text-white">面积口径</th>
         </tr>
       </thead>
       <tbody>

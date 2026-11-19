@@ -990,6 +990,10 @@ def _analyze_sync(
     min_bi_len: int,
     features: list[str],
     symbol_name: str | None = None,
+    bs_macd_area_mode: str = DEFAULT_BS_MACD_AREA_MODE,
+    bs_use_dif: bool = DEFAULT_BS_USE_DIF,
+    bs_use_dea: bool = DEFAULT_BS_USE_DEA,
+    bs_use_macd_area: bool = DEFAULT_BS_USE_MACD_AREA,
 ) -> dict[str, Any]:
     """同步分析 — 在线程池中调用, 不阻塞事件循环。
 
@@ -1094,10 +1098,10 @@ def _analyze_sync(
             zs_list_raw=c.zs_list,
             bi_list_raw=c.bi_list,
             bs_item_cls=BsPointItem,
-            macd_area_mode="split",   # 默认红绿柱分计
-            use_dif=True,             # 默认三条件全开
-            use_dea=True,
-            use_macd_area=True,
+            macd_area_mode=bs_macd_area_mode,
+            use_dif=bs_use_dif,
+            use_dea=bs_use_dea,
+            use_macd_area=bs_use_macd_area,
             only_valid_zs=True,
         )
 
@@ -1136,6 +1140,10 @@ async def analyze_async(
     min_bi_len: int = DEFAULT_MIN_BI_LEN,
     features: list[str] | None = None,
     symbol_name: str | None = None,
+    bs_macd_area_mode: str = DEFAULT_BS_MACD_AREA_MODE,
+    bs_use_dif: bool = DEFAULT_BS_USE_DIF,
+    bs_use_dea: bool = DEFAULT_BS_USE_DEA,
+    bs_use_macd_area: bool = DEFAULT_BS_USE_MACD_AREA,
 ) -> dict[str, Any]:
     """异步分析入口 — 通过线程池隔离 CPU 密集运算。
 
@@ -1162,6 +1170,7 @@ async def analyze_async(
                 None,
                 _analyze_sync,
                 symbol, freq, start, end, max_bi_num, min_bi_len, features, symbol_name,
+                bs_macd_area_mode, bs_use_dif, bs_use_dea, bs_use_macd_area,
             ),
             timeout=settings.czsc_analyze_timeout_s,
         )
@@ -1189,6 +1198,10 @@ async def analyze_stream(
     min_bi_len: int = DEFAULT_MIN_BI_LEN,
     features: list[str] | None = None,
     symbol_name: str | None = None,
+    bs_macd_area_mode: str = DEFAULT_BS_MACD_AREA_MODE,
+    bs_use_dif: bool = DEFAULT_BS_USE_DIF,
+    bs_use_dea: bool = DEFAULT_BS_USE_DEA,
+    bs_use_macd_area: bool = DEFAULT_BS_USE_MACD_AREA,
 ):
     """流式分析异步生成器, 产出 SSE 事件 dict。
 
@@ -1245,6 +1258,7 @@ async def analyze_stream(
                 None,
                 _analyze_sync,
                 symbol, freq, start, end, max_bi_num, min_bi_len, features, symbol_name,
+                bs_macd_area_mode, bs_use_dif, bs_use_dea, bs_use_macd_area,
             ),
             timeout=settings.czsc_analyze_timeout_s,
         )

@@ -58,6 +58,11 @@ function loadLastParams(): CzscParams | null {
 export function CzscPage() {
   const qc = useQueryClient()
   const [params, setParams] = useState<CzscParams | null>(() => loadLastParams())
+  // 均线实时状态 — 下拉变更立即更新图表, 无需重新点分析;
+  // 初始值取 params.ma_periods (恢复上次会话) 或默认 [5,10,20]
+  const [liveMaPeriods, setLiveMaPeriods] = useState<number[]>(
+    () => params?.ma_periods ?? [5, 10, 20],
+  )
   const chartRef = useRef<CzscChartHandle>(null)
   // 整体可拉伸容器高度 (px), 由 ResizeObserver 实时跟踪
   const containerRef = useRef<HTMLDivElement>(null)
@@ -127,6 +132,11 @@ export function CzscPage() {
       } catch {
         // sessionStorage 满或禁用时忽略
       }
+      // 同步 liveMaPeriods: 提交分析或从 sessionStorage 恢复 params 时,
+      // 让 live 状态对齐 params.ma_periods (避免下拉改了又重新分析导致回退)
+      if (params.ma_periods && params.ma_periods.length > 0) {
+        setLiveMaPeriods(params.ma_periods)
+      }
     }
   }, [params])
 
@@ -151,6 +161,10 @@ export function CzscPage() {
       min_bi_len: params!.min_bi_len,
       features: params!.features.join(','),
       force_refresh: params!.force_refresh,
+      bs_macd_area_mode: params!.bs_macd_area_mode,
+      bs_use_dif: params!.bs_use_dif,
+      bs_use_dea: params!.bs_use_dea,
+      bs_use_macd_area: params!.bs_use_macd_area,
     }),
     enabled: !!params,
     staleTime: 5 * 60_000,
@@ -190,6 +204,7 @@ export function CzscPage() {
         initialSymbol={params?.symbol ?? ''}
         onAnalyze={setParams}
         loading={analyze.isFetching}
+        onMaPeriodsChange={setLiveMaPeriods}
       />
 
       {/* 上下布局: 图表在上, 可拖动分割条, 结果数据在下 (可滚动显示全部 fx/bi/zs 行)。
@@ -202,7 +217,7 @@ export function CzscPage() {
           style={{ flex: `${chartRatio} 1 0` }}
         >
           {displayData ? (
-            <CzscChart ref={chartRef} result={displayData} height="100%" />
+            <CzscChart ref={chartRef} result={displayData} height="100%" maPeriods={liveMaPeriods} />
           ) : analyze.isFetching ? (
             <EmptyState title="分析中…" />
           ) : analyze.isError ? (

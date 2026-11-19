@@ -4318,8 +4318,13 @@ export interface CzscAnalyzeParams {
   end_date?: string
   max_bi_num?: number
   min_bi_len?: number
-  features?: string  // 逗号分隔: fx,bi,zs,signals
+  features?: string  // 逗号分隔: fx,bi,zs,signals,bs_points
   force_refresh?: boolean
+  ma_periods?: number[]        // 均线周期列表 (前端渲染用, 不传后端)
+  bs_macd_area_mode?: 'split' | 'total_abs' | 'dif_dea'  // 背驰 MACD 面积口径
+  bs_use_dif?: boolean         // 背驰是否启用 DIF 极值条件
+  bs_use_dea?: boolean         // 背驰是否启用 DEA 极值条件
+  bs_use_macd_area?: boolean   // 背驰是否启用 MACD 面积条件
 }
 
 /** 检查 czsc-serve 健康状态 (静默, 失败不弹 toast) */
@@ -4343,7 +4348,30 @@ export async function fetchCzscAnalyze(params: CzscAnalyzeParams): Promise<CzscA
   if (params.min_bi_len != null) qs.set('min_bi_len', String(params.min_bi_len))
   if (params.features) qs.set('features', params.features)
   if (params.force_refresh) qs.set('force_refresh', 'true')
-  return request<CzscAnalyzeResult>(`/api/czsc/analyze?${qs}`, { timeoutMs: 60_000 })
+  // 背驰配置 (仅当 features 含 bs_points 时后端生效, 前端无条件透传)
+  if (params.bs_macd_area_mode) qs.set('bs_macd_area_mode', params.bs_macd_area_mode)
+  if (params.bs_use_dif != null) qs.set('bs_use_dif', String(params.bs_use_dif))
+  if (params.bs_use_dea != null) qs.set('bs_use_dea', String(params.bs_use_dea))
+  if (params.bs_use_macd_area != null) qs.set('bs_use_macd_area', String(params.bs_use_macd_area))
+  try {
+    return await request<CzscAnalyzeResult>(`/api/czsc/analyze?${qs}`, { timeoutMs: 60_000 })
+  } catch (err) {
+    // czsc 错误响应结构: {ok:false, error:{code, message, hint?}}
+    // 通用 request 已弹 toast, 但消息是 "503 ..." 笼统文本;
+    // 这里重新解析响应体取 error.message 给出具体原因 (如 NO_DATA/超时/未安装)。
+    if (err instanceof ApiError) {
+      try {
+        const res = await fetch(`/api/czsc/analyze?${qs}`)
+        const j = await res.json() as { ok?: boolean; error?: { code?: string; message?: string; hint?: string } }
+        if (j && j.ok === false && j.error?.message) {
+          const code = j.error.code ?? ''
+          const hint = j.error.hint ? ` (${j.error.hint})` : ''
+          toast(`[${code}] ${j.error.message}${hint}`, 'error')
+        }
+      } catch { /* 二次 fetch 失败时退回 request 已弹的 toast */ }
+    }
+    throw err
+  }
 }
 
 /** SSE 流式分析回调类型 */
@@ -4373,6 +4401,10 @@ export function streamCzscAnalyze(
   if (params.min_bi_len != null) qs.set('min_bi_len', String(params.min_bi_len))
   if (params.features) qs.set('features', params.features)
   if (params.force_refresh) qs.set('force_refresh', 'true')
+  if (params.bs_macd_area_mode) qs.set('bs_macd_area_mode', params.bs_macd_area_mode)
+  if (params.bs_use_dif != null) qs.set('bs_use_dif', String(params.bs_use_dif))
+  if (params.bs_use_dea != null) qs.set('bs_use_dea', String(params.bs_use_dea))
+  if (params.bs_use_macd_area != null) qs.set('bs_use_macd_area', String(params.bs_use_macd_area))
 
   void (async () => {
     try {

@@ -150,6 +150,10 @@ def build_router() -> APIRouter:
         features: str = Query("fx,bi,zs,signals,bs_points"),
         force_refresh: bool = Query(False),
         symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
+        bs_macd_area_mode: str = Query("split", description="背驰 MACD 面积口径: split/total_abs/dif_dea"),
+        bs_use_dif: bool = Query(True, description="背驰是否启用 DIF 极值条件"),
+        bs_use_dea: bool = Query(True, description="背驰是否启用 DEA 极值条件"),
+        bs_use_macd_area: bool = Query(True, description="背驰是否启用 MACD 面积条件"),
     ) -> JSONResponse:
         """同步分析 (适合日K等小数据量)。"""
         _ = force_refresh  # 首版忽略, 每次重新取数; 二期可接缓存层
@@ -161,6 +165,10 @@ def build_router() -> APIRouter:
                 max_bi_num=max_bi_num, min_bi_len=min_bi_len,
                 features=feature_list,
                 symbol_name=symbol_name,
+                bs_macd_area_mode=bs_macd_area_mode,
+                bs_use_dif=bs_use_dif,
+                bs_use_dea=bs_use_dea,
+                bs_use_macd_area=bs_use_macd_area,
             )
             # fx_list/bi_list/zs_list/bars/macd/bs_points 是 Pydantic 模型实例, starlette
             # JSONResponse 默认 json.dumps 不识别 Pydantic 模型, 这里统一 model_dump() 转 dict。
@@ -176,7 +184,9 @@ def build_router() -> APIRouter:
             }
             return _build_success_response(payload)
         except AnalyzerError as exc:
-            status = 503 if exc.code == "CZSC_NOT_INSTALLED" else 500
+            # 503: 服务暂时不可用 (czsc 未装 / 取数失败 / 超时) — 业务可重试错误
+            # 500: 仅 INTERNAL_ERROR 等真正未预期异常
+            status = 500 if exc.code == "INTERNAL_ERROR" else 503
             hint = "run: uv sync --extra czsc" if exc.code == "CZSC_NOT_INSTALLED" else None
             return _build_error_response(exc.code, exc.message, hint, status=status)
 
@@ -191,6 +201,10 @@ def build_router() -> APIRouter:
         features: str = Query("fx,bi,zs,signals,bs_points"),
         force_refresh: bool = Query(False),
         symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
+        bs_macd_area_mode: str = Query("split"),
+        bs_use_dif: bool = Query(True),
+        bs_use_dea: bool = Query(True),
+        bs_use_macd_area: bool = Query(True),
     ) -> StreamingResponse:
         """SSE 流式分析 (适合分钟K等大数据量)。"""
         _ = force_refresh
@@ -204,6 +218,10 @@ def build_router() -> APIRouter:
                     max_bi_num=max_bi_num, min_bi_len=min_bi_len,
                     features=feature_list,
                     symbol_name=symbol_name,
+                    bs_macd_area_mode=bs_macd_area_mode,
+                    bs_use_dif=bs_use_dif,
+                    bs_use_dea=bs_use_dea,
+                    bs_use_macd_area=bs_use_macd_area,
                 ):
                     event_type = event["event"]
                     payload = json.dumps(event["data"], ensure_ascii=False, default=str)

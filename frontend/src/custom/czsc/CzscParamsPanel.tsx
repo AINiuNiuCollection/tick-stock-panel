@@ -3,8 +3,95 @@
  */
 import { useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { ChevronDown, Check } from 'lucide-react'
 import { SymbolPicker } from '@/components/SymbolPicker'
 import { api } from '@/lib/api'
+
+/**
+ * 下拉多选组件 — 点击按钮弹出下拉框 (仿 hAdmin 下拉按钮风格),
+ * 弹层内为 checkbox 列表, 选中打勾, 点击外部关闭。
+ * 按钮只显示「label (已选N)」+ caret, 不平铺已选标签 (已选由图表图例展示);
+ * option 可带 color 字段, 在选项右侧显示色块。
+ */
+interface MultiSelectOption {
+  value: string
+  label: string
+  color?: string
+}
+function MultiSelectDropdown({
+  label,
+  options,
+  selected,
+  onChange,
+  placeholder = '请选择',
+}: {
+  label: string
+  options: MultiSelectOption[]
+  selected: string[]
+  onChange: (next: string[]) => void
+  placeholder?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDocClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [open])
+
+  const toggle = (v: string) => {
+    onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v])
+  }
+
+  return (
+    <div ref={ref} className="relative flex flex-col gap-1">
+      <span className="text-xs text-muted">
+        {label}{selected.length > 0 ? ` (已选${selected.length})` : ''}
+      </span>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center justify-between gap-1 h-8 px-2 rounded-btn border border-border bg-base text-sm min-w-[140px] hover:border-accent transition-colors"
+      >
+        <span className={`truncate ${selected.length > 0 ? 'text-foreground' : 'text-muted'}`}>
+          {selected.length > 0 ? placeholder : placeholder}
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 z-50 min-w-full bg-elevated border border-border rounded-btn shadow-lg py-1 max-h-60 overflow-auto">
+          {options.map(opt => {
+            const checked = selected.includes(opt.value)
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => toggle(opt.value)}
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-accent/10 transition-colors ${checked ? 'text-foreground' : 'text-muted'}`}
+              >
+                <span className={`w-4 h-4 flex items-center justify-center rounded border ${checked ? 'bg-accent border-accent' : 'border-border'}`}>
+                  {checked && <Check className="w-3 h-3 text-white" />}
+                </span>
+                <span className="flex-1">{opt.label}</span>
+                {opt.color && (
+                  <span
+                    className="w-4 h-2 rounded-sm shrink-0"
+                    style={{ backgroundColor: opt.color }}
+                    aria-hidden
+                  />
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export interface CzscParams {
   symbol: string
@@ -16,12 +103,19 @@ export interface CzscParams {
   min_bi_len: number
   features: string[]
   force_refresh: boolean
+  ma_periods?: number[]        // 均线周期列表 (最多 3 条, 参考同花顺)
+  bs_macd_area_mode?: 'split' | 'total_abs' | 'dif_dea'  // 背驰 MACD 面积口径
+  bs_use_dif?: boolean         // 背驰是否启用 DIF 极值条件
+  bs_use_dea?: boolean         // 背驰是否启用 DEA 极值条件
+  bs_use_macd_area?: boolean   // 背驰是否启用 MACD 面积条件
 }
 
 interface Props {
   initialSymbol?: string
   onAnalyze: (params: CzscParams) => void
   loading?: boolean
+  /** 均线变化实时回调 (无需重新点分析即可更新图表) */
+  onMaPeriodsChange?: (periods: number[]) => void
 }
 
 const FREQ_OPTIONS = ['日线', '周线', '月线', '30分钟', '60分钟', '15分钟', '5分钟']
@@ -32,8 +126,27 @@ const FEATURE_OPTIONS = [
   { key: 'signals', label: '信号' },
   { key: 'bs_points', label: '买卖点' },
 ]
+// 均线周期可选值 (参考同花顺: 5/10/12/20/30/60/120/250 日)
+const MA_PERIOD_OPTIONS = [5, 10, 12, 20, 30, 60, 120, 250]
+// 均线配色 (与 CzscChart.MA_COLORS 同步; 下拉项右侧色块用此色, 选中即图表中该均线的颜色)
+const MA_PERIOD_COLORS: Record<number, string> = {
+  5: '#C78A2E',
+  10: '#2D6A8C',
+  12: '#9D6FD4',
+  20: '#D94F70',
+  30: '#3F8E58',
+  60: '#B58A1F',
+  120: '#5B6FA8',
+  250: '#8C6BA8',
+}
+// 背驰 MACD 面积口径
+const BS_MACD_AREA_MODES = [
+  { value: 'split', label: '红绿柱分计' },
+  { value: 'total_abs', label: 'Σ|hist|' },
+  { value: 'dif_dea', label: 'Σ|DIF-DEA|' },
+] as const
 
-export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Props) {
+export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPeriodsChange }: Props) {
   const today = new Date().toISOString().slice(0, 10)
   const defaultStart = new Date(Date.now() - 365 * 86400 * 1000).toISOString().slice(0, 10)
   const [symbol, setSymbol] = useState(initialSymbol)
@@ -45,6 +158,13 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
   const [minBiLen, setMinBiLen] = useState(7)
   const [features, setFeatures] = useState<string[]>(['fx', 'bi', 'zs', 'signals', 'bs_points'])
   const [forceRefresh, setForceRefresh] = useState(false)
+  // 均线周期: 默认 [5, 10, 20], 最多 3 条 (同花顺惯例)
+  const [maPeriods, setMaPeriods] = useState<number[]>([5, 10, 20])
+  // 背驰配置: 默认三条件全开, 面积口径 split (红绿柱分计)
+  const [bsMacdAreaMode, setBsMacdAreaMode] = useState<'split' | 'total_abs' | 'dif_dea'>('split')
+  const [bsUseDif, setBsUseDif] = useState(true)
+  const [bsUseDea, setBsUseDea] = useState(true)
+  const [bsUseMacdArea, setBsUseMacdArea] = useState(true)
 
   // 变更点3: 自动查中文名 — 用户手动输入代码 (不选下拉) 时 onSelect 不触发,
   //          这里按 symbol 精确查 instrumentNames 补全 name。下拉选择时 onSelect
@@ -94,6 +214,11 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
       min_bi_len: minBiLen,
       features: features.length ? features : ['fx', 'bi', 'zs', 'bs_points'],
       force_refresh: forceRefresh,
+      ma_periods: maPeriods,
+      bs_macd_area_mode: bsMacdAreaMode,
+      bs_use_dif: bsUseDif,
+      bs_use_dea: bsUseDea,
+      bs_use_macd_area: bsUseMacdArea,
     })
   }
 
@@ -198,6 +323,65 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
           ))}
         </div>
       </fieldset>
+
+      {/* 均线配置 (下拉按钮多选, 不限条数) */}
+      <MultiSelectDropdown
+        label="均线"
+        options={MA_PERIOD_OPTIONS.map(p => ({
+          value: String(p),
+          label: `SMA${p}`,
+          color: MA_PERIOD_COLORS[p] ?? MA_PERIOD_COLORS[5],
+        }))}
+        selected={maPeriods.map(String)}
+        onChange={(next) => {
+          const arr = next.map(Number).filter(n => Number.isFinite(n)).sort((a, b) => a - b)
+          setMaPeriods(arr)
+          onMaPeriodsChange?.(arr)
+        }}
+        placeholder="选择均线周期"
+      />
+
+      {/* 背驰配置 (买卖点识别判据) — 面积口径下拉 + 三条件下拉多选
+          仅当勾选「买卖点」特征时生效; 后端 _identify_bs_points 据此过滤买卖点 */}
+      {features.includes('bs_points') && (
+        <fieldset className="flex flex-wrap items-end gap-3 border border-border rounded-btn p-2">
+          <span className="w-full text-xs text-muted font-bold">背驰配置 (买卖点判据)</span>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted">面积口径</span>
+            <select
+              value={bsMacdAreaMode}
+              onChange={e => setBsMacdAreaMode(e.target.value as typeof bsMacdAreaMode)}
+              className="h-8 px-2 rounded-btn border border-border bg-base text-sm"
+            >
+              {BS_MACD_AREA_MODES.map(m => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+          </label>
+          <MultiSelectDropdown
+            label="背驰条件"
+            options={[
+              { value: 'macd_area', label: 'MACD面积' },
+              { value: 'dif_peak', label: 'DIF极值' },
+              { value: 'dea_peak', label: 'DEA极值' },
+            ]}
+            selected={[
+              ...(bsUseMacdArea ? ['macd_area'] : []),
+              ...(bsUseDif ? ['dif_peak'] : []),
+              ...(bsUseDea ? ['dea_peak'] : []),
+            ]}
+            onChange={(next) => {
+              setBsUseMacdArea(next.includes('macd_area'))
+              setBsUseDif(next.includes('dif_peak'))
+              setBsUseDea(next.includes('dea_peak'))
+            }}
+            placeholder="选择背驰条件"
+          />
+          <span className="w-full text-[10px] text-muted">
+            所选条件 AND 全满足才算背驰; 减少条件可放宽识别 (信号增多)
+          </span>
+        </fieldset>
+      )}
 
       <label className="flex items-center gap-1 text-xs">
         <input

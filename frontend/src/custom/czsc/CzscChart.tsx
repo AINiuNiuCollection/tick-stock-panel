@@ -181,12 +181,37 @@ interface Props {
    * 变更点1: 支持 "100%" 让图表区随父级 flex 占比动态伸缩, 不再需要外层传固定 px。
    */
   height?: number | string
+  /**
+   * 均线周期列表 (不限条数)。
+   * 默认 [5, 10, 20]; 每个数字为 SMA 周期 (5/10/12/20/30/60/120/250 日)。
+   * 空数组表示不画均线。
+   */
+  maPeriods?: number[]
 }
 
+// 均线配色表 — 按周期映射 (与 CzscParamsPanel.MA_PERIOD_COLORS 同步,
+// 确保下拉项色块与图表中该均线颜色完全一致)
+const MA_COLORS: Record<number, string> = {
+  5: '#C78A2E',
+  10: '#2D6A8C',
+  12: '#9D6FD4',
+  20: '#D94F70',
+  30: '#3F8E58',
+  60: '#B58A1F',
+  120: '#5B6FA8',
+  250: '#8C6BA8',
+}
+// 兜底色 (未知周期按序循环)
+const MA_COLOR_FALLBACK = ['#C78A2E', '#2D6A8C', '#9D6FD4', '#D94F70', '#3F8E58', '#B58A1F', '#5B6FA8', '#8C6BA8']
+
 export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
-  { result, klines, height = 480 },
+  { result, klines, height = 480, maPeriods },
   ref,
 ) {
+  // 均线周期: 默认 [5, 10, 20], 不限条数
+  const maPeriodsNorm = (maPeriods && maPeriods.length > 0)
+    ? maPeriods.filter(p => p > 0)
+    : [5, 10, 20]
   // 优先用显式传入的 klines; 否则从 result.bars 推导 (date 字段 = dt)
   const resolvedKlines = klines && klines.length
     ? klines
@@ -235,10 +260,15 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       ? resolvedKlines.map(k => [k.open, k.close, k.low, k.high])
       : []
 
-    // SMA5 / SMA20 — 前端基于 close 闭包计算 (后端不返回 MA), 对齐示例图与 czsc 原生 _theme.py 语义
+    // 动态均线 SMA(N) — 前端基于 close 闭包计算 (后端不返回 MA)。
+    // maPeriodsNorm 由 props 传入 (默认 [5,10,20], 最多 3 条, 参考同花顺)。
+    // 每条均线独立颜色 (MA_COLORS), 与顶部 legend 联动。
     const closes = resolvedKlines.map(k => k.close)
-    const sma5Data = calcSMA(closes, 5)
-    const sma20Data = calcSMA(closes, 20)
+    const maDataList = maPeriodsNorm.map((p, i) => ({
+      period: p,
+      color: MA_COLORS[p] ?? MA_COLOR_FALLBACK[i % MA_COLOR_FALLBACK.length],
+      data: calcSMA(closes, p),
+    }))
     const dateCategories = resolvedKlines.map(k => k.date)
 
     // 成交量副图数据 — 红绿柱: close>=open 用 theme.up, 否则 theme.down (对齐示例图与 czsc colorizeVol)
@@ -486,7 +516,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     // 右上角悬浮数据面板 (graphic 元素), 显示最后一根 bar 的 OHLC/CHG/VOL/MACD
     // 对齐示例图右侧黑色文字面板
     const graphicElements: echarts.EChartsOption['graphic'] = []
-    // ===== 左上角股票标题 (对齐示例图: 大号 symbol + 灰色小字 "symbol 缠论结构 (freq)" + "freq · N BARS" + 图例) =====
+    // ===== 左上角股票标题 (仅标题, 图例统一由顶部 legend 承载, 避免重复) =====
     // 变更点7: 加中文标识 — 主标题显示 "代码 中文名" (中文名来自前端透传 symbol_name);
     //          副标题同样含中文, 让左上角 tag 不仅有编号也有中文标识。
     const symbolDisplayName = result.symbol_name ? `${result.symbol} ${result.symbol_name}` : result.symbol
@@ -514,60 +544,6 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
             font: '11px Inter, "HarmonyOS Sans SC", sans-serif',
           },
         },
-        // 图例: 用 rect (色块) + text (标签) 组合替代之前的纯文本图例,
-        // 色块颜色与 series 实际颜色一一对应 (theme.sma5 / sma20 / fx_dashed / bi / zsBorder),
-        // 解决之前「全部灰色无法区分」的问题。
-        // 实线: 单个 14x3 rect; 虚线 (FX/中枢): 3 个 3x3 小 rect 间隔 2px 模拟 dashed。
-        // 布局: 色块 + 标签横向排列, y=38 与原纯文本图例同位置。
-        ...([
-          { label: `SMA5`, color: theme.sma5, dashed: false },
-          { label: `SMA20`, color: theme.sma20, dashed: false },
-          { label: `FX`, color: theme.fx_dashed, dashed: true },
-          { label: `BI`, color: theme.bi, dashed: false },
-          { label: `中枢`, color: theme.zsBorder, dashed: true },
-        ] as const).flatMap((item, idx, arr) => {
-          const labelGap = 8   // 色块与标签间距
-          const itemGap = 16   // 项与项间距
-          const charW = 6.8    // 11px 字体近似字符宽度 (含字间距)
-          const lineW = item.dashed ? 14 : 14
-          // 计算前序标签累计宽度
-          let xOffset = 0
-          for (let j = 0; j < idx; j++) {
-            xOffset += lineW + labelGap + arr[j].label.length * charW + itemGap
-          }
-          const elements: echarts.EChartsOption['graphic'] = []
-          if (item.dashed) {
-            // 虚线: 3 个 3x3 小 rect, 间隔 2px (3+2+3+2+3=13 ≈ 14)
-            for (let k = 0; k < 3; k++) {
-              elements.push({
-                type: 'rect',
-                shape: { x: xOffset + k * 5, y: 38, width: 3, height: 3 },
-                style: { fill: item.color },
-                silent: true,
-              })
-            }
-          } else {
-            // 实线: 单个 14x3 rect
-            elements.push({
-              type: 'rect',
-              shape: { x: xOffset, y: 38, width: lineW, height: 3 },
-              style: { fill: item.color },
-              silent: true,
-            })
-          }
-          elements.push({
-            type: 'text',
-            style: {
-              text: item.label,
-              x: xOffset + lineW + labelGap,
-              y: 40,
-              fill: item.color,
-              font: '11px Inter, "HarmonyOS Sans SC", sans-serif',
-            },
-            silent: true,
-          })
-          return elements
-        }) as unknown as any[],
       ],
     })
 
@@ -732,7 +708,8 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
             if (nm === 'K线') {
               // OHLC 已在上方从 resolvedKlines 取, 跳过避免重复
               continue
-            } else if (nm === 'SMA5' || nm === 'SMA20') {
+            } else if (nm.startsWith('SMA')) {
+              // 动态均线 SMA5/SMA10/SMA20/... — 显示两位小数
               const n = typeof v === 'number' ? v : null
               lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
             } else if (nm === 'VOL') {
@@ -753,9 +730,10 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           return lines.join('<br/>')
         },
       },
-      // 图例顺序与示例图对齐: SMA5 / SMA20 / FX (DASHED) / BI (SOLID) + 中枢 + 买卖点
+      // 图例顺序与示例图对齐: 动态 SMA + FX (DASHED) + BI (SOLID) + 中枢 + 买卖点 + VOL + MACD
+      // 均线名称随 maPeriodsNorm 动态生成 (SMA5/SMA10/SMA20/...)
       legend: {
-        data: ['K线', 'SMA5', 'SMA20', 'FX', 'BI', '中枢', '买卖点', 'VOL', 'MACD'],
+        data: ['K线', ...maDataList.map(ma => `SMA${ma.period}`), 'FX', 'BI', '中枢', '买卖点', 'VOL', 'MACD'],
         top: 0,
         textStyle: { color: theme.text, fontSize: 11 },
       },
@@ -859,30 +837,19 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
             borderColor0: theme.down,
           },
         }] : []),
-        // SMA5 — 古铜色实线, czsc _theme.py sma5
-        {
-          name: 'SMA5',
+        // 动态均线 SMA(N) — 由 maPeriodsNorm 决定 (默认 [5,10,20], 最多 3 条)
+        // 每条均线独立颜色, 名称 SMA5/SMA10/SMA20/..., 与顶部 legend 联动
+        ...maDataList.map(ma => ({
+          name: `SMA${ma.period}`,
           type: 'line' as const,
-          data: sma5Data,
+          data: ma.data,
           xAxisIndex: 0,
           yAxisIndex: 0,
           smooth: false,
           symbol: 'none',
-          lineStyle: { color: theme.sma5, width: 1.4 },
+          lineStyle: { color: ma.color, width: 1.4 },
           z: 2,
-        },
-        // SMA20 — 钢蓝色实线, czsc _theme.py sma20
-        {
-          name: 'SMA20',
-          type: 'line' as const,
-          data: sma20Data,
-          xAxisIndex: 0,
-          yAxisIndex: 0,
-          smooth: false,
-          symbol: 'none',
-          lineStyle: { color: theme.sma20, width: 1.4 },
-          z: 2,
-        },
+        })),
         // FX 分型 — 卡其色虚线折线, 连接相邻分型极值, czsc _theme.py fx_dashed
         //   注: echarts lines series 不支持 markPoint (官方限制), 顶底分型红绿三角
         //   标识挂到下方独立的 'FX标记' scatter series 上 (项1 修复)。
@@ -1024,7 +991,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     } as echarts.EChartsOption
 
     chartRef.current.setOption(option, true)
-  }, [result, resolvedKlines, isDark])
+  }, [result, resolvedKlines, isDark, maPeriodsNorm])
 
   // 高度变化时 (拖动分割条 / 父容器 resize) 同步 echarts 实例尺寸。
   // 变更点1: height="100%" 时父容器尺寸变化由 ResizeObserver 捕获, 自动 resize echarts。
