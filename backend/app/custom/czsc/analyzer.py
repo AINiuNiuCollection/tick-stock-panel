@@ -26,6 +26,12 @@ DEFAULT_MAX_BI_NUM = 100
 DEFAULT_MIN_BI_LEN = 7
 # 预热窗口: CZSC 需要足够 K 线才能稳定识别笔/中枢
 WARMUP_DAYS = 60  # 日历日, 约 40 交易日
+# 均线暖机扩展因子: 后端取数窗口需 ≥ max(ma_periods) * 1.5 日历日,
+# 保证 SMA(N) 在用户原始 start 处已有 N 根 K 线 (前 N-1 根为 None 暖机)。
+# 1.5 倍冗余覆盖周末/假日非交易日。
+MA_WARMUP_FACTOR = 1.5
+# SMA 支持的周期白名单 (与前端 CzscParamsPanel.MA_PERIOD_OPTIONS 一致)
+MA_PERIOD_WHITELIST = (5, 10, 12, 20, 30, 60, 120, 250)
 
 
 class AnalyzerError(Exception):
@@ -357,6 +363,78 @@ def _calc_macd(
     return out
 
 
+def _bar_dt_to_date(bar: Any) -> date:
+    """RawBar.dt (datetime) → date, 用于范围裁剪。"""
+    dt_val = bar.dt
+    if isinstance(dt_val, datetime):
+        return dt_val.date()
+    if isinstance(dt_val, date):
+        return dt_val
+    # 兜底: 字符串解析
+    return datetime.fromisoformat(str(dt_val)).date()
+
+
+def _bar_dt_to_date_str(bar: Any) -> str:
+    """RawBar.dt (datetime) → "YYYY-MM-DD" 字符串, 用于与 polars df 的 dt 列 join。
+    polars cast(pl.Utf8) 带微秒 (2026-11-19 00:00:00.000000), str(datetime) 不带微秒,
+    直接字符串 is_in 会不匹配; 统一截到 date 字符串避免格式差异。
+    """
+    return _bar_dt_to_date(bar).isoformat()
+
+
+def _calc_sma_series(
+    bars_out: list,
+    ma_periods: list[int],
+) -> list[dict[str, Any]]:
+    """基于 bars_out 计算 SMA(N) 序列, 返回 [{dt, ma{p1}, ma{p2}, ...}, ...]。
+
+    与主工程 compute_indicators ma5/10/20/30/60 口径一致:
+        polars rolling_mean(N) min_periods=N — 前 N-1 根为 None。
+
+    Args:
+        bars_out: BarItem 列表 (已按 dt 升序), 用 .close 计算。
+        ma_periods: 用户勾选的周期列表 (已过滤白名单 + 去重)。
+
+    Returns:
+        list[dict], 每行 {"dt": str, "ma{p}": float|None, ...},
+        长度与 bars_out 一致, dt 对齐 bars_out[i].dt。
+        只包含 ma_periods 中的周期字段, 减小响应体。
+    """
+    if not bars_out or not ma_periods:
+        return []
+
+    # 用 polars 一次性算所有周期, 比纯 Python 循环快
+    closes = [float(b.close) for b in bars_out]
+    dts = [str(b.dt) for b in bars_out]
+    df = pl.DataFrame({"dt": dts, "close": closes})
+
+    cols: list[str] = []
+    for p in ma_periods:
+        col_name = f"ma{p}"
+        df = df.with_columns(
+            pl.col("close").rolling_mean(p, min_periods=p).alias(col_name)
+        )
+        cols.append(col_name)
+
+    rows: list[dict[str, Any]] = []
+    for row in df.iter_rows(named=True):
+        item: dict[str, Any] = {"dt": row["dt"]}
+        for c in cols:
+            v = row.get(c)
+            # polars rolling_mean 在 min_periods 不满足时返回 null,
+            # NaN (理论上不会出现, 防御性处理) 也归一化为 None
+            if v is None:
+                item[c] = None
+            else:
+                try:
+                    f = float(v)
+                    item[c] = None if f != f else f
+                except (TypeError, ValueError):
+                    item[c] = None
+        rows.append(item)
+    return rows
+
+
 # ===== 缠论买卖点识别 (严格按缠论背驰) =====
 #
 # 算法遵循缠论原文定义:
@@ -684,9 +762,10 @@ def _make_bs_point(
         price = float(fx.low)
     else:
         price = float(fx.fx) if fx.fx is not None else float(bi.high if direction == "卖" else bi.low)
+    # dt 格式与 fx_to_dict / bars 保持一致: str(datetime) → "YYYY-MM-DD HH:MM:SS" (空格分隔)。
+    # 不能用 fx.dt.isoformat() — 它返回 "YYYY-MM-DDTHH:MM:SS" (T 分隔), 与前端 ECharts
+    # category xAxis 的 dateCategories (来自 bars[].dt) 字符串不匹配, 会导致 scatter 点无法定位。
     dt_str = str(fx.dt)
-    if hasattr(fx.dt, "isoformat"):
-        dt_str = fx.dt.isoformat()
     return bs_item_cls(
         dt=dt_str,
         type=bs_type,
@@ -744,6 +823,9 @@ def _identify_bs_points(
     #                     使背驰对比的是趋势起始段而非相邻段。
     #   direction='up':   对称, 找高点单调递增序列的最早一笔。
     #   max_steps: 最多向前跨 3 段同向笔 (覆盖 7 笔趋势), 防跨中枢过远对比失真。
+    #   macd_area_fallback: 若选中的趋势起点笔在 split 模式下无对应方向柱 (短笔刚死叉/金叉,
+    #                       红绿柱未形成), macd_area=None 会让背驰判定直接失败。
+    #                       此时回退到相邻 i-2 笔 (即 prev 初始值), 至少保证有面积可比。
     def _find_trend_start_bi(cur_idx: int, direction: str, max_steps: int = 3):
         prev = bi_list_raw[cur_idx - 2]
         j = cur_idx - 4
@@ -769,6 +851,23 @@ def _identify_bs_points(
                 else:
                     break
         return prev
+
+    def _has_macd_area(bi: Any) -> bool:
+        """检查笔区间在 split 模式下是否有可计算的 MACD 面积 (对应方向柱非空)。
+        短下跌笔刚死叉、绿柱未成形时 area=None, 会导致背驰判定直接失败。
+        """
+        sl = _slice_macd_for_bi(bi, bars_out, macd_out, dt_str_idx)
+        if not sl:
+            return False
+        direction = _bi_direction(bi)
+        for m in sl:
+            if m.macd is None:
+                continue
+            if direction == "down" and m.macd < 0:
+                return True
+            if direction == "up" and m.macd > 0:
+                return True
+        return False
 
 
     dt_str_idx: dict[str, int] = {b.dt: i for i, b in enumerate(bars_out)}
@@ -810,6 +909,16 @@ def _identify_bs_points(
         # 末笔需创新低 (低于 prev_bi 低点) — 趋势延续
         if bi.low >= prev_bi.low:
             continue
+        # 短笔兜底: 若 prev_bi 在 split 模式下无对应方向柱 (短下跌笔刚死叉、绿柱未成形),
+        # macd_area=None 会让背驰判定直接失败。向前再找一笔同向笔作为 prev_bi。
+        if macd_area_mode == "split" and not _has_macd_area(prev_bi):
+            k = bi_list_raw.index(prev_bi) - 2
+            while k >= 0:
+                cand = bi_list_raw[k]
+                if _bi_direction(cand) == "down" and _has_macd_area(cand):
+                    prev_bi = cand
+                    break
+                k -= 2
         # 关联中枢: 取与 prev_bi 有重叠的最后一个 valid 中枢
         zs_idx = _find_bi_overlap_zs(prev_bi, zs_filtered)
         div = _check_divergence(
@@ -836,6 +945,15 @@ def _identify_bs_points(
             continue
         if bi.high <= prev_bi.high:
             continue
+        # 短笔兜底 (同 B1): prev_bi 在 split 模式无对应方向柱时向前再找一笔
+        if macd_area_mode == "split" and not _has_macd_area(prev_bi):
+            k = bi_list_raw.index(prev_bi) - 2
+            while k >= 0:
+                cand = bi_list_raw[k]
+                if _bi_direction(cand) == "up" and _has_macd_area(cand):
+                    prev_bi = cand
+                    break
+                k -= 2
         zs_idx = _find_bi_overlap_zs(prev_bi, zs_filtered)
         div = _check_divergence(
             prev_bi, bi, bars_out, macd_out, dt_str_idx,
@@ -1026,29 +1144,68 @@ def _analyze_sync(
     bs_use_dif: bool = DEFAULT_BS_USE_DIF,
     bs_use_dea: bool = DEFAULT_BS_USE_DEA,
     bs_use_macd_area: bool = DEFAULT_BS_USE_MACD_AREA,
+    ma_periods: list[int] | None = None,
 ) -> dict[str, Any]:
     """同步分析 — 在线程池中调用, 不阻塞事件循环。
+
+    Args:
+        ma_periods: 用户勾选的 SMA 周期列表 (如 [5,20,250])。
+            传入时后端会按 max(ma_periods)*1.5 日历日向前扩展取数窗口,
+            保证 SMA 暖机有足够历史 K 线; bars 仍按用户原始 start/end 返回。
+            None 或空列表表示不计算 MA (mas 字段为空数组)。
 
     Raises:
         AnalyzerError: 取数失败 / czsc 分析失败
     """
-    # 取数
-    bars_df, source = _fetch_kline(symbol, freq, start, end)
+    # 归一化 ma_periods: 过滤白名单 + 去重 + 升序
+    ma_periods_norm: list[int] = []
+    if ma_periods:
+        seen: set[int] = set()
+        for p in ma_periods:
+            if p in MA_PERIOD_WHITELIST and p not in seen:
+                ma_periods_norm.append(p)
+                seen.add(p)
+        ma_periods_norm.sort()
+
+    # 取数范围扩展: 若用户勾选了 SMA(>=5), 需向前扩展取数窗口满足暖机。
+    # 扩展后的 fetch_start 仅用于取数; bars 仍按用户原始 start 裁剪后返回。
+    fetch_start = start
+    if ma_periods_norm:
+        max_ma = max(ma_periods_norm)
+        # 日线: SMA(N) 需 N 根 K 线, 日历日约 N*1.5 (覆盖周末/假日)
+        # 周线/月线: K 线更稀疏, 同样 N*1.5 日历日足够 (周线 N*7 日历日已过估算, 月线更宽松)
+        # 这里统一用 N*1.5 日历日, 兼顾日线为主用例; 周月线暖机冗余更充足不会出错
+        warmup_calendar_days = int(max_ma * MA_WARMUP_FACTOR)
+        ma_start = end - timedelta(days=warmup_calendar_days)
+        # 取更早的 (用户原始 start 与 ma_start 的最小值)
+        if ma_start < fetch_start:
+            fetch_start = ma_start
+
+    # 取数 (可能比用户原始 start 更早, 用于 SMA 暖机)
+    bars_df, source = _fetch_kline(symbol, freq, fetch_start, end)
     if bars_df.is_empty():
         raise AnalyzerError(
             "NO_DATA",
-            f"no kline data for {symbol} {freq} ({start} ~ {end}); "
+            f"no kline data for {symbol} {freq} ({fetch_start} ~ {end}); "
             f"primary and eastmoney fallback both empty",
         )
 
     # 转换为 RawBar
     from .converters import df_to_raw_bars
-    bars = df_to_raw_bars(bars_df, freq)
-    if not bars:
+    bars_all = df_to_raw_bars(bars_df, freq)
+    if not bars_all:
         raise AnalyzerError(
             "CONVERT_FAILED",
             f"convert to RawBar failed for {symbol} {freq}",
         )
+
+    # bars: 用户原始 [start, end] 范围, 用于 czsc.CZSC 分析与 bars_out (保持现有行为)。
+    # bars_all: 含扩展暖机段 [fetch_start, end], 仅用于 SMA 计算 (暖机后裁剪到用户范围)。
+    # 不裁剪会影响 fx/bi/zs 索引对齐 + 前端图表多显示暖机段 K 线, 故 czsc 仍用裁剪后的 bars。
+    if fetch_start < start:
+        bars = [b for b in bars_all if _bar_dt_to_date(b) >= start]
+    else:
+        bars = bars_all  # 无扩展, 直接用全部
 
     # 调用 czsc.CZSC 分析
     # czsc 1.0.2 签名: CZSC(bars: list[RawBar], max_bi_num=N, min_bi_len=M)
@@ -1086,9 +1243,27 @@ def _analyze_sync(
         and all(c in bars_df.columns for c in ("macd_dif", "macd_dea", "macd_hist"))
     )
     if has_precomputed_macd:
-        # bars_df 与 bars_out 同源同序 (df_to_raw_bars 内部 sort("dt"))
-        # 但 bars 可能因转换失败被截断, 这里以 bars_out 为准按 dt 对齐取值
+        # bars_df 含 [fetch_start, end] 全范围 (含 SMA 暖机段), bars_out 仅含用户原始 [start, end]。
+        # 用 bars_out 的 dt 集合过滤 bars_df, 保证行序与 bars_out 完全对齐。
+        # bars_out.dt 是 str(bar.dt) (如 "2026-11-19 00:00:00"), bars_df.dt 是 datetime —
+        # 用 date 做 join key 避免字符串格式差异 (polars cast 带微秒, str() 不带)。
+        bars_out_dates = {_bar_dt_to_date_str(b) for b in bars_out}
         bars_df_sorted = bars_df.sort("dt")
+        # 统一把 dt 转成 date 字符串 (YYYY-MM-DD) 作 join key
+        if bars_df_sorted["dt"].dtype == pl.Datetime:
+            bars_df_sorted = bars_df_sorted.with_columns(
+                pl.col("dt").dt.strftime("%Y-%m-%d").alias("_dt_key")
+            )
+        elif bars_df_sorted["dt"].dtype == pl.Date:
+            bars_df_sorted = bars_df_sorted.with_columns(
+                pl.col("dt").dt.strftime("%Y-%m-%d").alias("_dt_key")
+            )
+        else:
+            # 已是字符串, 取前 10 字符 (YYYY-MM-DD)
+            bars_df_sorted = bars_df_sorted.with_columns(
+                pl.col("dt").str.slice(0, 10).alias("_dt_key")
+            )
+        bars_df_sorted = bars_df_sorted.filter(pl.col("_dt_key").is_in(list(bars_out_dates)))
         # 行数对齐保护: 仅在完全对齐时直接 zip, 否则降级
         if bars_df_sorted.height == len(bars_out):
             dif_seq = bars_df_sorted["macd_dif"].to_list()
@@ -1145,6 +1320,19 @@ def _analyze_sync(
             logger.warning("extract signals failed: %s", exc)
             signals = {}
 
+    # 均线 SMA(N) — 后端基于扩展范围 K 线 (bars_all, 含暖机段) 计算,
+    # 再裁剪到用户原始 [start, end] 范围 (与 bars_out 的 dt 集合对齐)。
+    # 暖机段 K 线仅用于 SMA 滚动平均的种子, 不返回给前端。
+    mas_out: list[dict[str, Any]] = []
+    if ma_periods_norm and len(bars_all) > len(bars):
+        # 有扩展暖机段: 基于 bars_all 计算 SMA, 再按 bars_out 的 dt 集合裁剪
+        mas_all = _calc_sma_series(bars_all, ma_periods_norm)
+        bars_out_dt_set = {b.dt for b in bars_out}
+        mas_out = [m for m in mas_all if m["dt"] in bars_out_dt_set]
+    elif ma_periods_norm:
+        # 无扩展 (用户原始范围已足够暖机, 或未扩展): 直接基于 bars_out 计算
+        mas_out = _calc_sma_series(bars_out, ma_periods_norm)
+
     return {
         "symbol": symbol,
         "symbol_name": symbol_name,
@@ -1155,6 +1343,7 @@ def _analyze_sync(
         "zs_list": zs_list,
         "bars": bars_out,
         "macd": macd_out,
+        "mas": mas_out,
         "bs_points": bs_points,
         "signals": signals,
         "warnings": None,
@@ -1176,6 +1365,7 @@ async def analyze_async(
     bs_use_dif: bool = DEFAULT_BS_USE_DIF,
     bs_use_dea: bool = DEFAULT_BS_USE_DEA,
     bs_use_macd_area: bool = DEFAULT_BS_USE_MACD_AREA,
+    ma_periods: list[int] | None = None,
 ) -> dict[str, Any]:
     """异步分析入口 — 通过线程池隔离 CPU 密集运算。
 
@@ -1202,7 +1392,7 @@ async def analyze_async(
                 None,
                 _analyze_sync,
                 symbol, freq, start, end, max_bi_num, min_bi_len, features, symbol_name,
-                bs_macd_area_mode, bs_use_dif, bs_use_dea, bs_use_macd_area,
+                bs_macd_area_mode, bs_use_dif, bs_use_dea, bs_use_macd_area, ma_periods,
             ),
             timeout=settings.czsc_analyze_timeout_s,
         )

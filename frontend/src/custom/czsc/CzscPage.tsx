@@ -165,6 +165,9 @@ export function CzscPage() {
       bs_use_dif: params!.bs_use_dif,
       bs_use_dea: params!.bs_use_dea,
       bs_use_macd_area: params!.bs_use_macd_area,
+      // 透传当前勾选的均线周期 — 后端取数自动扩展暖机 (max(ma)*1.5 日历日),
+      // 计算含 120/250 的 SMA 序列后下发, 前端零计算。
+      ma_periods: liveMaPeriods,
     }),
     enabled: !!params,
     staleTime: 5 * 60_000,

@@ -4285,6 +4285,15 @@ export interface CzscBsPoint {
   macd_area_mode: string
 }
 
+/** 缠论均线一根 — 后端计算 SMA 后下发, 前端零计算直接渲染。
+ * 每行 dt 对齐 bars[].dt, 只含用户勾选的周期字段 (如 ma5/ma20/ma250)。
+ * 前 N-1 根为 null (暖机); 后端取数已自动扩展窗口保证 SMA 在用户原始 start 处有值。
+ */
+export interface CzscMa {
+  dt: string
+  [maField: `ma${number}`]: number | null
+}
+
 export interface CzscAnalyzeResult {
   ok: boolean
   symbol: string
@@ -4296,6 +4305,7 @@ export interface CzscAnalyzeResult {
   zs_list: CzscZs[]
   bars: CzscBar[]
   macd: CzscMacd[]
+  mas?: CzscMa[]  // 均线序列 (后端按 ma_periods 计算, 含 120/250; 空数组或 undefined 时前端兜底自算)
   bs_points?: CzscBsPoint[]  // 买卖点 (后端默认开启, 可通过 features 关闭)
   signals: Record<string, unknown>
   warnings?: string[] | null
@@ -4326,7 +4336,7 @@ export interface CzscAnalyzeParams {
   min_bi_len?: number
   features?: string  // 逗号分隔: fx,bi,zs,signals,bs_points
   force_refresh?: boolean
-  ma_periods?: number[]        // 均线周期列表 (前端渲染用, 不传后端)
+  ma_periods?: number[]        // 均线周期列表 (传后端, 后端取数自动扩展暖机并计算 SMA 后下发)
   bs_macd_area_mode?: 'split' | 'total_abs' | 'dif_dea'  // 背驰 MACD 面积口径
   bs_use_dif?: boolean         // 背驰是否启用 DIF 极值条件
   bs_use_dea?: boolean         // 背驰是否启用 DEA 极值条件
@@ -4359,6 +4369,10 @@ export async function fetchCzscAnalyze(params: CzscAnalyzeParams): Promise<CzscA
   if (params.bs_use_dif != null) qs.set('bs_use_dif', String(params.bs_use_dif))
   if (params.bs_use_dea != null) qs.set('bs_use_dea', String(params.bs_use_dea))
   if (params.bs_use_macd_area != null) qs.set('bs_use_macd_area', String(params.bs_use_macd_area))
+  // 均线周期 (后端取数自动扩展暖机并计算 SMA 后下发, 前端零计算)
+  if (params.ma_periods && params.ma_periods.length > 0) {
+    qs.set('ma_periods', params.ma_periods.join(','))
+  }
   try {
     return await request<CzscAnalyzeResult>(`/api/czsc/analyze?${qs}`, { timeoutMs: 60_000 })
   } catch (err) {

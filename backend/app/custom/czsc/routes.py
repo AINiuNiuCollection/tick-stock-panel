@@ -154,10 +154,18 @@ def build_router() -> APIRouter:
         bs_use_dif: bool = Query(True, description="背驰是否启用 DIF 极值条件"),
         bs_use_dea: bool = Query(True, description="背驰是否启用 DEA 极值条件"),
         bs_use_macd_area: bool = Query(True, description="背驰是否启用 MACD 面积条件"),
+        ma_periods: str | None = Query(None, description="逗号分隔的 SMA 周期, 如 '5,20,250'; 后端取数自动扩展暖机"),
     ) -> JSONResponse:
         """同步分析 (适合日K等小数据量)。"""
         _ = force_refresh  # 首版忽略, 每次重新取数; 二期可接缓存层
         feature_list = [f.strip() for f in features.split(",") if f.strip()]
+        # ma_periods 解析: "5,20,250" → [5, 20, 250]; None/空 → None (不计算 MA)
+        ma_periods_list: list[int] | None = None
+        if ma_periods:
+            try:
+                ma_periods_list = [int(p.strip()) for p in ma_periods.split(",") if p.strip()]
+            except ValueError:
+                ma_periods_list = None
         try:
             result = await analyze_async(
                 symbol=symbol, freq=freq,
@@ -169,9 +177,11 @@ def build_router() -> APIRouter:
                 bs_use_dif=bs_use_dif,
                 bs_use_dea=bs_use_dea,
                 bs_use_macd_area=bs_use_macd_area,
+                ma_periods=ma_periods_list,
             )
             # fx_list/bi_list/zs_list/bars/macd/bs_points 是 Pydantic 模型实例, starlette
             # JSONResponse 默认 json.dumps 不识别 Pydantic 模型, 这里统一 model_dump() 转 dict。
+            # mas 是 list[dict] (非 Pydantic 模型), 直接透传。
             payload = {
                 **result,
                 "ok": True,
@@ -180,6 +190,7 @@ def build_router() -> APIRouter:
                 "zs_list": [z.model_dump() for z in result.get("zs_list", [])],
                 "bars": [bar.model_dump() for bar in result.get("bars", [])],
                 "macd": [m.model_dump() for m in result.get("macd", [])],
+                "mas": result.get("mas", []),
                 "bs_points": [bp.model_dump() for bp in result.get("bs_points", [])],
             }
             return _build_success_response(payload)

@@ -13,7 +13,7 @@
  */
 import { useEffect, useRef, useImperativeHandle, forwardRef, useState } from 'react'
 import * as echarts from 'echarts'
-import type { CzscAnalyzeResult } from '@/lib/api'
+import type { CzscAnalyzeResult, CzscMa } from '@/lib/api'
 
 /**
  * 监听 html.dark 类变化, 触发图表重渲染以切换 light/dark 主题。
@@ -260,16 +260,28 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       ? resolvedKlines.map(k => [k.open, k.close, k.low, k.high])
       : []
 
-    // 动态均线 SMA(N) — 前端基于 close 闭包计算 (后端不返回 MA)。
+    // 动态均线 SMA(N) — 优先用后端下发的 result.mas (含 120/250, 已扩展暖机);
+    // 兜底: result.mas 为空 / 长度不匹配 / 该周期字段缺失时, 前端基于 close 自算。
     // maPeriodsNorm 由 props 传入 (默认 [5,10,20], 最多 3 条, 参考同花顺)。
     // 每条均线独立颜色 (MA_COLORS), 与顶部 legend 联动。
     const closes = resolvedKlines.map(k => k.close)
-    const maDataList = maPeriodsNorm.map((p, i) => ({
-      period: p,
-      color: MA_COLORS[p] ?? MA_COLOR_FALLBACK[i % MA_COLOR_FALLBACK.length],
-      data: calcSMA(closes, p),
-    }))
     const dateCategories = resolvedKlines.map(k => k.date)
+    // 后端 mas 按 dt 与 bars 对齐; 旧缓存可能无 mas 字段, 用空数组兜底
+    const masData: CzscMa[] = result.mas ?? []
+    // 按 dateCategories 顺序取 ma{p} 值; 逐周期判断是否走后端数据:
+    //   1. masData 长度与 dateCategories 完全对齐
+    //   2. 该周期字段在 masData 首行中存在 (用户改均线但未重新分析时, 旧 mas 缺新周期字段)
+    // 不满足任一条件则该周期回退到前端 calcSMA 自算 (无暖机, 但至少能显示)
+    const masAligned = masData.length === dateCategories.length && masData.length > 0
+    const maDataList = maPeriodsNorm.map((p, i) => {
+      const color = MA_COLORS[p] ?? MA_COLOR_FALLBACK[i % MA_COLOR_FALLBACK.length]
+      // 检查该周期是否在后端 mas 中存在 (取首行 sample 判断字段是否定义)
+      const hasBackendField = masAligned && masData[0] && (`ma${p}` in masData[0])
+      const data = hasBackendField
+        ? masData.map(m => m[`ma${p}`] ?? null)
+        : calcSMA(closes, p)
+      return { period: p, color, data }
+    })
 
     // 成交量副图数据 — 红绿柱: close>=open 用 theme.up, 否则 theme.down (对齐示例图与 czsc colorizeVol)
     const volData = resolvedKlines.map(k => ({

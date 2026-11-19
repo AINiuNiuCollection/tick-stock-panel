@@ -67,6 +67,16 @@ class MacdItem(BaseModel):
     macd: float | None = None   # MACD hist = 2 * (DIFF - DEA)
 
 
+# 均线序列 (mas) — 用 list[dict[str, Any]] 承载, 不建 Pydantic 模型:
+#   每行: {"dt": "YYYY-MM-DD HH:MM:SS", "ma5": float|null, "ma20": float|null, ...}
+#   只包含用户勾选的周期字段 (未勾选不出现在 dict 中, 减小响应体)。
+# 口径: polars rolling_mean(N) min_periods=N, 与主工程 compute_indicators
+#       ma5/10/20/30/60 一致; 120/250 由后端取足够 K 线后用同口径计算。
+# 暖机: 前端 calcSMA 旧逻辑在用户取短日期范围时 SMA250 全 null;
+#       后端会自动向前扩展取数窗口 (max(ma_periods)*1.5 日历日),
+#       保证 SMA 暖机有足够历史 K 线, 但 bars 仍按用户原始 start/end 返回。
+
+
 class BsPointItem(BaseModel):
     """缠论买卖点 (一二三类)。
 
@@ -117,6 +127,10 @@ class AnalyzeResult(BaseModel):
     zs_list: list[ZsItem] = Field(default_factory=list)
     bars: list[BarItem] = Field(default_factory=list)
     macd: list[MacdItem] = Field(default_factory=list)
+    # 均线序列 — 后端按用户勾选的 ma_periods 计算 (含 120/250, 取数自动扩展暖机)。
+    # 每行 dict: {"dt": str, "ma{p1}": float|None, "ma{p2}": float|None, ...}
+    # 与 bars[].dt 对齐 (按用户原始 start/end 裁剪), 前端零计算直接渲染。
+    mas: list[dict[str, Any]] = Field(default_factory=list)
     bs_points: list[BsPointItem] = Field(default_factory=list)
     signals: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] | None = None
