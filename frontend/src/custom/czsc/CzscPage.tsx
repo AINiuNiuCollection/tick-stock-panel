@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, GripHorizontal } from 'lucide-react'
-import { fetchCzscAnalyze, fetchCzscHealth, type CzscAnalyzeResult } from '@/lib/api'
+import { fetchCzscAnalyze, fetchCzscHealth, ApiError, type CzscAnalyzeResult } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
@@ -178,6 +178,14 @@ export function CzscPage() {
   const lastFromCache = pickLastAnalyzeFromCache(qc)
   const displayData = analyze.data ?? lastFromCache
 
+  // 分析失败时, 提取后端结构化错误 (NO_DATA/CZSC_NOT_INSTALLED 等) 用于顶部 banner 提示。
+  // 没有 displayData 时走 EmptyState, 不显示 banner (避免与"分析失败"空状态重复)。
+  const analyzeError = analyze.error
+  const errCode = analyzeError instanceof ApiError ? analyzeError.code : ''
+  const errMsg = analyzeError instanceof ApiError ? analyzeError.message : (analyzeError instanceof Error ? analyzeError.message : '')
+  const errHint = analyzeError instanceof ApiError ? analyzeError.hint : ''
+  const showErrorBanner = !!analyzeError && !!displayData && !analyze.isFetching
+
   const serveOk = health.data?.ok === true
 
   return (
@@ -197,6 +205,30 @@ export function CzscPage() {
         <div className="text-xs text-amber-500 bg-amber-500/10 rounded-btn px-3 py-2">
           ⚠ czsc 扩展未就绪。请在后端执行:
           <code className="mx-1 px-1 bg-base rounded">cd backend && uv sync --extra czsc</code>
+        </div>
+      )}
+
+      {showErrorBanner && (
+        <div className="text-xs text-red-500 bg-red-500/10 rounded-btn px-3 py-2 flex items-start gap-2">
+          <span className="shrink-0">⚠</span>
+          <div className="min-w-0 flex-1">
+            <div className="font-medium">
+              数据源暂不可用 — 以下为上次缓存结果{errCode ? ` [${errCode}]` : ''}
+            </div>
+            <div className="text-red-500/80 mt-0.5 break-words">
+              {errMsg}{errHint ? ` (hint: ${errHint})` : ''}
+            </div>
+            <div className="text-red-500/60 mt-0.5">
+              请稍后重试, 或检查网络/代理是否拦截了 TickFlow/eastmoney 数据源
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => analyze.refetch()}
+            className="shrink-0 px-2 py-1 rounded-btn bg-red-500/10 hover:bg-red-500/20 text-red-500 transition-colors"
+          >
+            重试
+          </button>
         </div>
       )}
 

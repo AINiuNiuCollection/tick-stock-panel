@@ -17,11 +17,17 @@ type RequestOptions = RequestInit & {
 
 export class ApiError extends Error {
   readonly status: number
+  /** 后端结构化错误码 (如 NO_DATA/CZSC_NOT_INSTALLED), 无则为空字符串 */
+  readonly code: string
+  /** 后端 hint 字段, 无则为空字符串 */
+  readonly hint: string
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code = '', hint = '') {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
+    this.hint = hint
   }
 }
 
@@ -4367,8 +4373,13 @@ export async function fetchCzscAnalyze(params: CzscAnalyzeParams): Promise<CzscA
           const code = j.error.code ?? ''
           const hint = j.error.hint ? ` (${j.error.hint})` : ''
           toast(`[${code}] ${j.error.message}${hint}`, 'error')
+          // 用结构化 code/hint 重抛, 让 useQuery 的 error 携带可识别信息
+          throw new ApiError(j.error.message, err.status, code, j.error.hint ?? '')
         }
-      } catch { /* 二次 fetch 失败时退回 request 已弹的 toast */ }
+      } catch (e2) {
+        // 二次 fetch 失败时退回 request 已弹的 toast; 若 e2 是我们刚抛的 ApiError, 继续向上抛
+        if (e2 instanceof ApiError) throw e2
+      }
     }
     throw err
   }
