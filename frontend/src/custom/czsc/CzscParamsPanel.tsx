@@ -329,29 +329,31 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
                       均线设置<HelpTip text="SMA 简单移动平均线。勾选即在K线图上叠加该周期均线, 不限条数。均线变化实时生效, 无需重新分析。每条均线颜色固定, 与下方色块一致。" />
                     </h3>
                   </div>
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     {MA_PERIOD_OPTIONS.map(p => {
                       const checked = maPeriods.includes(p)
                       const color = MA_PERIOD_COLORS[p] ?? MA_PERIOD_COLORS[5]
                       return (
                         <label
                           key={p}
-                          className={`flex items-center gap-2 px-2 py-1.5 rounded-btn border text-sm cursor-pointer transition-colors ${checked ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}
+                          className={`flex items-center justify-between gap-2 px-3 py-2 rounded-btn border text-sm cursor-pointer transition-colors ${checked ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}
                         >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              const next = checked
-                                ? maPeriods.filter(x => x !== p)
-                                : [...maPeriods, p].sort((a, b) => a - b)
-                              setMaPeriods(next)
-                              onMaPeriodsChange?.(next)
-                            }}
-                            className="accent-accent"
-                          />
-                          <span className="flex-1">SMA{p}</span>
-                          <span className="w-4 h-2 rounded-sm shrink-0" style={{ backgroundColor: color }} />
+                          <span className="flex items-center gap-2 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const next = checked
+                                  ? maPeriods.filter(x => x !== p)
+                                  : [...maPeriods, p].sort((a, b) => a - b)
+                                setMaPeriods(next)
+                                onMaPeriodsChange?.(next)
+                              }}
+                              className="accent-accent shrink-0"
+                            />
+                            <span className="truncate">SMA{p}</span>
+                          </span>
+                          <span className="w-5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: color }} />
                         </label>
                       )
                     })}
