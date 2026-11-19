@@ -4260,6 +4260,25 @@ export interface CzscMacd {
   macd: number | null
 }
 
+/** 缠论买卖点 (一二三类) — 与后端 BsPointItem 对齐 */
+export interface CzscBsPoint {
+  dt: string
+  type: 'B1' | 'B2' | 'B3' | 'S1' | 'S2' | 'S3'
+  direction: '买' | '卖'
+  price: number
+  bi_direction: string
+  zs_index: number
+  macd_area_prev: number | null
+  macd_area_cur: number | null
+  dif_peak_prev: number | null
+  dif_peak_cur: number | null
+  dea_peak_prev: number | null
+  dea_peak_cur: number | null
+  divergence_type: string | null
+  divergence_pass: string[]
+  macd_area_mode: string
+}
+
 export interface CzscAnalyzeResult {
   ok: boolean
   symbol: string
@@ -4271,6 +4290,7 @@ export interface CzscAnalyzeResult {
   zs_list: CzscZs[]
   bars: CzscBar[]
   macd: CzscMacd[]
+  bs_points?: CzscBsPoint[]  // 买卖点 (后端默认开启, 可通过 features 关闭)
   signals: Record<string, unknown>
   warnings?: string[] | null
   source: string

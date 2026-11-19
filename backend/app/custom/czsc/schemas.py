@@ -67,6 +67,44 @@ class MacdItem(BaseModel):
     macd: float | None = None   # MACD hist = 2 * (DIFF - DEA)
 
 
+class BsPointItem(BaseModel):
+    """缠论买卖点 (一二三类)。
+
+    type 取值: 'B1'/'B2'/'B3' (第一/二/三类买点), 'S1'/'S2'/'S3' (第一/二/三类卖点)。
+    direction: '买' / '卖'。
+    dt/price: 买卖点所在 K 线 (笔端点分型 K 线) 的日期与价位 (顶分型取 high, 底分型取 low)。
+    bi_direction: 触发该买卖点的笔方向 ('Direction.Up'/'Direction.Down')。
+    zs_index: 关联的中枢在 zs_list 中的下标 (无中枢关联的 B1/S1 取 -1)。
+
+    背驰详细信息 (严格按缠论计算, 鼠标悬浮显示):
+        macd_area_prev / macd_area_cur   — 前后两同向笔的 MACD 柱面积 (按 macd_area_mode 口径)
+        dif_peak_prev / dif_peak_cur     — 前后两笔区间内 DIF 极值 (上涨取 max, 下跌取 min)
+        dea_peak_prev / dea_peak_cur     — 前后两笔区间内 DEA 极值
+        divergence_type                  — 背驰类型描述, 如 'MACD面积+DIF+DEA三重背驰'
+        divergence_pass                  — 本次判定命中的背驰条件集合, 如 ['macd_area','dif','dea']
+
+    macd_area_mode 取值 (与后端 _identify_bs_points 配置一致):
+        'split'     — 红绿柱分计 (默认; 下跌笔只计绿柱面积, 上涨笔只计红柱面积)
+        'total_abs' — 笔区间内 Σ|hist| (含红绿柱)
+        'dif_dea'   — 两次金叉/死叉之间 Σ|DIF-DEA| (对齐 czsc tas_macd_bs1 口径)
+    """
+    dt: str
+    type: str                       # B1/B2/B3/S1/S2/S3
+    direction: str                  # 买/卖
+    price: float
+    bi_direction: str
+    zs_index: int = -1
+    macd_area_prev: float | None = None
+    macd_area_cur: float | None = None
+    dif_peak_prev: float | None = None
+    dif_peak_cur: float | None = None
+    dea_peak_prev: float | None = None
+    dea_peak_cur: float | None = None
+    divergence_type: str | None = None
+    divergence_pass: list[str] = Field(default_factory=list)
+    macd_area_mode: str = "split"
+
+
 class AnalyzeResult(BaseModel):
     """同步/流式分析最终结果。"""
     ok: bool = True
@@ -79,6 +117,7 @@ class AnalyzeResult(BaseModel):
     zs_list: list[ZsItem] = Field(default_factory=list)
     bars: list[BarItem] = Field(default_factory=list)
     macd: list[MacdItem] = Field(default_factory=list)
+    bs_points: list[BsPointItem] = Field(default_factory=list)
     signals: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] | None = None
     source: str = "primary"

@@ -147,7 +147,7 @@ def build_router() -> APIRouter:
         end_date: date | None = Query(None),
         max_bi_num: int = Query(DEFAULT_MAX_BI_NUM, ge=10, le=500),
         min_bi_len: int = Query(DEFAULT_MIN_BI_LEN, ge=3, le=30),
-        features: str = Query("fx,bi,zs,signals"),
+        features: str = Query("fx,bi,zs,signals,bs_points"),
         force_refresh: bool = Query(False),
         symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
     ) -> JSONResponse:
@@ -162,8 +162,8 @@ def build_router() -> APIRouter:
                 features=feature_list,
                 symbol_name=symbol_name,
             )
-            # fx_list/bi_list/zs_list/bars/macd 是 Pydantic 模型实例, starlette JSONResponse 默认
-            # json.dumps 不识别 Pydantic 模型, 这里统一 model_dump() 转 dict。
+            # fx_list/bi_list/zs_list/bars/macd/bs_points 是 Pydantic 模型实例, starlette
+            # JSONResponse 默认 json.dumps 不识别 Pydantic 模型, 这里统一 model_dump() 转 dict。
             payload = {
                 **result,
                 "ok": True,
@@ -172,6 +172,7 @@ def build_router() -> APIRouter:
                 "zs_list": [z.model_dump() for z in result.get("zs_list", [])],
                 "bars": [bar.model_dump() for bar in result.get("bars", [])],
                 "macd": [m.model_dump() for m in result.get("macd", [])],
+                "bs_points": [bp.model_dump() for bp in result.get("bs_points", [])],
             }
             return _build_success_response(payload)
         except AnalyzerError as exc:
@@ -187,7 +188,7 @@ def build_router() -> APIRouter:
         end_date: date | None = Query(None),
         max_bi_num: int = Query(DEFAULT_MAX_BI_NUM, ge=10, le=500),
         min_bi_len: int = Query(DEFAULT_MIN_BI_LEN, ge=3, le=30),
-        features: str = Query("fx,bi,zs,signals"),
+        features: str = Query("fx,bi,zs,signals,bs_points"),
         force_refresh: bool = Query(False),
         symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
     ) -> StreamingResponse:

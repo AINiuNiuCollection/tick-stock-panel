@@ -357,6 +357,630 @@ def _calc_macd(
     return out
 
 
+# ===== 缠论买卖点识别 (严格按缠论背驰) =====
+#
+# 算法遵循缠论原文定义:
+#   一买 (B1): 下跌趋势中, 最后一个下跌中枢之后, 末笔创新低且与前一同向下跌笔构成趋势背驰。
+#   一卖 (S1): 上涨趋势中, 最后一个上涨中枢之后, 末笔创新高且与前一同向上涨笔构成趋势背驰。
+#   二买 (B2): 一买之后, 第一次反弹 (上笔) 不破一买前的中枢上沿zg, 随后的下笔低点不破一买低点。
+#   二卖 (S2): 一卖之后, 第一次回抽 (下笔) 不破一卖前的中枢下沿zd, 随后的上笔高点不破一卖高点。
+#   三买 (B3): 中枢突破后, 回抽笔低点不进入中枢 (即 > zg), 站稳中枢上沿之上。
+#   三卖 (S3): 中枢跌破后, 反弹笔高点不进入中枢 (即 < zd), 被压制在中枢下沿之下。
+#
+# 背驰判定 (严格按缠论: MACD面积 + DIF/DEA线高点, 三条件AND, 可配置关闭):
+#   取末笔 (last) 与前一同向笔 (prev) 对比:
+#     1. MACD面积: 按笔区间分型包含的K线累计 (mode=split/total_abs/dif_dea), last_area < prev_area
+#     2. DIF极值: 上涨笔取max, 下跌笔取min; last极值弱于prev极值 (上涨:max更小; 下跌:min更大)
+#     3. DEA极值: 同上
+#   三条件同时满足 (使用对应开关) 才算背驰成立。
+#
+# 笔区间取值采用"按分型包含"口径: 顶分型 = 三根K线(左中右), 中间K线为分型极值;
+#   笔区间 = [bi.fx_a.fx.raw_bars[0].dt, bi.fx_b.fx.raw_bars[-1].dt], 包含两端分型全部K线。
+
+# 默认背驰判定开关 (可通过 features 透传配置覆盖, 二期扩展)
+DEFAULT_BS_MACD_AREA_MODE = "split"   # 红绿柱分计
+DEFAULT_BS_USE_DIF = True
+DEFAULT_BS_USE_DEA = True
+DEFAULT_BS_USE_MACD_AREA = True
+DEFAULT_BS_ONLY_VALID_ZS = True
+
+
+def _bi_direction(bi: Any) -> str:
+    """笔方向归一化为 'up' / 'down'。czsc 1.0.2 direction 是 _native.Direction (str='向上'/'向下')。"""
+    s = str(bi.direction)
+    if "向上" in s or "Up" in s:
+        return "up"
+    if "向下" in s or "Down" in s:
+        return "down"
+    return "unknown"
+
+
+def _bi_dts(bi: Any) -> tuple[Any, Any]:
+    """笔区间起止 datetime — 按分型包含: 取 fx_a.raw_bars[0].dt ~ fx_b.raw_bars[-1].dt。
+    bi.fx_a/fx_b 是 czsc._native.FX, 含 raw_bars (三根K线)。
+    退化兜底: 若 raw_bars 不可用, 用 bi.sdt/edt。
+    """
+    try:
+        sdt = bi.fx_a.raw_bars[0].dt
+    except Exception:  # noqa: BLE001
+        sdt = bi.sdt
+    try:
+        edt = bi.fx_b.raw_bars[-1].dt
+    except Exception:  # noqa: BLE001
+        edt = bi.edt
+    return sdt, edt
+
+
+def _macd_index_by_dt(
+    bars_out: list,
+    macd_out: list,
+) -> dict[str, int]:
+    """bars_out 与 macd_out 同源同序, 按 dt(ISO字符串) 建索引。
+    macd_out[i].dt 与 bars_out[i].dt 一致, 用 bars_out 的 dt 字符串作 key。
+    """
+    idx: dict[str, int] = {}
+    for i, b in enumerate(bars_out):
+        idx[b.dt] = i
+    return idx
+
+
+def _macd_index_by_dt_obj(
+    bars_out: list,
+    macd_out: list,
+) -> dict[Any, int]:
+    """按 datetime 对象建索引 (从 bars_out[i].dt 字符串反查不到时用)。
+    bars_out[i].dt 是字符串, 但 czsc 笔的 sdt/edt 是 datetime; 需要按 datetime 比较。
+    这里返回 datetime → macd_out 下标的映射, key 用 dt 对象 (来自原 bars)。
+    """
+    idx: dict[Any, int] = {}
+    for i, m in enumerate(macd_out):
+        idx[m.dt] = i  # 字符串
+    return idx
+
+
+def _slice_macd_for_bi(
+    bi: Any,
+    bars_out: list,
+    macd_out: list,
+    dt_str_idx: dict[str, int],
+) -> list:
+    """取笔区间 (按分型包含) 内的 MACD 子序列。
+    返回 macd_out 中 [sdt_idx, edt_idx] 闭区间的 MacdItem 列表。
+    找不到对应 dt 时返回空列表。
+    """
+    sdt, edt = _bi_dts(bi)
+    # 笔端点 dt 是 datetime, bars_out[i].dt 是字符串 — 统一转字符串匹配
+    sdt_str = sdt.isoformat() if hasattr(sdt, "isoformat") else str(sdt)
+    edt_str = edt.isoformat() if hasattr(edt, "isoformat") else str(edt)
+    # datetime 可能带微秒/不带, bars_out.dt 是从 bar.dt(str) 来, isoformat 默认带微秒0
+    # 用 startsWith 兜底: bars_out.dt 可能是 "2024-02-10T00:00:00" 或 "2024-02-10 00:00:00"
+    sdt_idx = _find_dt_idx(sdt_str, dt_str_idx, bars_out)
+    edt_idx = _find_dt_idx(edt_str, dt_str_idx, bars_out)
+    if sdt_idx is None or edt_idx is None or sdt_idx > edt_idx:
+        return []
+    return macd_out[sdt_idx : edt_idx + 1]
+
+
+def _find_dt_idx(
+    dt_str: str,
+    dt_str_idx: dict[str, int],
+    bars_out: list,
+) -> int | None:
+    """在 bars_out.dt 中查找匹配下标。容忍格式差异 (T vs 空格 / 微秒位)。
+    """
+    if dt_str in dt_str_idx:
+        return dt_str_idx[dt_str]
+    # 归一化: 取前 10 位日期或前 19 位秒, 多种格式尝试
+    norm = dt_str.replace("T", " ")
+    if norm in dt_str_idx:
+        return dt_str_idx[norm]
+    if len(norm) >= 19 and norm[:19] in dt_str_idx:
+        return dt_str_idx[norm[:19]]
+    if len(norm) >= 10 and norm[:10] in dt_str_idx:
+        return dt_str_idx[norm[:10]]
+    # 逐项比较前 10 位
+    target10 = norm[:10]
+    for i, b in enumerate(bars_out):
+        if b.dt.startswith(target10):
+            return i
+    return None
+
+
+def _calc_bi_macd_area(
+    bi: Any,
+    macd_slice: list,
+    mode: str,
+) -> float | None:
+    """计算笔区间的 MACD 面积。
+
+    mode='split':
+        下跌笔只计绿柱 (hist<0): area = Σ|hist| where hist<0
+        上涨笔只计红柱 (hist>0): area = Σ|hist| where hist>0
+    mode='total_abs':
+        area = Σ|hist| (红绿柱全计)
+    mode='dif_dea':
+        area = Σ|DIF-DEA| (与 czsc tas_macd_bs1 一致)
+    """
+    if not macd_slice:
+        return None
+    direction = _bi_direction(bi)
+    total = 0.0
+    has_value = False
+    if mode == "dif_dea":
+        for m in macd_slice:
+            if m.dif is None or m.dea is None:
+                continue
+            total += abs(m.dif - m.dea)
+            has_value = True
+    elif mode == "total_abs":
+        for m in macd_slice:
+            if m.macd is None:
+                continue
+            total += abs(m.macd)
+            has_value = True
+    else:  # 'split' (默认)
+        for m in macd_slice:
+            if m.macd is None:
+                continue
+            h = m.macd
+            if direction == "down" and h < 0:
+                total += abs(h)
+                has_value = True
+            elif direction == "up" and h > 0:
+                total += h
+                has_value = True
+    if not has_value:
+        return None
+    return round(total, 6)
+
+
+def _calc_bi_peak(
+    macd_slice: list,
+    field: str,  # 'dif' or 'dea'
+    direction: str,  # 'up' / 'down'
+) -> float | None:
+    """计算笔区间内 DIF/DEA 极值。上涨笔取 max, 下跌笔取 min。
+    返回 None 表示区间内无有效值。
+    """
+    vals = [getattr(m, field) for m in macd_slice if getattr(m, field) is not None]
+    if not vals:
+        return None
+    if direction == "up":
+        return max(vals)
+    if direction == "down":
+        return min(vals)
+    return None
+
+
+def _check_divergence(
+    prev_bi: Any,
+    last_bi: Any,
+    bars_out: list,
+    macd_out: list,
+    dt_str_idx: dict[str, int],
+    macd_area_mode: str,
+    use_dif: bool,
+    use_dea: bool,
+    use_macd_area: bool,
+) -> dict[str, Any]:
+    """判定 prev_bi 与 last_bi (同向) 是否构成背驰。
+
+    返回:
+        {
+            'is_divergence': bool,
+            'macd_area_prev': float|None,
+            'macd_area_cur': float|None,
+            'dif_peak_prev': float|None,
+            'dif_peak_cur': float|None,
+            'dea_peak_prev': float|None,
+            'dea_peak_cur': float|None,
+            'divergence_pass': list[str],   # 命中的条件
+            'divergence_type': str,
+        }
+    """
+    prev_dir = _bi_direction(prev_bi)
+    last_dir = _bi_direction(last_bi)
+    if prev_dir != last_dir or prev_dir == "unknown":
+        return _empty_divergence()
+
+    prev_slice = _slice_macd_for_bi(prev_bi, bars_out, macd_out, dt_str_idx)
+    last_slice = _slice_macd_for_bi(last_bi, bars_out, macd_out, dt_str_idx)
+
+    area_prev = _calc_bi_macd_area(prev_bi, prev_slice, macd_area_mode)
+    area_cur = _calc_bi_macd_area(last_bi, last_slice, macd_area_mode)
+    dif_prev = _calc_bi_peak(prev_slice, "dif", prev_dir)
+    dif_cur = _calc_bi_peak(last_slice, "dif", last_dir)
+    dea_prev = _calc_bi_peak(prev_slice, "dea", prev_dir)
+    dea_cur = _calc_bi_peak(last_slice, "dea", last_dir)
+
+    pass_list: list[str] = []
+
+    # 条件1: MACD面积递减
+    if use_macd_area:
+        if area_prev is not None and area_cur is not None and area_cur < area_prev:
+            pass_list.append("macd_area")
+        elif area_prev is None or area_cur is None:
+            # 数据缺失时不强行判定, 视为该条件未通过
+            pass
+
+    # 条件2: DIF极值弱化
+    if use_dif:
+        if dif_prev is not None and dif_cur is not None:
+            if prev_dir == "up" and dif_cur < dif_prev:
+                pass_list.append("dif")
+            elif prev_dir == "down" and dif_cur > dif_prev:
+                pass_list.append("dif")
+
+    # 条件3: DEA极值弱化
+    if use_dea:
+        if dea_prev is not None and dea_cur is not None:
+            if prev_dir == "up" and dea_cur < dea_prev:
+                pass_list.append("dea")
+            elif prev_dir == "down" and dea_cur > dea_prev:
+                pass_list.append("dea")
+
+    # 计算实际启用的条件总数 (用户可能关闭某些条件)
+    enabled = []
+    if use_macd_area:
+        enabled.append("macd_area")
+    if use_dif:
+        enabled.append("dif")
+    if use_dea:
+        enabled.append("dea")
+
+    is_div = len(pass_list) == len(enabled) and len(enabled) > 0
+
+    # 背驰类型描述
+    if is_div:
+        type_str = "+".join(pass_list) + "背驰"
+    else:
+        type_str = "未构成背驰"
+
+    return {
+        "is_divergence": is_div,
+        "macd_area_prev": area_prev,
+        "macd_area_cur": area_cur,
+        "dif_peak_prev": dif_prev,
+        "dif_peak_cur": dif_cur,
+        "dea_peak_prev": dea_prev,
+        "dea_peak_cur": dea_cur,
+        "divergence_pass": pass_list,
+        "divergence_type": type_str,
+    }
+
+
+def _empty_divergence() -> dict[str, Any]:
+    return {
+        "is_divergence": False,
+        "macd_area_prev": None,
+        "macd_area_cur": None,
+        "dif_peak_prev": None,
+        "dif_peak_cur": None,
+        "dea_peak_prev": None,
+        "dea_peak_cur": None,
+        "divergence_pass": [],
+        "divergence_type": "数据不足",
+    }
+
+
+def _make_bs_point(
+    bi: Any,
+    bs_type: str,
+    direction: str,  # '买' / '卖'
+    zs_index: int,
+    div: dict[str, Any],
+    macd_area_mode: str,
+    bs_item_cls: Any,
+) -> Any:
+    """构造 BsPointItem。bi 是触发该买卖点的笔 (末笔)。
+    dt/price 取笔终点分型 (bi.fx_b) 的 dt 与极值价位。
+    """
+    fx = bi.fx_b  # 末笔的终点分型
+    # 顶分型 → high (卖点), 底分型 → low (买点)
+    mark_str = str(fx.mark)
+    if "顶" in mark_str:
+        price = float(fx.high)
+    elif "底" in mark_str:
+        price = float(fx.low)
+    else:
+        price = float(fx.fx) if fx.fx is not None else float(bi.high if direction == "卖" else bi.low)
+    dt_str = str(fx.dt)
+    if hasattr(fx.dt, "isoformat"):
+        dt_str = fx.dt.isoformat()
+    return bs_item_cls(
+        dt=dt_str,
+        type=bs_type,
+        direction=direction,
+        price=price,
+        bi_direction=str(bi.direction),
+        zs_index=zs_index,
+        macd_area_prev=div["macd_area_prev"],
+        macd_area_cur=div["macd_area_cur"],
+        dif_peak_prev=div["dif_peak_prev"],
+        dif_peak_cur=div["dif_peak_cur"],
+        dea_peak_prev=div["dea_peak_prev"],
+        dea_peak_cur=div["dea_peak_cur"],
+        divergence_type=div["divergence_type"],
+        divergence_pass=div["divergence_pass"],
+        macd_area_mode=macd_area_mode,
+    )
+
+
+def _identify_bs_points(
+    c: Any,
+    bars_out: list,
+    macd_out: list,
+    zs_list_raw: list,
+    bi_list_raw: list,
+    bs_item_cls: Any,
+    macd_area_mode: str = DEFAULT_BS_MACD_AREA_MODE,
+    use_dif: bool = DEFAULT_BS_USE_DIF,
+    use_dea: bool = DEFAULT_BS_USE_DEA,
+    use_macd_area: bool = DEFAULT_BS_USE_MACD_AREA,
+    only_valid_zs: bool = DEFAULT_BS_ONLY_VALID_ZS,
+) -> list:
+    """缠论一二三类买卖点识别主入口。
+
+    Args:
+        c: czsc.CZSC 实例
+        bars_out: list[BarItem] (前端用, 也用于 MACD 索引对齐)
+        macd_out: list[MacdItem] (与 bars_out 同序)
+        zs_list_raw: c.zs_list (含 bis 等原生属性)
+        bi_list_raw: c.bi_list
+        bs_item_cls: BsPointItem 类
+        macd_area_mode: MACD面积口径 ('split'/'total_abs'/'dif_dea')
+        use_dif/use_dea/use_macd_area: 三条件开关
+        only_valid_zs: 仅关联 valid=true 的中枢
+
+    Returns:
+        list[BsPointItem]
+    """
+    if not bi_list_raw or len(bi_list_raw) < 3:
+        return []
+
+    dt_str_idx: dict[str, int] = {b.dt: i for i, b in enumerate(bars_out)}
+
+    # 中枢列表 (过滤 valid)
+    zs_filtered = []
+    for zi, zs in enumerate(zs_list_raw):
+        try:
+            is_valid = zs.is_valid() if callable(zs.is_valid) else bool(zs.is_valid)
+        except Exception:  # noqa: BLE001
+            is_valid = True
+        if only_valid_zs and not is_valid:
+            continue
+        zs_filtered.append((zi, zs))
+
+    bs_points: list = []
+    # 用于二买卖点判定时记住"一买/一卖"的位置
+    # 一买位置: bi_list 中触发一买的下标; 一卖位置: 触发一卖的下标
+    b1_bi_idx: int | None = None
+    s1_bi_idx: int | None = None
+
+    n = len(bi_list_raw)
+
+    # ===== 一买一卖 (B1/S1) — 趋势背驰 =====
+    # 在最后一个下跌中枢之后, 末笔下跌创新低且与前一下跌笔背驰 → B1
+    # 在最后一个上涨中枢之后, 末笔上涨创新高且与前一上涨笔背驰 → S1
+    # 简化版 (czsc check_first_buy 思路): 从后向前找奇数段下跌笔 (创新低), 判背驰
+    # 这里实现遍历版: 对每一段"末笔下跌+前一下跌笔"组合判背驰, 取最近一次成立作为 B1。
+    # 实操中只关心最后一个有效背驰段 (避免重复标注)。
+    for i in range(n - 1, 1, -1):
+        bi = bi_list_raw[i]
+        if _bi_direction(bi) != "down":
+            continue
+        # 找前一同向下跌笔 (隔一反向笔)
+        if i - 2 < 0:
+            continue
+        prev_bi = bi_list_raw[i - 2]
+        if _bi_direction(prev_bi) != "down":
+            continue
+        # 末笔需创新低 (低于 prev_bi 低点) — 趋势延续
+        if bi.low >= prev_bi.low:
+            continue
+        # 关联中枢: 取与 prev_bi 有重叠的最后一个 valid 中枢
+        zs_idx = _find_bi_overlap_zs(prev_bi, zs_filtered)
+        div = _check_divergence(
+            prev_bi, bi, bars_out, macd_out, dt_str_idx,
+            macd_area_mode, use_dif, use_dea, use_macd_area,
+        )
+        if div["is_divergence"]:
+            b1_bi_idx = i
+            bs_points.append(_make_bs_point(
+                bi=bi, bs_type="B1", direction="买",
+                zs_index=zs_idx, div=div,
+                macd_area_mode=macd_area_mode, bs_item_cls=bs_item_cls,
+            ))
+            break  # 只取最近一个 B1
+
+    for i in range(n - 1, 1, -1):
+        bi = bi_list_raw[i]
+        if _bi_direction(bi) != "up":
+            continue
+        if i - 2 < 0:
+            continue
+        prev_bi = bi_list_raw[i - 2]
+        if _bi_direction(prev_bi) != "up":
+            continue
+        if bi.high <= prev_bi.high:
+            continue
+        zs_idx = _find_bi_overlap_zs(prev_bi, zs_filtered)
+        div = _check_divergence(
+            prev_bi, bi, bars_out, macd_out, dt_str_idx,
+            macd_area_mode, use_dif, use_dea, use_macd_area,
+        )
+        if div["is_divergence"]:
+            s1_bi_idx = i
+            bs_points.append(_make_bs_point(
+                bi=bi, bs_type="S1", direction="卖",
+                zs_index=zs_idx, div=div,
+                macd_area_mode=macd_area_mode, bs_item_cls=bs_item_cls,
+            ))
+            break
+
+    # ===== 二买二卖 (B2/S2) =====
+    # B2: B1 之后的第一个反弹上笔, 不破 B1 前中枢的 zg; 然后回落, 下笔低点不破 B1 低点
+    #     标在 B2 的下笔终点 (底分型)。
+    # S2: S1 之后的第一个回抽下笔, 不破 S1 前中枢的 zd; 然后反弹, 上笔高点不破 S1 高点
+    #     标在 S2 的上笔终点 (顶分型)。
+    if b1_bi_idx is not None and b1_bi_idx + 2 < n:
+        b1_bi = bi_list_raw[b1_bi_idx]
+        # B1 关联中枢 (取最近的)
+        zs_idx_b1 = _find_bi_overlap_zs(bi_list_raw[b1_bi_idx - 2] if b1_bi_idx >= 2 else b1_bi, zs_filtered)
+        zg = None
+        for zi, zs in zs_filtered:
+            if zi == zs_idx_b1:
+                zg = float(zs.zg)
+                break
+        # B1 后第一反弹上笔
+        rebound_up = bi_list_raw[b1_bi_idx + 1] if _bi_direction(bi_list_raw[b1_bi_idx + 1]) == "up" else None
+        # B1 后回落下笔
+        fallback_down = None
+        if rebound_up is not None and b1_bi_idx + 2 < n:
+            if _bi_direction(bi_list_raw[b1_bi_idx + 2]) == "down":
+                fallback_down = bi_list_raw[b1_bi_idx + 2]
+        if rebound_up is not None and fallback_down is not None and zg is not None:
+            # 反弹不破 zg, 回落不破 B1 低点 → B2
+            if rebound_up.high < zg and fallback_down.low > b1_bi.low:
+                # 二买卖点也用背驰判定 (用户要求全部统一)
+                prev_down = bi_list_raw[b1_bi_idx]  # B1 本身就是前一下跌笔
+                div = _check_divergence(
+                    prev_down, fallback_down, bars_out, macd_out, dt_str_idx,
+                    macd_area_mode, use_dif, use_dea, use_macd_area,
+                )
+                if div["is_divergence"]:
+                    bs_points.append(_make_bs_point(
+                        bi=fallback_down, bs_type="B2", direction="买",
+                        zs_index=zs_idx_b1, div=div,
+                        macd_area_mode=macd_area_mode, bs_item_cls=bs_item_cls,
+                    ))
+
+    if s1_bi_idx is not None and s1_bi_idx + 2 < n:
+        s1_bi = bi_list_raw[s1_bi_idx]
+        zs_idx_s1 = _find_bi_overlap_zs(bi_list_raw[s1_bi_idx - 2] if s1_bi_idx >= 2 else s1_bi, zs_filtered)
+        zd = None
+        for zi, zs in zs_filtered:
+            if zi == zs_idx_s1:
+                zd = float(zs.zd)
+                break
+        fallback_down = bi_list_raw[s1_bi_idx + 1] if _bi_direction(bi_list_raw[s1_bi_idx + 1]) == "down" else None
+        rebound_up = None
+        if fallback_down is not None and s1_bi_idx + 2 < n:
+            if _bi_direction(bi_list_raw[s1_bi_idx + 2]) == "up":
+                rebound_up = bi_list_raw[s1_bi_idx + 2]
+        if fallback_down is not None and rebound_up is not None and zd is not None:
+            if fallback_down.low > zd and rebound_up.high < s1_bi.high:
+                prev_up = bi_list_raw[s1_bi_idx]
+                div = _check_divergence(
+                    prev_up, rebound_up, bars_out, macd_out, dt_str_idx,
+                    macd_area_mode, use_dif, use_dea, use_macd_area,
+                )
+                if div["is_divergence"]:
+                    bs_points.append(_make_bs_point(
+                        bi=rebound_up, bs_type="S2", direction="卖",
+                        zs_index=zs_idx_s1, div=div,
+                        macd_area_mode=macd_area_mode, bs_item_cls=bs_item_cls,
+                    ))
+
+    # ===== 三买三卖 (B3/S3) =====
+    # 中枢突破后回抽不破上沿 (B3) / 跌破中枢后反弹不破下沿 (S3)
+    # 遍历每个 valid 中枢, 找中枢之后第一次离开中枢的笔 + 紧接着的回抽/反弹笔
+    for zi, zs in zs_filtered:
+        zg = float(zs.zg)
+        zd = float(zs.zd)
+        # 找中枢 bis 在 bi_list_raw 中的范围 (bi_list_raw 不一定与 zs.bis 同引用, 用 dt 匹配)
+        # 简化: 用 zs.sdt/edt 找 bi_list_raw 中包含的中枢区间笔
+        try:
+            zs_sdt = zs.sdt
+            zs_edt = zs.edt
+        except Exception:  # noqa: BLE001
+            continue
+        # bi_list_raw 中起点 >= zs.sdt 且终点 <= zs.edt 的笔是中枢内笔; 之后的笔是离开笔
+        end_idx = -1
+        for k, bi in enumerate(bi_list_raw):
+            if bi.edt == zs_edt:
+                end_idx = k
+                break
+        if end_idx < 0 or end_idx + 2 >= n:
+            continue
+        # 离开笔: 中枢之后第一笔
+        leave_bi = bi_list_raw[end_idx + 1]
+        # 回抽笔: 离开笔之后第一笔
+        back_bi = bi_list_raw[end_idx + 2] if end_idx + 2 < n else None
+        if back_bi is None:
+            continue
+
+        # 三买: 离开笔向上突破 zg, 回抽笔向下但低点 > zg (不进中枢)
+        if _bi_direction(leave_bi) == "up" and leave_bi.high > zg:
+            if _bi_direction(back_bi) == "down" and back_bi.low > zg:
+                # 离开笔 vs 前一同向上笔背驰 (统一背驰判定)
+                prev_up = bi_list_raw[end_idx - 1] if end_idx - 1 >= 0 and _bi_direction(bi_list_raw[end_idx - 1]) == "up" else None
+                if prev_up is not None:
+                    div = _check_divergence(
+                        prev_up, leave_bi, bars_out, macd_out, dt_str_idx,
+                        macd_area_mode, use_dif, use_dea, use_macd_area,
+                    )
+                    if div["is_divergence"]:
+                        bs_points.append(_make_bs_point(
+                            bi=back_bi, bs_type="B3", direction="买",
+                            zs_index=zi, div=div,
+                            macd_area_mode=macd_area_mode, bs_item_cls=bs_item_cls,
+                        ))
+
+        # 三卖: 离开笔向下跌破 zd, 回抽笔向上但高点 < zd (不进中枢)
+        if _bi_direction(leave_bi) == "down" and leave_bi.low < zd:
+            if _bi_direction(back_bi) == "up" and back_bi.high < zd:
+                prev_down = bi_list_raw[end_idx - 1] if end_idx - 1 >= 0 and _bi_direction(bi_list_raw[end_idx - 1]) == "down" else None
+                if prev_down is not None:
+                    div = _check_divergence(
+                        prev_down, leave_bi, bars_out, macd_out, dt_str_idx,
+                        macd_area_mode, use_dif, use_dea, use_macd_area,
+                    )
+                    if div["is_divergence"]:
+                        bs_points.append(_make_bs_point(
+                            bi=back_bi, bs_type="S3", direction="卖",
+                            zs_index=zi, div=div,
+                            macd_area_mode=macd_area_mode, bs_item_cls=bs_item_cls,
+                        ))
+
+    # 去重 (同一 dt + type 只保留一个), 并按时间排序
+    seen: set[tuple[str, str]] = set()
+    deduped: list = []
+    for bp in bs_points:
+        key = (bp.dt, bp.type)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(bp)
+    deduped.sort(key=lambda x: (x.dt, x.type))
+    return deduped
+
+
+def _find_bi_overlap_zs(
+    bi: Any,
+    zs_filtered: list[tuple[int, Any]],
+) -> int:
+    """找与笔时间区间有重叠的最后一个 (下标最大的) valid 中枢。
+    返回中枢在原 zs_list 中的下标, 无匹配返回 -1。
+    """
+    try:
+        bi_sdt = bi.sdt
+        bi_edt = bi.edt
+    except Exception:  # noqa: BLE001
+        return -1
+    found = -1
+    for zi, zs in zs_filtered:
+        try:
+            zs_sdt = zs.sdt
+            zs_edt = zs.edt
+        except Exception:  # noqa: BLE001
+            continue
+        # 时间重叠: bi_sdt <= zs_edt and bi_edt >= zs_sdt
+        if bi_sdt <= zs_edt and bi_edt >= zs_sdt:
+            found = zi
+    return found
+
+
 def _analyze_sync(
     symbol: str,
     freq: str,
@@ -459,6 +1083,24 @@ def _analyze_sync(
                 macd=hist,
             ))
 
+    # 缠论买卖点识别 (一二三类) — 严格按缠论背驰计算
+    bs_points: list = []
+    if "bs_points" in features:
+        from .schemas import BsPointItem
+        bs_points = _identify_bs_points(
+            c=c,
+            bars_out=bars_out,
+            macd_out=macd_out,
+            zs_list_raw=c.zs_list,
+            bi_list_raw=c.bi_list,
+            bs_item_cls=BsPointItem,
+            macd_area_mode="split",   # 默认红绿柱分计
+            use_dif=True,             # 默认三条件全开
+            use_dea=True,
+            use_macd_area=True,
+            only_valid_zs=True,
+        )
+
     signals: dict[str, Any] = {}
     if "signals" in features:
         try:
@@ -477,6 +1119,7 @@ def _analyze_sync(
         "zs_list": zs_list,
         "bars": bars_out,
         "macd": macd_out,
+        "bs_points": bs_points,
         "signals": signals,
         "warnings": None,
         "source": source,
@@ -506,7 +1149,7 @@ async def analyze_async(
             "czsc library not installed; run: uv sync --extra czsc",
         )
 
-    features = features or ["fx", "bi", "zs", "signals"]
+    features = features or ["fx", "bi", "zs", "signals", "bs_points"]
     if end is None:
         end = date.today()
     if start is None:
@@ -564,7 +1207,7 @@ async def analyze_stream(
         }}
         return
 
-    features = features or ["fx", "bi", "zs", "signals"]
+    features = features or ["fx", "bi", "zs", "signals", "bs_points"]
     if end is None:
         end = date.today()
     if start is None:

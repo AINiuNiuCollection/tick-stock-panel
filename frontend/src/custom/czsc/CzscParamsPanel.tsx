@@ -30,6 +30,7 @@ const FEATURE_OPTIONS = [
   { key: 'bi', label: '笔' },
   { key: 'zs', label: '中枢' },
   { key: 'signals', label: '信号' },
+  { key: 'bs_points', label: '买卖点' },
 ]
 
 export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Props) {
@@ -42,7 +43,7 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
   const [endDate, setEndDate] = useState(today)
   const [maxBiNum, setMaxBiNum] = useState(100)
   const [minBiLen, setMinBiLen] = useState(7)
-  const [features, setFeatures] = useState<string[]>(['fx', 'bi', 'zs', 'signals'])
+  const [features, setFeatures] = useState<string[]>(['fx', 'bi', 'zs', 'signals', 'bs_points'])
   const [forceRefresh, setForceRefresh] = useState(false)
 
   // 变更点3: 自动查中文名 — 用户手动输入代码 (不选下拉) 时 onSelect 不触发,
@@ -91,7 +92,7 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
       end_date: endDate || undefined,
       max_bi_num: maxBiNum,
       min_bi_len: minBiLen,
-      features: features.length ? features : ['fx', 'bi', 'zs'],
+      features: features.length ? features : ['fx', 'bi', 'zs', 'bs_points'],
       force_refresh: forceRefresh,
     })
   }

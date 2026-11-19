@@ -402,6 +402,18 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       { xAxis: end_dt,   yAxis: zs.zs_range[1] },
     ]))
 
+    // 缠论买卖点 (B1/B2/B3/S1/S2/S3) — 标在笔端点 K 线 (后端已计算背驰详细信息)
+    //   买点 (B1/B2/B3): 红色加粗 12px (与 K 线涨色同系, 突出买点信号)
+    //   卖点 (S1/S2/S3): 绿色加粗 12px (与 K 线跌色同系, 突出卖点信号)
+    //   用 scatter series + label.formatter 渲染文字, 标在 price 上方 (买) / 下方 (卖)。
+    //   tooltip 显示背驰详情: 前段面积/当前面积/前段DIF高点/当前DIF高点/DEA/背驰类型。
+    const bsPoints = result.bs_points ?? []
+    const bsScatterData = bsPoints.map(bp => ({
+      value: [bp.dt, bp.price],
+      // 给 tooltip formatter 用: 把背驰信息附在 data 上
+      bsInfo: bp,
+    }))
+
     // 中枢 ZS 序号标签 — markPoint 标在每个矩形顶部 (zg 价位) 位置, 显示 ZS1/ZS2/...
     // 对齐示例图右上角的 ZS1/ZS2/ZS3 灰色文字标注
     // 序号基于过滤后的 validZsList 重新编号 (避免跳号)
@@ -676,7 +688,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         axisPointer: { type: 'cross' },
         formatter: (params: unknown) => {
           if (!Array.isArray(params) || params.length === 0) return ''
-          const arr = params as Array<{ axisValue?: string; seriesName?: string; value?: unknown; color?: string; dataIndex?: number; axisIndex?: number }>
+          const arr = params as Array<{ axisValue?: string; seriesName?: string; value?: unknown; color?: string; dataIndex?: number; axisIndex?: number; data?: { bsInfo?: import('@/lib/api').CzscBsPoint } }>
           const dt = arr[0]?.axisValue ?? ''
           const dateStr = dt.slice(0, 10)  // 仅日期 YYYY-MM-DD
           // 关键修复: 鼠标在 VOL/MACD 副图时 arr 里无 'K线' series, 之前 kIdx=-1 导致
@@ -700,6 +712,20 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
               lines.push(`涨跌 ${sign}${chgPct.toFixed(2)}%`)
             }
           }
+          // 买卖点背驰详细信息 — 当鼠标悬停的 K 线上有买卖点标注时, 展示背驰计算细节
+          // (MACD面积对比 / DIF/DEA 高点对比 / 背驰类型)
+          const bsOnThisBar = bsPoints.filter(bp => bp.dt.slice(0, 10) === dateStr)
+          for (const bp of bsOnThisBar) {
+            const color = bp.direction === '买' ? theme.up : theme.down
+            lines.push(`<span style="color:${color};font-weight:bold">━━ ${bp.type} (${bp.direction}) ${bp.price.toFixed(2)} ━━</span>`)
+            lines.push(`背驰类型: ${bp.divergence_type ?? '—'}`)
+            lines.push(`命中条件: ${bp.divergence_pass.length ? bp.divergence_pass.join(' + ') : '—'}`)
+            lines.push(`MACD面积 (前→今): ${bp.macd_area_prev != null ? bp.macd_area_prev.toFixed(4) : '—'} → ${bp.macd_area_cur != null ? bp.macd_area_cur.toFixed(4) : '—'}`)
+            lines.push(`DIF高点 (前→今): ${bp.dif_peak_prev != null ? bp.dif_peak_prev.toFixed(4) : '—'} → ${bp.dif_peak_cur != null ? bp.dif_peak_cur.toFixed(4) : '—'}`)
+            lines.push(`DEA高点 (前→今): ${bp.dea_peak_prev != null ? bp.dea_peak_prev.toFixed(4) : '—'} → ${bp.dea_peak_cur != null ? bp.dea_peak_cur.toFixed(4) : '—'}`)
+            lines.push(`面积口径: ${bp.macd_area_mode}`)
+            if (bp.zs_index >= 0) lines.push(`关联中枢: ZS${bp.zs_index + 1}`)
+          }
           for (const p of arr) {
             const nm = p.seriesName ?? ''
             const v = p.value
@@ -715,8 +741,8 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
             } else if (nm === 'MACD' || nm === 'DIFF' || nm === 'DEA') {
               const n = typeof v === 'number' ? v : null
               lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
-            } else if (nm === 'FX' || nm === 'BI') {
-              // lines series 不展示数值 (折线坐标已可视化)
+            } else if (nm === 'FX' || nm === 'BI' || nm === 'FX标记' || nm === '买卖点') {
+              // lines / markPoint scatter 不展示数值 (坐标已可视化)
               continue
             } else if (nm === '中枢') {
               continue
@@ -727,9 +753,9 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           return lines.join('<br/>')
         },
       },
-      // 图例顺序与示例图对齐: SMA5 / SMA20 / FX (DASHED) / BI (SOLID) + 中枢
+      // 图例顺序与示例图对齐: SMA5 / SMA20 / FX (DASHED) / BI (SOLID) + 中枢 + 买卖点
       legend: {
-        data: ['K线', 'SMA5', 'SMA20', 'FX', 'BI', '中枢', 'VOL', 'MACD'],
+        data: ['K线', 'SMA5', 'SMA20', 'FX', 'BI', '中枢', '买卖点', 'VOL', 'MACD'],
         top: 0,
         textStyle: { color: theme.text, fontSize: 11 },
       },
@@ -886,6 +912,39 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
             data: fxMarkPoints,
           },
         },
+        // 买卖点 (B1/B2/B3/S1/S2/S3) — scatter series + label.formatter 渲染文字
+        //   买点红色 (theme.up), 卖点绿色 (theme.down), 加粗 12px
+        //   标在 price 上方 (买点 position='top') / 下方 (卖点 position='bottom')
+        //   label formatter: 直接显示 bp.type (B1/B2/..), 鼠标悬浮时 tooltip 展示背驰详情
+        ...(bsScatterData.length ? [{
+          name: '买卖点',
+          type: 'scatter' as const,
+          data: bsScatterData.map(d => ({
+            value: d.value,
+            // 透传 bsInfo 给 tooltip: echarts 把整个 data 对象传到 formatter 的 data 字段
+            // 这里直接把 bp 信息挂到 data 上, formatter 通过 arr[i].data.bsInfo 取
+            bsInfo: d.bsInfo,
+            itemStyle: {
+              color: d.bsInfo.direction === '买' ? theme.up : theme.down,
+            },
+            label: {
+              show: true,
+              formatter: () => d.bsInfo.type,
+              color: d.bsInfo.direction === '买' ? theme.up : theme.down,
+              fontSize: 12,
+              fontWeight: 'bold' as const,
+              position: d.bsInfo.direction === '买' ? 'bottom' : 'top',
+              backgroundColor: theme.background,
+              padding: [1, 3],
+              borderColor: d.bsInfo.direction === '买' ? theme.up : theme.down,
+              borderWidth: 1,
+            },
+          })),
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          symbolSize: 1,    // 散点本身极小 (只显示 label 文字)
+          z: 8,
+        }] : []),
         // BI 笔 — 深靛蓝实线, 连接笔端点, czsc _theme.py bi
         {
           name: 'BI',
