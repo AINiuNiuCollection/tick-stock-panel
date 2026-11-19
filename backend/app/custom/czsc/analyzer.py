@@ -71,9 +71,14 @@ def _fetch_from_primary(
     """尝试从主工程 MarketDataProvider 取数。
 
     主工程 provider 走 enriched 前复权口径, 与东财 fqt=1 一致。
+    返回的 DataFrame 在 czsc 标准列 (dt/open/high/low/close/vol/amount) 之外,
+    附带预计算的 MACD 三列 (macd_dif/macd_dea/macd_hist), 由主工程
+    `indicators.pipeline.compute_indicators` 统一口径计算, 避免本模块
+    重复实现 EMA 递推。分钟 K 线不计算 MACD (主工程 compute_indicators 仅
+    适配日线 schema), 仍由 _analyze_sync 后续路径处理。
 
     Returns:
-        polars DataFrame (列: dt/open/high/low/close/vol/amount) 或 None (主源不可用)
+        polars DataFrame 或 None (主源不可用)
     """
     try:
         from app.data_providers.registry import get_provider
@@ -135,16 +140,99 @@ def _fetch_from_primary(
             rename_map["volume"] = "vol"
         if rename_map:
             df = df.rename(rename_map)
-        # 仅保留 czsc 需要的列
-        keep = [c for c in ("dt", "open", "high", "low", "close", "vol", "amount") if c in df.columns]
-        df = df.select(keep)
-        # dt 转 datetime
+        # dt 转 datetime (compute_indicators 不要求 datetime, 但 czsc 转换层需要)
         if "dt" in df.columns and df["dt"].dtype != pl.Datetime:
             df = df.with_columns(pl.col("dt").cast(pl.Datetime, strict=False))
+
+        # 日线/周线/月线: 复用主工程 compute_indicators 预算 MACD, 与主工程回测/选股口径一致。
+        # 分钟线: compute_indicators 仅适配日线 schema (.over("symbol") 按 date 排序), 跳过,
+        # 由 _analyze_sync 走兜底路径 (返回的 df 不含 macd_* 列)。
+        if freq in ("日线", "周线", "月线") and "close" in df.columns:
+            df = _attach_macd_from_pipeline(df)
+
+        # 仅保留 czsc 需要的列 + MACD 列 (若存在)
+        keep_base = [c for c in ("dt", "open", "high", "low", "close", "vol", "amount") if c in df.columns]
+        keep_macd = [c for c in ("macd_dif", "macd_dea", "macd_hist") if c in df.columns]
+        df = df.select(keep_base + keep_macd)
         return df
     except Exception as exc:  # noqa: BLE001
         logger.warning("primary provider schema normalize failed: %s", exc)
         return None
+
+
+def _attach_macd_from_pipeline(df: pl.DataFrame) -> pl.DataFrame:
+    """复用主工程 `indicators.pipeline.compute_indicators` 计算 MACD(12,26,9)。
+
+    compute_indicators 输入契约: 必须含 symbol/date/open/high/low/close/volume;
+    输出追加 macd_dif/macd_dea/macd_hist 三列 (按 symbol 分组 .over("symbol") 递推)。
+    本函数:
+        1. 把 czsc schema (dt/vol) 临时反归一化为主工程 schema (date/volume/symbol);
+        2. 调 compute_indicators 仅计算 MACD 闭包 (needed={"macd_dif","macd_dea","macd_hist"});
+        3. 取回 macd 三列并 restore 列名, 不破坏外部 dt/vol 命名。
+    失败时返回原 df (不附带 MACD), 由调用方降级到实时计算路径。
+
+    Note: 周线/月线在主工程无独立计算路径, 这里仍走日线相同的 ewm 递推
+    (close 序列就是周/月 close 序列, EMA 递推与频率无关, 仅暖机根数相同)。
+    """
+    try:
+        from app.indicators.pipeline import compute_indicators
+    except ImportError as exc:
+        logger.warning("compute_indicators unavailable, skip MACD precompute: %s", exc)
+        return df
+
+    if df.is_empty() or "close" not in df.columns:
+        return df
+
+    try:
+        # 构造 compute_indicators 所需的输入 schema
+        work = df
+        rename_to_pipe: dict[str, str] = {}
+        if "dt" in work.columns and "date" not in work.columns:
+            rename_to_pipe["dt"] = "date"
+        if "vol" in work.columns and "volume" not in work.columns:
+            rename_to_pipe["vol"] = "volume"
+        if rename_to_pipe:
+            work = work.rename(rename_to_pipe)
+        # compute_indicators 按 .over("symbol") 分组, 单标的也要有 symbol 列
+        if "symbol" not in work.columns:
+            work = work.with_columns(pl.lit("_czsc").alias("symbol"))
+        # date 转 Date (compute_indicators 内部 sort(["symbol","date"]))
+        if "date" in work.columns and work["date"].dtype != pl.Date:
+            work = work.with_columns(pl.col("date").cast(pl.Date, strict=False))
+
+        work = compute_indicators(
+            work,
+            needed={"macd_dif", "macd_dea", "macd_hist"},
+        )
+
+        # 取回 macd 三列, 反归一化列名
+        macd_cols = [c for c in ("macd_dif", "macd_dea", "macd_hist") if c in work.columns]
+        if not macd_cols:
+            logger.warning("compute_indicators returned no macd columns for czsc")
+            return df
+        out = work.select(["date", *macd_cols]) if "date" in work.columns else work.select(macd_cols)
+        # 对齐回原 df: 用 date 反 rename 为 dt 与原 df join
+        if "date" in out.columns:
+            out = out.rename({"date": "dt"})
+        # 原 df 的 dt 是 datetime, out 的 dt 现在是 Date —— 统一 cast 后 join
+        if "dt" in out.columns and df["dt"].dtype != out["dt"].dtype:
+            out = out.with_columns(pl.col("dt").cast(df["dt"].dtype, strict=False))
+        # join 按行序对齐 (两边都按 dt 升序)
+        df_sorted = df.sort("dt")
+        out_sorted = out.sort("dt")
+        if df_sorted.height != out_sorted.height:
+            logger.warning(
+                "compute_indicators row count mismatch: df=%d macd=%d, skip attach",
+                df_sorted.height, out_sorted.height,
+            )
+            return df
+        # 行序对齐, 直接拼接 macd 列
+        for c in macd_cols:
+            df_sorted = df_sorted.with_columns(out_sorted[c].alias(c))
+        return df_sorted
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("compute_indicators MACD precompute failed, fallback to runtime calc: %s", exc)
+        return df
 
 
 def _fetch_from_eastmoney(
@@ -199,23 +287,43 @@ def _fetch_kline(
 
 # ===== czsc.CZSC 分析 (同步, 在线程池中执行) =====
 
+def _to_float_or_none(v: Any) -> float | None:
+    """polars 列 to_list 后的值归一化: NaN/None → None, 其余转 float。
+
+    compute_indicators 用 polars ewm_mean(adjust=False), 首值种子递推,
+    理论上不会产生 null (除非 close 列本身有 null); 中间若出现 NaN
+    (0/0 等) 应视为缺值。与 czsc 库 compute_macd 口径一致。
+    """
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN
+        return None
+    return f
+
+
 def _calc_ema(values: list[float], period: int) -> list[float | None]:
-    """EMA(N) 指数移动平均。前 period-1 个为 None, 之后用标准 EMA 递推:
-    EMA_t = (close_t * k) + EMA_{t-1} * (1-k), k = 2/(period+1)。
-    第一根有效 EMA 用前 period 根的简单平均作种子 (与 czsc/通用 MACD 一致)。
+    """EMA(N) 指数移动平均 — 首值种子递推口径。
+
+    与 czsc 库 `czsc.utils.plotting._macd._ema`、主工程 `compute_indicators`
+    (polars `ewm_mean(adjust=False)`) 完全一致:
+        EMA[0] = close[0]
+        EMA[t] = (2*close[t] + EMA[t-1]*(period-1)) / (period+1)
+
+    该口径从第一根起就有值, 无暖机空白段, 与通达信/同花顺一致。
+    (TA-Lib 的「前 N 根均值作种子」是另一种约定, 本项目不采用。)
     """
     if not values:
         return []
-    k = 2.0 / (period + 1)
-    out: list[float | None] = [None] * len(values)
-    if len(values) < period:
-        return out
-    seed = sum(values[:period]) / period
-    out[period - 1] = seed
-    prev = seed
-    for i in range(period, len(values)):
-        prev = values[i] * k + prev * (1 - k)
-        out[i] = prev
+    out: list[float | None] = []
+    prev = float(values[0])
+    out.append(prev)
+    for i in range(1, len(values)):
+        prev = (2 * float(values[i]) + prev * (period - 1)) / (period + 1)
+        out.append(prev)
     return out
 
 
@@ -227,34 +335,23 @@ def _calc_macd(
 ) -> list[tuple[float | None, float | None, float | None]]:
     """计算 MACD(12,26,9): 返回 [(dif, dea, macd_hist), ...]。
 
-    - DIF  = EMA(fast) - EMA(slow)
-    - DEA  = EMA(DIF, signal)  (只在 DIF 有效段计算)
-    - HIST = 2 * (DIF - DEA)   (与示例图及 czsc/通达信一致)
+    口径与 czsc 库 `compute_macd`、主工程 `compute_indicators` 完全一致:
+        - DIF  = EMA(fast) - EMA(slow)   (首值种子, 从 idx 0 起有效)
+        - DEA  = EMA(DIF, signal)
+        - HIST = 2 * (DIF - DEA)
 
-    前 slow-1 根 DIF 为 None, DEA 在 DIF 之前 signal-1 根为 None。
+    本函数作为降级路径 (分钟线 / 东财兜底 / compute_indicators 不可用),
+    主路径日线已由 _fetch_from_primary → _attach_macd_from_pipeline 预算。
     """
     ema_fast = _calc_ema(closes, fast)
     ema_slow = _calc_ema(closes, slow)
-    n = len(closes)
-    dif_arr: list[float | None] = [None] * n
-    first_valid = -1
-    for i in range(n):
-        if ema_fast[i] is not None and ema_slow[i] is not None:
-            dif_arr[i] = ema_fast[i] - ema_slow[i]  # type: ignore[operator]
-            if first_valid < 0:
-                first_valid = i
-    # DEA = EMA(DIF, signal), 仅在 DIF 有效段计算
-    dea_arr: list[float | None] = [None] * n
-    if first_valid >= 0:
-        dif_slice = [d for d in dif_arr[first_valid:] if d is not None]  # type: ignore[misc]
-        dea_slice = _calc_ema(dif_slice, signal)
-        # 映射回原数组下标 (dif_slice[0] 对应 first_valid)
-        for j, v in enumerate(dea_slice):
-            dea_arr[first_valid + j] = v
+    dif_arr = [f - s if (f is not None and s is not None) else None
+               for f, s in zip(ema_fast, ema_slow)]
+    # DEA = EMA(DIF, signal); DIF 从 idx 0 起有效, 直接整体递推
+    dif_vals = [d if d is not None else 0.0 for d in dif_arr]
+    dea_arr = _calc_ema(dif_vals, signal)
     out: list[tuple[float | None, float | None, float | None]] = []
-    for i in range(n):
-        d = dif_arr[i]
-        e = dea_arr[i]
+    for d, e in zip(dif_arr, dea_arr):
         hist = None if (d is None or e is None) else 2 * (d - e)
         out.append((d, e, hist))
     return out
@@ -319,17 +416,48 @@ def _analyze_sync(
             amount=float(bar.amount) if bar.amount is not None else 0.0,
         ))
 
-    # MACD(12,26,9) — 前端示例图含 MACD 副图, 在后端计算避免前端重复实现 EMA。
-    closes = [b.close for b in bars_out]
-    macd_seq = _calc_macd(closes, 12, 26, 9)
+    # MACD(12,26,9):
+    #   主源日线 → _fetch_from_primary 已通过 compute_indicators 预算并附带
+    #             macd_dif/macd_dea/macd_hist 列, 直接读取 (口径与主工程一致)。
+    #   其他场景 (分钟线 / 东财兜底 / compute_indicators 失败降级) → 实时计算。
     macd_out: list[MacdItem] = []
-    for bar, (dif, dea, hist) in zip(bars_out, macd_seq):
-        macd_out.append(MacdItem(
-            dt=bar.dt,
-            dif=dif,
-            dea=dea,
-            macd=hist,
-        ))
+    has_precomputed_macd = (
+        not bars_df.is_empty()
+        and all(c in bars_df.columns for c in ("macd_dif", "macd_dea", "macd_hist"))
+    )
+    if has_precomputed_macd:
+        # bars_df 与 bars_out 同源同序 (df_to_raw_bars 内部 sort("dt"))
+        # 但 bars 可能因转换失败被截断, 这里以 bars_out 为准按 dt 对齐取值
+        bars_df_sorted = bars_df.sort("dt")
+        # 行数对齐保护: 仅在完全对齐时直接 zip, 否则降级
+        if bars_df_sorted.height == len(bars_out):
+            dif_seq = bars_df_sorted["macd_dif"].to_list()
+            dea_seq = bars_df_sorted["macd_dea"].to_list()
+            hist_seq = bars_df_sorted["macd_hist"].to_list()
+            for bar, dif, dea, hist in zip(bars_out, dif_seq, dea_seq, hist_seq):
+                macd_out.append(MacdItem(
+                    dt=bar.dt,
+                    dif=_to_float_or_none(dif),
+                    dea=_to_float_or_none(dea),
+                    macd=_to_float_or_none(hist),
+                ))
+        else:
+            logger.warning(
+                "precomputed macd row count mismatch (df=%d bars=%d), fallback to runtime calc",
+                bars_df_sorted.height, len(bars_out),
+            )
+            has_precomputed_macd = False
+
+    if not has_precomputed_macd:
+        closes = [b.close for b in bars_out]
+        macd_seq = _calc_macd(closes, 12, 26, 9)
+        for bar, (dif, dea, hist) in zip(bars_out, macd_seq):
+            macd_out.append(MacdItem(
+                dt=bar.dt,
+                dif=dif,
+                dea=dea,
+                macd=hist,
+            ))
 
     signals: dict[str, Any] = {}
     if "signals" in features:

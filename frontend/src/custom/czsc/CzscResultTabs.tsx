@@ -95,30 +95,35 @@ function FxTable({ list }: { list: CzscAnalyzeResult['fx_list'] }) {
 function BiTable({ list }: { list: CzscAnalyzeResult['bi_list'] }) {
   if (!list.length) return <div className="text-xs text-muted p-4">无笔数据</div>
   return (
-    <table className="w-full text-xs">
+    <table className="w-full text-sm">
       <thead className="text-foreground sticky top-0 bg-elevated z-10 shadow-sm">
         <tr>
-          <th className="text-left p-1.5 font-medium">起始</th>
-          <th className="text-left p-1.5 font-medium">结束</th>
-          <th className="text-left p-1.5 font-medium">方向</th>
-          <th className="text-right p-1.5 font-medium">高</th>
-          <th className="text-right p-1.5 font-medium">低</th>
-          <th className="text-right p-1.5 font-medium">长度</th>
-          <th className="text-right p-1.5 font-medium">力度</th>
+          <th className="text-center p-2 font-bold text-sm">起始</th>
+          <th className="text-center p-2 font-bold text-sm">结束</th>
+          <th className="text-center p-2 font-bold text-sm">方向</th>
+          <th className="text-center p-2 font-bold text-sm">高</th>
+          <th className="text-center p-2 font-bold text-sm">低</th>
+          <th className="text-center p-2 font-bold text-sm">长度</th>
+          <th className="text-center p-2 font-bold text-sm">力度</th>
         </tr>
       </thead>
       <tbody>
         {list.map((bi, i) => (
-          <tr key={i} className="border-t border-border hover:bg-base/50">
-            <td className="p-1.5 text-foreground/90">{bi.sdt}</td>
-            <td className="p-1.5 text-foreground/90">{bi.edt}</td>
-            <td className={`p-1.5 font-medium ${isUpDirection(bi.direction) ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
+          <tr
+            key={i}
+            // 行底色交替: 奇数行浅黑 (bg-elevated), 偶数行浅灰 (bg-base)
+            // bg-elevated / bg-base 是工程 CSS 变量映射, dark 下分别为 #212126 / #0A0A0B
+            className={`border-t border-border ${i % 2 === 0 ? 'bg-elevated/60' : 'bg-base/60'} hover:bg-accent/10`}
+          >
+            <td className="p-2 text-center font-bold text-foreground">{bi.sdt}</td>
+            <td className="p-2 text-center font-bold text-foreground">{bi.edt}</td>
+            <td className={`p-2 text-center font-bold ${isUpDirection(bi.direction) ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
               {isUpDirection(bi.direction) ? '↑ 上' : '↓ 下'}
             </td>
-            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{bi.high.toFixed(2)}</td>
-            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{bi.low.toFixed(2)}</td>
-            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{bi.length}</td>
-            <td className="p-1.5 text-right font-mono tabular-nums text-foreground">{bi.power != null ? bi.power.toFixed(3) : '-'}</td>
+            <td className="p-2 text-center font-mono tabular-nums font-bold text-foreground">{bi.high.toFixed(2)}</td>
+            <td className="p-2 text-center font-mono tabular-nums font-bold text-foreground">{bi.low.toFixed(2)}</td>
+            <td className="p-2 text-center font-mono tabular-nums font-bold text-foreground">{bi.length}</td>
+            <td className="p-2 text-center font-mono tabular-nums font-bold text-foreground">{bi.power != null ? bi.power.toFixed(3) : '-'}</td>
           </tr>
         ))}
       </tbody>

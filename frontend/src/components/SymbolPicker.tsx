@@ -43,11 +43,21 @@ interface CommonProps {
 }
 
 interface ControlledProps extends CommonProps {
-  /** 受控模式: 表单内嵌时使用 */
+  /** 受控模式: 表单内嵌时使用
+   *  value 是提交给后端的纯 symbol (如 "600519.SH")。
+   *  输入框显示值由 displayName + value 组合 (见 displayName prop),
+   *  若不传 displayName 则显示 value 本身。
+   */
   value: string
   onChange: (symbol: string) => void
   /** 受控模式下选中下拉项时透传 name (可选, 用于显示中文名) */
   onSelect?: (symbol: string, name: string) => void
+  /** 受控模式下输入框显示的中文名 (可选)。
+   *  传入后输入框显示 `${displayName} (${value})` 格式;
+   *  用户开始输入时切换为纯输入态 (此时 onChange 回传用户输入串,
+   *  父组件应清空 displayName 让显示退化到纯 value)。
+   */
+  displayName?: string | null
 }
 
 interface UncontrolledProps extends CommonProps {
@@ -77,11 +87,15 @@ export function SymbolPicker(props: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
 
   // 受控模式: 外部 value 变化时同步显示 (例如清空/重置)
+  // 项3 修复: 若提供 displayName, 显示 "中文名 (symbol)" 组合; 否则退化到纯 value。
+  //   用户主动输入 (input focused) 时不强制覆盖, 避免打断编辑。
   useEffect(() => {
     if (isControlled && document.activeElement !== inputRef.current) {
-      setQuery(props.value as string)
+      const v = props.value as string
+      const dn = (props as ControlledProps).displayName
+      setQuery(dn ? `${dn} (${v})` : v)
     }
-  }, [props.value, isControlled])
+  }, [props.value, (props as ControlledProps).displayName, isControlled])
 
   const search = useQuery({
     queryKey: QK.instrumentSearch(query, assetTypes),
@@ -105,11 +119,12 @@ export function SymbolPicker(props: Props) {
 
   function handleSelect(r: SymbolPickerResult) {
     if (isControlled) {
-      (props as ControlledProps).onChange(r.symbol)
+      ;(props as ControlledProps).onChange(r.symbol)
       ;(props as ControlledProps).onSelect?.(r.symbol, r.name)
-      setQuery(r.symbol)
+      // 项3: 选中后输入框显示 "中文名 (symbol)", 选中后保持显示直到用户再次输入
+      setQuery(`${r.name} (${r.symbol})`)
     } else {
-      (props as UncontrolledProps).onSelect(r.symbol, r.name)
+      ;(props as UncontrolledProps).onSelect(r.symbol, r.name)
       setQuery('')
     }
     setOpen(false)

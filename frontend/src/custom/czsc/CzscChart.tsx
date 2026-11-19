@@ -68,6 +68,7 @@ interface ChartTheme {
   bi: string         // 笔色 (深靛蓝) — czsc _theme.py:41/55
   zsBorder: string   // 中枢矩形紫色虚线边框 (本工程自定义)
   zsLabel: string    // 中枢 ZS 序号标签色 (本工程自定义)
+  zsFill: string     // 中枢浅粉色透明底色 (项5: rgba(255,182,193,0.18))
 }
 
 function getChartTheme(): ChartTheme {
@@ -87,6 +88,7 @@ function getChartTheme(): ChartTheme {
       bi: '#A8B8E8',
       zsBorder: '#9D6FD4',      // 加深: #C29CF2 → #9D6FD4 (中枢边框更醒目)
       zsLabel: '#9D6FD4',
+      zsFill: 'rgba(255,182,193,0.18)',  // 项5: 浅粉色透明底色, dark/light 同色
     }
   }
   // czsc light "量化年鉴" 暖纸色 — 变更点3: 虚线/中枢边框加深
@@ -102,6 +104,7 @@ function getChartTheme(): ChartTheme {
     bi: '#1F3C6E',
     zsBorder: '#5B3A88',      // 加深: #7B4FA8 → #5B3A88
     zsLabel: '#5B3A88',
+    zsFill: 'rgba(255,182,193,0.18)',  // 项5: 浅粉色透明底色
   }
 }
 
@@ -313,25 +316,103 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       },
     }))
 
+    // 项4: 顶底分型红绿三角标识 — 仅标成笔 (bi_list) 的两端端点
+    //   缠论: 笔的两端必须是分型。fx_list 包含所有分型 (含未成笔的孤立分型),
+    //   全标会过密; 这里只标 bi_list 中每笔的起止端点, 与缠理「成笔才有意义」对齐。
+    //
+    //   提取规则 (与通达信/同花顺惯例一致):
+    //     - 向上笔: 起点=底分型 (绿▼ at [sdt, low]), 终点=顶分型 (红▲ at [edt, high])
+    //     - 向下笔: 起点=顶分型 (红▲ at [sdt, high]), 终点=底分型 (绿▼ at [edt, low])
+    //   相邻笔共享端点 (笔1终点=笔2起点), 用 Map<dt, point> 去重避免同位置叠三角。
+    //
+    //   FX 虚线折线仍按 fx_list 全分型绘制 (展示分型演变), 与三角职责分离。
+    const fxMarkPoints: Array<{
+      coord: [string, number]
+      symbol: 'triangle'
+      symbolSize: number
+      symbolRotate: number
+      itemStyle: { color: string }
+      label: { show: boolean }
+    }> = []
+    const biEndpointMap = new Map<string, typeof fxMarkPoints[number]>()
+    for (const bi of result.bi_list) {
+      const isUp = isUpDirection(bi.direction)
+      // 起点
+      const startPt = {
+        coord: [bi.sdt, isUp ? bi.low : bi.high] as [string, number],
+        symbol: 'triangle' as const,
+        symbolSize: 10,
+        symbolRotate: isUp ? 180 : 0,   // 向上笔起点是底分型▼ / 向下笔起点是顶分型▲
+        itemStyle: { color: isUp ? theme.down : theme.up },
+        label: { show: false },
+      }
+      // 终点
+      const endPt = {
+        coord: [bi.edt, isUp ? bi.high : bi.low] as [string, number],
+        symbol: 'triangle' as const,
+        symbolSize: 10,
+        symbolRotate: isUp ? 0 : 180,   // 向上笔终点是顶分型▲ / 向下笔终点是底分型▼
+        itemStyle: { color: isUp ? theme.up : theme.down },
+        label: { show: false },
+      }
+      // 用 dt 去重: 同一 dt 上的端点只保留一个 (相邻笔共享端点)
+      if (!biEndpointMap.has(bi.sdt)) biEndpointMap.set(bi.sdt, startPt)
+      if (!biEndpointMap.has(bi.edt)) biEndpointMap.set(bi.edt, endPt)
+    }
+    fxMarkPoints.push(...biEndpointMap.values())
+
     // 中枢矩形 (markArea) — czsc 中枢 = 至少 3 笔重叠的价格区间 [zd, zg]
-    // 对齐示例图: 紫色虚线边框, 无填充 (color='transparent'), 不画 zd/zg 数值标签
+    // 对齐示例图: 紫色虚线边框, 浅粉底色 (项5), 不画 zd/zg 数值标签 (项4 单独标)
     // itemStyle 必须写在 markArea 顶层 (对所有矩形生效), 写在点对象里会被 echarts 忽略
     //
     // 变更点1: 只渲染 valid 中枢 (zs.valid !== false), 序号重新编号。
     //          czsc 库 get_zs_seq 原始算法每笔必归某中枢 (含 is_valid=False 的重叠不足中枢),
     //          此处按用户确认的 C 方案仅做渲染过滤, 不改算法。
+    //
+    // 中枢起止优化: czsc 原生 start_dt/end_dt 是「构成中枢的第一笔起点 / 最后一笔终点」,
+    //   相邻中枢首尾相接时方框紧贴无间隔。改为在 [start_dt, end_dt] 范围内找
+    //   第一根与最后一根「K 线区间与中枢价格区间有交集」的 K 线 (low<=zg && high>=zd),
+    //   让方框收缩到真正与中枢交互的 K 线段, 相邻中枢之间露出空白。
+    //   范围内无相交 K 线时回退原始边界 (兜底)。
     const validZsList = result.zs_list.filter(zs => zs.valid !== false)
-    const zsAreas = validZsList.map(zs => ([
-      { xAxis: zs.start_dt, yAxis: zs.zs_range[0] },
-      { xAxis: zs.end_dt,   yAxis: zs.zs_range[1] },
+    const zsRanges = validZsList.map(zs => {
+      const [zd, zg] = zs.zs_range
+      // 在 result.bars 中按 dt 限定到 [zs.start_dt, zs.end_dt] 范围
+      // bars 是后端返回的 K 线列表 (与 resolvedKlines 同源), dt 字段为 ISO 字符串
+      const barsAll = result.bars ?? []
+      const inRange = barsAll.filter(b =>
+        b.dt >= zs.start_dt && b.dt <= zs.end_dt,
+      )
+      // 找第一根与最后一根与中枢区间相交的 K 线
+      // 相交判定: K 线 [low, high] 与中枢 [zd, zg] 有交集 ⇔ low<=zg && high>=zd
+      let firstDt: string | null = null
+      let lastDt: string | null = null
+      for (const b of inRange) {
+        if (b.low <= zg && b.high >= zd) {
+          if (firstDt === null) firstDt = b.dt
+          lastDt = b.dt
+        }
+      }
+      const finalStart = firstDt ?? zs.start_dt
+      const finalEnd = lastDt ?? zs.end_dt
+      return { zs, start_dt: finalStart, end_dt: finalEnd }
+    })
+    const zsAreas = zsRanges.map(({ zs, start_dt, end_dt }) => ([
+      { xAxis: start_dt, yAxis: zs.zs_range[0] },
+      { xAxis: end_dt,   yAxis: zs.zs_range[1] },
     ]))
 
     // 中枢 ZS 序号标签 — markPoint 标在每个矩形顶部 (zg 价位) 位置, 显示 ZS1/ZS2/...
     // 对齐示例图右上角的 ZS1/ZS2/ZS3 灰色文字标注
     // 序号基于过滤后的 validZsList 重新编号 (避免跳号)
-    const zsLabels = validZsList.map((zs, idx) => ({
+    //
+    // 项4: 同时标 zg (上沿) / zd (下沿) 两个价位数值。
+    //   - ZS 序号: 顶部 (zg 上方), 紫色
+    //   - zg 价位: 矩形右上角内侧, 紫色小字
+    //   - zd 价位: 矩形右下角内侧, 紫色小字
+    const zsLabels = zsRanges.map(({ zs, start_dt }, idx) => ({
       name: `ZS${idx + 1}`,
-      coord: [zs.start_dt, zs.zs_range[1]],
+      coord: [start_dt, zs.zs_range[1]],
       symbol: 'circle',
       symbolSize: 0,
       itemStyle: { color: 'transparent' },
@@ -340,9 +421,43 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         formatter: `ZS${idx + 1}`,
         color: theme.zsLabel,
         fontSize: 11,
+        fontWeight: 'bold',
         position: 'top',
       },
     }))
+    // zg / zd 价位标签 (项4): 用 markPoint coord + label 显示价位数值
+    // 用优化后的 end_dt (最后一根与中枢区间相交的 K 线) 让标签贴在新方框右边缘
+    const zsPriceLabels: Array<{
+      coord: [string, number]
+      label: { show: boolean; formatter: string; color: string; fontSize: number; position: string; backgroundColor: string; padding: number[] }
+    }> = []
+    zsRanges.forEach(({ zs, end_dt }) => {
+      const [zd, zg] = zs.zs_range
+      zsPriceLabels.push({
+        coord: [end_dt, zg],
+        label: {
+          show: true,
+          formatter: zg.toFixed(2),
+          color: theme.zsLabel,
+          fontSize: 10,
+          position: 'insideTopRight',
+          backgroundColor: theme.background,
+          padding: [1, 3],
+        },
+      })
+      zsPriceLabels.push({
+        coord: [end_dt, zd],
+        label: {
+          show: true,
+          formatter: zd.toFixed(2),
+          color: theme.zsLabel,
+          fontSize: 10,
+          position: 'insideBottomRight',
+          backgroundColor: theme.background,
+          padding: [1, 3],
+        },
+      })
+    })
 
     // 三栏布局: 主图 60% / 成交量 15% / MACD 20% (剩余 5% 留给 dataZoom 与边距)
     // 三个 grid 共享 category xAxis, 各自独立 yAxis。axisIndex 将 series 绑定到对应 grid。
@@ -403,8 +518,13 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     if (lastBar) {
       const chgColor = (chgPct ?? 0) >= 0 ? theme.up : theme.down
       const closeColor = lastBar.close >= lastBar.open ? theme.up : theme.down
+      // 项2: 日K/周K/月K 只显示日期 (YYYY-MM-DD), 分钟K 显示完整 datetime
+      const isDailyFreq = ['日线', '周线', '月线'].includes(result.freq)
+      const panelDateLabel = isDailyFreq
+        ? (lastBar.date.slice(0, 10))
+        : lastBar.date
       const lines = [
-        { label: lastBar.date, color: theme.text, bold: true },
+        { label: panelDateLabel, color: theme.text, bold: true },
         { label: `OPEN ${lastBar.open.toFixed(2)}`, color: theme.text },
         { label: `HIGH ${lastBar.high.toFixed(2)}`, color: theme.text },
         { label: `LOW  ${lastBar.low.toFixed(2)}`, color: theme.text },
@@ -472,16 +592,22 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       graphicElements.push(panelGroup)
 
       // ===== 右下角时间戳 (对齐示例图: "08 11月 '26 16:00") =====
+      // 项2: 日K/周K/月K 只显示日期 (dd 月 'yy), 分钟K 追加 HH:mm
       const lastDate = lastBar.date.slice(0, 10) // YYYY-MM-DD
       const [yy, mm, dd] = lastDate.split('-')
       const monthZh = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'][Number(mm) - 1]
       const yy2 = yy.slice(2)
+      // 从 lastBar.date 提取 HH:mm (分钟K的 dt 形如 "2026-11-09 14:30:00")
+      const timePart = lastBar.date.slice(11, 16) // HH:mm, 日K为空
+      const stampText = isDailyFreq
+        ? `${dd} ${monthZh} '${yy2}`
+        : `${dd} ${monthZh} '${yy2} ${timePart || '16:00'}`
       graphicElements.push({
         type: 'text',
         right: gridRight + 4,
         bottom: 24,
         style: {
-          text: `${dd} ${monthZh} '${yy2} 16:00`,
+          text: stampText,
           fill: '#fff',
           backgroundColor: theme.text,
           padding: [2, 6],
@@ -506,30 +632,36 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         axisPointer: { type: 'cross' },
         formatter: (params: unknown) => {
           if (!Array.isArray(params) || params.length === 0) return ''
-          const arr = params as Array<{ axisValue?: string; seriesName?: string; value?: unknown; color?: string; dataIndex?: number }>
+          const arr = params as Array<{ axisValue?: string; seriesName?: string; value?: unknown; color?: string; dataIndex?: number; axisIndex?: number }>
           const dt = arr[0]?.axisValue ?? ''
           const dateStr = dt.slice(0, 10)  // 仅日期 YYYY-MM-DD
-          // 找当前 K 线 index 与前一根 close, 用于计算涨跌幅
-          const kIdx = arr.find(p => p.seriesName === 'K线')?.dataIndex ?? -1
-          const curK = kIdx >= 0 ? resolvedKlines[kIdx] : undefined
-          const prevK = kIdx >= 1 ? resolvedKlines[kIdx - 1] : undefined
+          // 关键修复: 鼠标在 VOL/MACD 副图时 arr 里无 'K线' series, 之前 kIdx=-1 导致
+          //          OHLC 全部丢失。这里改用 arr[0].dataIndex 直接从 resolvedKlines 取
+          //          当前 K 线 (三个 grid 共享同一 category xAxis, dataIndex 一致)。
+          const idx = arr[0]?.dataIndex ?? -1
+          const curK = idx >= 0 && idx < resolvedKlines.length ? resolvedKlines[idx] : undefined
+          const prevK = idx >= 1 ? resolvedKlines[idx - 1] : undefined
           const chgPct = curK && prevK
             ? ((curK.close - prevK.close) / prevK.close) * 100
             : null
           const lines: string[] = [dateStr]
+          // OHLC 始终从 resolvedKlines 直接取, 不依赖 K线 series 是否在 params 中
+          if (curK) {
+            lines.push(`开 ${curK.open.toFixed(2)}`)
+            lines.push(`收 ${curK.close.toFixed(2)}`)
+            lines.push(`高 ${curK.high.toFixed(2)}`)
+            lines.push(`低 ${curK.low.toFixed(2)}`)
+            if (chgPct != null) {
+              const sign = chgPct >= 0 ? '+' : ''
+              lines.push(`涨跌 ${sign}${chgPct.toFixed(2)}%`)
+            }
+          }
           for (const p of arr) {
             const nm = p.seriesName ?? ''
             const v = p.value
-            if (nm === 'K线' && Array.isArray(v) && v.length >= 4) {
-              const [o, c, l, h] = v as number[]
-              lines.push(`开 ${o.toFixed(2)}`)
-              lines.push(`收 ${c.toFixed(2)}`)
-              lines.push(`高 ${h.toFixed(2)}`)
-              lines.push(`低 ${l.toFixed(2)}`)
-              if (chgPct != null) {
-                const sign = chgPct >= 0 ? '+' : ''
-                lines.push(`涨跌 ${sign}${chgPct.toFixed(2)}%`)
-              }
+            if (nm === 'K线') {
+              // OHLC 已在上方从 resolvedKlines 取, 跳过避免重复
+              continue
             } else if (nm === 'SMA5' || nm === 'SMA20') {
               const n = typeof v === 'number' ? v : null
               lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
@@ -541,6 +673,8 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
               lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
             } else if (nm === 'FX' || nm === 'BI') {
               // lines series 不展示数值 (折线坐标已可视化)
+              continue
+            } else if (nm === '中枢') {
               continue
             } else {
               lines.push(`${nm} ${v != null ? String(v) : '—'}`)
@@ -680,6 +814,8 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           z: 2,
         },
         // FX 分型 — 卡其色虚线折线, 连接相邻分型极值, czsc _theme.py fx_dashed
+        //   注: echarts lines series 不支持 markPoint (官方限制), 顶底分型红绿三角
+        //   标识挂到下方独立的 'FX标记' scatter series 上 (项1 修复)。
         {
           name: 'FX',
           type: 'lines' as const,
@@ -689,6 +825,22 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           xAxisIndex: 0,
           yAxisIndex: 0,
           z: 3,
+        },
+        // 项1: FX 顶底分型红绿三角 — 用独立 scatter series 承载 markPoint
+        //   data 为空 (本身不画散点), 仅用 markPoint 渲染三角
+        {
+          name: 'FX标记',
+          type: 'scatter' as const,
+          data: [],
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          z: 6,
+          markPoint: {
+            silent: true,
+            symbol: 'triangle',
+            symbolSize: 10,
+            data: fxMarkPoints,
+          },
         },
         // BI 笔 — 深靛蓝实线, 连接笔端点, czsc _theme.py bi
         {
@@ -701,8 +853,10 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           yAxisIndex: 0,
           z: 4,
         },
-        // 中枢 — 紫色虚线边框矩形 + ZS 序号标签 (czsc 原生不画, 本工程自定义)
+        // 中枢 — 紫色虚线边框矩形 + ZS 序号标签 + 浅粉底色 (czsc 原生不画, 本工程自定义)
         // markArea itemStyle 必须写在顶层 (对所有矩形生效)
+        //   项5: color 从 transparent 改为浅粉色透明 (zsFill rgba(255,182,193,0.18))
+        //   项4: markPoint 加 zg/zd 价位数值标签 (在矩形右上下角)
         {
           name: '中枢',
           type: 'scatter' as const,
@@ -712,9 +866,9 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           markArea: {
             silent: true,
             itemStyle: {
-              color: 'transparent',            // 无填充, 对齐示例图
+              color: theme.zsFill,              // 项5: 浅粉色透明底色
               borderColor: theme.zsBorder,
-              borderWidth: 1.6,                // 变更点3: 加粗 1.2 → 1.6
+              borderWidth: 1.6,                  // 变更点3: 加粗 1.2 → 1.6
               borderType: 'dashed',
             },
             data: zsAreas,
@@ -723,7 +877,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
             silent: true,
             symbol: 'circle',
             symbolSize: 0,
-            data: zsLabels,
+            data: [...zsLabels, ...zsPriceLabels],
           },
         },
         // ===== 成交量副图 (gridIndex 1) =====

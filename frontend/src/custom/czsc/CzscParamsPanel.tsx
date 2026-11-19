@@ -104,10 +104,11 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
           value={symbol}
           onChange={setSymbol}
           onSelect={(_sym, name) => setSymbolName(name)}
+          displayName={symbolName}
           assetTypes="stock,etf,index"
           size="sm"
           placeholder="代码 / 名称"
-          className="w-56"
+          className="w-72"
         />
       </label>
 
@@ -128,10 +129,17 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
           type="date"
           value={startDate}
           onChange={e => setStartDate(e.target.value)}
+          // 项3: 点击 input 任意位置 (含日期数字区) 都弹出原生日期选择框。
+          //   原生 date input 默认只有点日历图标才弹; showPicker() 是 HTML Living Standard
+          //   API, 现代浏览器 (Chrome 95+/Edge 95+/Firefox 101+) 支持。
+          onClick={(e) => {
+            const el = e.currentTarget as HTMLInputElement & { showPicker?: () => void }
+            try { el.showPicker?.() } catch { /* 用户手势已触发, 忽略 */ }
+          }}
           // color-scheme 让浏览器原生日期选择器适配 light/dark 主题,
-          // 否则 dark 主题下日历图标不可见且点击不弹日期方框。
-          style={{ colorScheme: 'dark light' }}
-          className="h-8 px-2 rounded-btn border border-border bg-base text-sm"
+          // 'light dark' 顺序: 亮色优先渲染日历 popup (dark 模式下浏览器会自动反转)。
+          style={{ colorScheme: 'light dark', position: 'relative', zIndex: 1 }}
+          className="czsc-date-input h-8 px-2 rounded-btn border border-border bg-base text-sm cursor-pointer"
         />
       </label>
 
@@ -141,8 +149,12 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading }: Prop
           type="date"
           value={endDate}
           onChange={e => setEndDate(e.target.value)}
-          style={{ colorScheme: 'dark light' }}
-          className="h-8 px-2 rounded-btn border border-border bg-base text-sm"
+          onClick={(e) => {
+            const el = e.currentTarget as HTMLInputElement & { showPicker?: () => void }
+            try { el.showPicker?.() } catch { /* 用户手势已触发, 忽略 */ }
+          }}
+          style={{ colorScheme: 'light dark', position: 'relative', zIndex: 1 }}
+          className="czsc-date-input h-8 px-2 rounded-btn border border-border bg-base text-sm cursor-pointer"
         />
       </label>
 

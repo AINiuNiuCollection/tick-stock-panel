@@ -216,7 +216,27 @@ def fetch_kline(
                     params=params,
                 )
                 resp.raise_for_status()
-                data = resp.json()
+                # 响应体可能非 JSON (企业代理拦截页 / 空响应 / HTML 错误页),
+                # resp.json() 会抛 json.JSONDecodeError (ValueError 子类),
+                # 归入重试逻辑而非直接失败 — 代理偶发拦截重试可能恢复。
+                try:
+                    data = resp.json()
+                except ValueError as exc:
+                    # 记录响应体前 200 字符便于排查代理拦截内容
+                    body_preview = resp.text[:200] if resp.text else "(empty)"
+                    logger.warning(
+                        "eastmoney fallback JSON parse failed (attempt %d/%d): %s; body preview: %s",
+                        attempt + 1, _MAX_RETRIES, exc, body_preview,
+                    )
+                    last_exc = exc
+                    if attempt < _MAX_RETRIES - 1:
+                        time.sleep(_RETRY_BASE_DELAY * (2 ** attempt))
+                        continue
+                    raise EastmoneyFallbackError(
+                        "INVALID_RESPONSE",
+                        f"eastmoney response not JSON for {symbol} (secid={secid}); "
+                        f"body preview: {body_preview}",
+                    )
                 if data.get("data") is None:
                     raise EastmoneyFallbackError(
                         "SYMBOL_NOT_FOUND",

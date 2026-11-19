@@ -68,6 +68,20 @@ html.dark {
 /* 默认 1px 细分隔线(暗色用边框区分层次,不用 shadow) */
 * { border-color: hsl(var(--border)); }
 
+/* === 日期选择器 (缠论分析参数面板) ===
+ * dark 主题下浏览器原生 <input type="date"> 的日历图标默认与背景同色不可见,
+ * 且某些 Webkit 版本下点击图标区不弹日历。显式给图标着色 + 确保 pointer-events。
+ */
+.czsc-date-input::-webkit-calendar-picker-indicator {
+  display: inline-block;
+  cursor: pointer;
+  filter: invert(0.5);  /* 中性灰, light/dark 都可见 */
+  opacity: 0.85;
+}
+.czsc-date-input::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
 body {
   background: hsl(var(--base));
   color: hsl(var(--fg-primary));
