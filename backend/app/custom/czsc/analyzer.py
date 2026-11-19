@@ -738,6 +738,39 @@ def _identify_bs_points(
     if not bi_list_raw or len(bi_list_raw) < 3:
         return []
 
+    # 向前遍历找趋势起点 (供 B1/S1 背驰参照)
+    #   direction='down': 从 cur_idx-2 起隔笔向前, 找低点单调递减序列的最早一笔;
+    #                     跳过中继小回踩 (如 7 笔趋势中 bi#14 偶然力度偏小),
+    #                     使背驰对比的是趋势起始段而非相邻段。
+    #   direction='up':   对称, 找高点单调递增序列的最早一笔。
+    #   max_steps: 最多向前跨 3 段同向笔 (覆盖 7 笔趋势), 防跨中枢过远对比失真。
+    def _find_trend_start_bi(cur_idx: int, direction: str, max_steps: int = 3):
+        prev = bi_list_raw[cur_idx - 2]
+        j = cur_idx - 4
+        steps = 1
+        while j >= 0 and steps < max_steps:
+            cand = bi_list_raw[j]
+            if _bi_direction(cand) != direction:
+                j -= 2
+                continue
+            if direction == "down":
+                # cand.low 须 > prev.low (趋势低点单调递减), 否则趋势不延续
+                if cand.low > prev.low:
+                    prev = cand
+                    steps += 1
+                    j -= 2
+                else:
+                    break
+            else:  # up
+                if cand.high < prev.high:
+                    prev = cand
+                    steps += 1
+                    j -= 2
+                else:
+                    break
+        return prev
+
+
     dt_str_idx: dict[str, int] = {b.dt: i for i, b in enumerate(bars_out)}
 
     # 中枢列表 (过滤 valid)
@@ -760,19 +793,18 @@ def _identify_bs_points(
     n = len(bi_list_raw)
 
     # ===== 一买一卖 (B1/S1) — 趋势背驰 =====
-    # 在最后一个下跌中枢之后, 末笔下跌创新低且与前一下跌笔背驰 → B1
-    # 在最后一个上涨中枢之后, 末笔上涨创新高且与前一上涨笔背驰 → S1
-    # 简化版 (czsc check_first_buy 思路): 从后向前找奇数段下跌笔 (创新低), 判背驰
-    # 这里实现遍历版: 对每一段"末笔下跌+前一下跌笔"组合判背驰, 取最近一次成立作为 B1。
-    # 实操中只关心最后一个有效背驰段 (避免重复标注)。
+    # 在最后一个下跌中枢之后, 末笔下跌创新低且与趋势起始下跌笔背驰 → B1
+    # 在最后一个上涨中枢之后, 末笔上涨创新高且与趋势起始上涨笔背驰 → S1
+    # 关键: prev_bi 不再固定取相邻 i-2, 而是用 _find_trend_start_bi 向前遍历
+    #       找趋势起点 (低/高点单调递减/增, 最多 3 段), 跳过中继小回踩,
+    #       使背驰对比的是趋势起始段 (力度最大) 而非相邻段 (可能偶然偏小)。
     for i in range(n - 1, 1, -1):
         bi = bi_list_raw[i]
         if _bi_direction(bi) != "down":
             continue
-        # 找前一同向下跌笔 (隔一反向笔)
         if i - 2 < 0:
             continue
-        prev_bi = bi_list_raw[i - 2]
+        prev_bi = _find_trend_start_bi(i, "down")
         if _bi_direction(prev_bi) != "down":
             continue
         # 末笔需创新低 (低于 prev_bi 低点) — 趋势延续
@@ -799,7 +831,7 @@ def _identify_bs_points(
             continue
         if i - 2 < 0:
             continue
-        prev_bi = bi_list_raw[i - 2]
+        prev_bi = _find_trend_start_bi(i, "up")
         if _bi_direction(prev_bi) != "up":
             continue
         if bi.high <= prev_bi.high:

@@ -3,93 +3,27 @@
  */
 import { useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, Check } from 'lucide-react'
+import { Settings2, X, HelpCircle, LineChart, Target, SlidersHorizontal } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { SymbolPicker } from '@/components/SymbolPicker'
 import { api } from '@/lib/api'
 
 /**
- * 下拉多选组件 — 点击按钮弹出下拉框 (仿 hAdmin 下拉按钮风格),
- * 弹层内为 checkbox 列表, 选中打勾, 点击外部关闭。
- * 按钮只显示「label (已选N)」+ caret, 不平铺已选标签 (已选由图表图例展示);
- * option 可带 color 字段, 在选项右侧显示色块。
+ * 帮助提示 — ? 图标, 鼠标悬停显示详细解释气泡。
+ * 用于设置项的说明, 不占用横向空间。
  */
-interface MultiSelectOption {
-  value: string
-  label: string
-  color?: string
-}
-function MultiSelectDropdown({
-  label,
-  options,
-  selected,
-  onChange,
-  placeholder = '请选择',
-}: {
-  label: string
-  options: MultiSelectOption[]
-  selected: string[]
-  onChange: (next: string[]) => void
-  placeholder?: string
-}) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDocClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDocClick)
-    return () => document.removeEventListener('mousedown', onDocClick)
-  }, [open])
-
-  const toggle = (v: string) => {
-    onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v])
-  }
-
+function HelpTip({ text }: { text: string }) {
   return (
-    <div ref={ref} className="relative flex flex-col gap-1">
-      <span className="text-xs text-muted">
-        {label}{selected.length > 0 ? ` (已选${selected.length})` : ''}
-      </span>
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center justify-between gap-1 h-8 px-2 rounded-btn border border-border bg-base text-sm min-w-[140px] hover:border-accent transition-colors"
+    <span className="relative inline-flex group/tip align-middle ml-1">
+      <HelpCircle className="h-3.5 w-3.5 text-muted cursor-help" />
+      <span
+        className="pointer-events-none absolute left-1/2 bottom-full mb-1 -translate-x-1/2 z-50
+                   w-56 rounded-btn border border-border bg-elevated shadow-lg p-2 text-[11px] text-foreground
+                   opacity-0 invisible group-hover/tip:opacity-100 group-hover/tip:visible transition-opacity"
       >
-        <span className={`truncate ${selected.length > 0 ? 'text-foreground' : 'text-muted'}`}>
-          {selected.length > 0 ? placeholder : placeholder}
-        </span>
-        <ChevronDown className={`h-3.5 w-3.5 text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 z-50 min-w-full bg-elevated border border-border rounded-btn shadow-lg py-1 max-h-60 overflow-auto">
-          {options.map(opt => {
-            const checked = selected.includes(opt.value)
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => toggle(opt.value)}
-                className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-accent/10 transition-colors ${checked ? 'text-foreground' : 'text-muted'}`}
-              >
-                <span className={`w-4 h-4 flex items-center justify-center rounded border ${checked ? 'bg-accent border-accent' : 'border-border'}`}>
-                  {checked && <Check className="w-3 h-3 text-white" />}
-                </span>
-                <span className="flex-1">{opt.label}</span>
-                {opt.color && (
-                  <span
-                    className="w-4 h-2 rounded-sm shrink-0"
-                    style={{ backgroundColor: opt.color }}
-                    aria-hidden
-                  />
-                )}
-              </button>
-            )
-          })}
-        </div>
-      )}
-    </div>
+        {text}
+      </span>
+    </span>
   )
 }
 
@@ -165,6 +99,8 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
   const [bsUseDif, setBsUseDif] = useState(true)
   const [bsUseDea, setBsUseDea] = useState(true)
   const [bsUseMacdArea, setBsUseMacdArea] = useState(true)
+  // 设置抽屉开关
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   // 变更点3: 自动查中文名 — 用户手动输入代码 (不选下拉) 时 onSelect 不触发,
   //          这里按 symbol 精确查 instrumentNames 补全 name。下拉选择时 onSelect
@@ -324,73 +260,15 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
         </div>
       </fieldset>
 
-      {/* 均线配置 (下拉按钮多选, 不限条数) */}
-      <MultiSelectDropdown
-        label="均线"
-        options={MA_PERIOD_OPTIONS.map(p => ({
-          value: String(p),
-          label: `SMA${p}`,
-          color: MA_PERIOD_COLORS[p] ?? MA_PERIOD_COLORS[5],
-        }))}
-        selected={maPeriods.map(String)}
-        onChange={(next) => {
-          const arr = next.map(Number).filter(n => Number.isFinite(n)).sort((a, b) => a - b)
-          setMaPeriods(arr)
-          onMaPeriodsChange?.(arr)
-        }}
-        placeholder="选择均线周期"
-      />
-
-      {/* 背驰配置 (买卖点识别判据) — 面积口径下拉 + 三条件下拉多选
-          仅当勾选「买卖点」特征时生效; 后端 _identify_bs_points 据此过滤买卖点 */}
-      {features.includes('bs_points') && (
-        <fieldset className="flex flex-wrap items-end gap-3 border border-border rounded-btn p-2">
-          <span className="w-full text-xs text-muted font-bold">背驰配置 (买卖点判据)</span>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs text-muted">面积口径</span>
-            <select
-              value={bsMacdAreaMode}
-              onChange={e => setBsMacdAreaMode(e.target.value as typeof bsMacdAreaMode)}
-              className="h-8 px-2 rounded-btn border border-border bg-base text-sm"
-            >
-              {BS_MACD_AREA_MODES.map(m => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </select>
-          </label>
-          <MultiSelectDropdown
-            label="背驰条件"
-            options={[
-              { value: 'macd_area', label: 'MACD面积' },
-              { value: 'dif_peak', label: 'DIF极值' },
-              { value: 'dea_peak', label: 'DEA极值' },
-            ]}
-            selected={[
-              ...(bsUseMacdArea ? ['macd_area'] : []),
-              ...(bsUseDif ? ['dif_peak'] : []),
-              ...(bsUseDea ? ['dea_peak'] : []),
-            ]}
-            onChange={(next) => {
-              setBsUseMacdArea(next.includes('macd_area'))
-              setBsUseDif(next.includes('dif_peak'))
-              setBsUseDea(next.includes('dea_peak'))
-            }}
-            placeholder="选择背驰条件"
-          />
-          <span className="w-full text-[10px] text-muted">
-            所选条件 AND 全满足才算背驰; 减少条件可放宽识别 (信号增多)
-          </span>
-        </fieldset>
-      )}
-
-      <label className="flex items-center gap-1 text-xs">
-        <input
-          type="checkbox"
-          checked={forceRefresh}
-          onChange={e => setForceRefresh(e.target.checked)}
-        />
-        强制刷新缓存
-      </label>
+      {/* 齿轮设置按钮 — 点击弹出右侧抽屉 (均线/背驰/高级设置) */}
+      <button
+        type="button"
+        onClick={() => setSettingsOpen(true)}
+        title="均线 / 背驰 / 高级设置"
+        className="h-8 w-8 flex items-center justify-center rounded-btn border border-border bg-base text-muted hover:text-foreground hover:border-accent transition-colors"
+      >
+        <Settings2 className="h-4 w-4" />
+      </button>
 
       <button
         type="submit"
@@ -401,6 +279,197 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
       >
         {loading ? '分析中…' : '分析'}
       </button>
+
+      {/* ===== 设置抽屉 (右侧滑入, 仿 Settings 页分块卡片风格) =====
+          均线实时应用 (onChange 立即触发 onMaPeriodsChange 更新图表);
+          背驰/高级参数需手动点「分析」才生效 (后端计算)。 */}
+      <AnimatePresence>
+        {settingsOpen && (
+          <>
+            {/* 遮罩 */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="fixed inset-0 bg-black/30 z-40"
+              onClick={() => setSettingsOpen(false)}
+            />
+            {/* 抽屉 */}
+            <motion.aside
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'tween', duration: 0.2, ease: 'easeOut' }}
+              className="fixed top-0 right-0 h-full w-[480px] max-w-[90vw] z-50 bg-surface border-l border-border shadow-2xl flex flex-col"
+            >
+              {/* 抽屉标题栏 */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+                <div className="flex items-center gap-2">
+                  <Settings2 className="h-4 w-4 text-accent" />
+                  <h2 className="text-base font-medium text-foreground">缠论分析设置</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(false)}
+                  className="p-1 rounded-btn text-muted hover:text-foreground hover:bg-elevated transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* 抽屉内容 (可滚动) */}
+              <div className="flex-1 overflow-auto px-5 py-4">
+
+                {/* ===== 均线设置 ===== */}
+                <section className="rounded-card border border-border bg-base p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <LineChart className="h-4 w-4 text-accent" />
+                    <h3 className="text-sm font-medium text-foreground">
+                      均线设置<HelpTip text="SMA 简单移动平均线。勾选即在K线图上叠加该周期均线, 不限条数。均线变化实时生效, 无需重新分析。每条均线颜色固定, 与下方色块一致。" />
+                    </h3>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {MA_PERIOD_OPTIONS.map(p => {
+                      const checked = maPeriods.includes(p)
+                      const color = MA_PERIOD_COLORS[p] ?? MA_PERIOD_COLORS[5]
+                      return (
+                        <label
+                          key={p}
+                          className={`flex items-center gap-2 px-2 py-1.5 rounded-btn border text-sm cursor-pointer transition-colors ${checked ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              const next = checked
+                                ? maPeriods.filter(x => x !== p)
+                                : [...maPeriods, p].sort((a, b) => a - b)
+                              setMaPeriods(next)
+                              onMaPeriodsChange?.(next)
+                            }}
+                            className="accent-accent"
+                          />
+                          <span className="flex-1">SMA{p}</span>
+                          <span className="w-4 h-2 rounded-sm shrink-0" style={{ backgroundColor: color }} />
+                        </label>
+                      )
+                    })}
+                  </div>
+                  <div className="mt-2 text-[11px] text-muted">
+                    当前已选 {maPeriods.length} 条: {maPeriods.length ? maPeriods.map(p => `SMA${p}`).join(' / ') : '无'}
+                  </div>
+                </section>
+
+                {/* ===== 背驰判据设置 ===== */}
+                <section className="rounded-card border border-border bg-base p-5 mt-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Target className="h-4 w-4 text-accent" />
+                    <h3 className="text-sm font-medium text-foreground">
+                      背驰判据设置<HelpTip text="背驰是缠论买卖点识别的核心判据。仅当「特征」勾选了「买卖点」时生效。修改后需重新点「分析」才应用 (后端计算)。" />
+                    </h3>
+                  </div>
+
+                  {/* 面积口径 */}
+                  <div className="flex items-center justify-between gap-4 py-2">
+                    <div className="min-w-0">
+                      <div className="text-sm text-foreground flex items-center">
+                        MACD 面积口径
+                        <HelpTip text="计算一笔的 MACD 面积时采用的口径:&#10;• 红绿柱分计: 按笔方向取同向柱面积 (下跌笔取绿柱, 上涨笔取红柱)&#10;• Σ|hist|: 该笔区间内所有 MACD 柱绝对值之和&#10;• Σ|DIF-DEA|: 该笔区间内 |DIF-DEA| 之和 (与柱高同源)" />
+                      </div>
+                      <div className="text-[11px] text-muted truncate">对比两段同向笔的 MACD 面积, 递减则背驰</div>
+                    </div>
+                    <select
+                      value={bsMacdAreaMode}
+                      onChange={e => setBsMacdAreaMode(e.target.value as typeof bsMacdAreaMode)}
+                      className="h-8 px-2 rounded-btn border border-border bg-surface text-sm shrink-0"
+                    >
+                      {BS_MACD_AREA_MODES.map(m => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* 三条件 */}
+                  <div className="text-sm text-foreground mt-3 mb-2 flex items-center">
+                    背驰条件 (AND 全满足)
+                    <HelpTip text="三个条件全部满足才算背驰 (AND 关系)。取消勾选任一条件可放宽识别, 买卖点信号会增多但准确度下降。&#10;• MACD面积: 当前笔面积 < 趋势起始笔面积&#10;• DIF极值: 当前笔 DIF 高点 < 趋势起始笔 DIF 高点&#10;• DEA极值: 当前笔 DEA 高点 < 趋势起始笔 DEA 高点" />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className={`flex items-center gap-2 px-3 py-2 rounded-btn border text-sm cursor-pointer transition-colors ${bsUseMacdArea ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>
+                      <input
+                        type="checkbox"
+                        checked={bsUseMacdArea}
+                        onChange={e => setBsUseMacdArea(e.target.checked)}
+                        className="accent-accent"
+                      />
+                      MACD 面积递减
+                    </label>
+                    <label className={`flex items-center gap-2 px-3 py-2 rounded-btn border text-sm cursor-pointer transition-colors ${bsUseDif ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>
+                      <input
+                        type="checkbox"
+                        checked={bsUseDif}
+                        onChange={e => setBsUseDif(e.target.checked)}
+                        className="accent-accent"
+                      />
+                      DIF 极值弱化
+                    </label>
+                    <label className={`flex items-center gap-2 px-3 py-2 rounded-btn border text-sm cursor-pointer transition-colors ${bsUseDea ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>
+                      <input
+                        type="checkbox"
+                        checked={bsUseDea}
+                        onChange={e => setBsUseDea(e.target.checked)}
+                        className="accent-accent"
+                      />
+                      DEA 极值弱化
+                    </label>
+                  </div>
+                  <div className="mt-2 text-[11px] text-muted">
+                    所选条件 AND 全满足才算背驰; 减少条件可放宽识别 (信号增多)
+                  </div>
+                </section>
+
+                {/* ===== 高级设置 ===== */}
+                <section className="rounded-card border border-border bg-base p-5 mt-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <SlidersHorizontal className="h-4 w-4 text-accent" />
+                    <h3 className="text-sm font-medium text-foreground">
+                      高级设置<HelpTip text="影响分析行为的全局开关。" />
+                    </h3>
+                  </div>
+                  <label className="flex items-center justify-between gap-4 py-2 cursor-pointer">
+                    <div className="min-w-0">
+                      <div className="text-sm text-foreground flex items-center">
+                        强制刷新缓存
+                        <HelpTip text="勾选后本次分析忽略后端缓存, 强制重新取数并计算。当前版本后端无缓存层, 此项暂为预留。" />
+                      </div>
+                      <div className="text-[11px] text-muted truncate">忽略缓存, 强制重新取数</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={forceRefresh}
+                      onChange={e => setForceRefresh(e.target.checked)}
+                      className="accent-accent h-4 w-4"
+                    />
+                  </label>
+                </section>
+
+              </div>
+
+              {/* 抽屉底部按钮 */}
+              <div className="flex justify-end gap-2 px-5 py-4 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(false)}
+                  className="h-8 px-4 rounded-btn border border-border bg-surface text-sm text-foreground hover:bg-elevated transition-colors"
+                >
+                  关闭
+                </button>
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
     </form>
   )
 }
