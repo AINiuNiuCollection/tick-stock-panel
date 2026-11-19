@@ -502,16 +502,60 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
             font: '11px Inter, "HarmonyOS Sans SC", sans-serif',
           },
         },
-        {
-          type: 'text',
-          style: {
-            text: `${result.freq} · ${result.bar_count} BARS    — SMA5    — SMA20    ┄ FX (DASHED)    — BI (SOLID)`,
-            x: 0, y: 40,
-            fill: theme.text,
-            opacity: 0.7,
-            font: '11px Inter, "HarmonyOS Sans SC", sans-serif',
-          },
-        },
+        // 图例: 用 rect (色块) + text (标签) 组合替代之前的纯文本图例,
+        // 色块颜色与 series 实际颜色一一对应 (theme.sma5 / sma20 / fx_dashed / bi / zsBorder),
+        // 解决之前「全部灰色无法区分」的问题。
+        // 实线: 单个 14x3 rect; 虚线 (FX/中枢): 3 个 3x3 小 rect 间隔 2px 模拟 dashed。
+        // 布局: 色块 + 标签横向排列, y=38 与原纯文本图例同位置。
+        ...([
+          { label: `SMA5`, color: theme.sma5, dashed: false },
+          { label: `SMA20`, color: theme.sma20, dashed: false },
+          { label: `FX`, color: theme.fx_dashed, dashed: true },
+          { label: `BI`, color: theme.bi, dashed: false },
+          { label: `中枢`, color: theme.zsBorder, dashed: true },
+        ] as const).flatMap((item, idx, arr) => {
+          const labelGap = 8   // 色块与标签间距
+          const itemGap = 16   // 项与项间距
+          const charW = 6.8    // 11px 字体近似字符宽度 (含字间距)
+          const lineW = item.dashed ? 14 : 14
+          // 计算前序标签累计宽度
+          let xOffset = 0
+          for (let j = 0; j < idx; j++) {
+            xOffset += lineW + labelGap + arr[j].label.length * charW + itemGap
+          }
+          const elements: echarts.EChartsOption['graphic'] = []
+          if (item.dashed) {
+            // 虚线: 3 个 3x3 小 rect, 间隔 2px (3+2+3+2+3=13 ≈ 14)
+            for (let k = 0; k < 3; k++) {
+              elements.push({
+                type: 'rect',
+                shape: { x: xOffset + k * 5, y: 38, width: 3, height: 3 },
+                style: { fill: item.color },
+                silent: true,
+              })
+            }
+          } else {
+            // 实线: 单个 14x3 rect
+            elements.push({
+              type: 'rect',
+              shape: { x: xOffset, y: 38, width: lineW, height: 3 },
+              style: { fill: item.color },
+              silent: true,
+            })
+          }
+          elements.push({
+            type: 'text',
+            style: {
+              text: item.label,
+              x: xOffset + lineW + labelGap,
+              y: 40,
+              fill: item.color,
+              font: '11px Inter, "HarmonyOS Sans SC", sans-serif',
+            },
+            silent: true,
+          })
+          return elements
+        }) as unknown as any[],
       ],
     })
 
