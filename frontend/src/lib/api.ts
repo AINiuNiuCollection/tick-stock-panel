@@ -3932,10 +3932,15 @@ export const api = {
     request<KnowledgeEntry>(`/api/knowledge/${id}`),
   getKnowledgeCategories: () =>
     request<{ category: string; label: string; count: number }[]>('/api/knowledge/categories'),
+  // 《缠中说禅》108 课 (本地化全文)
+  getChanlunToc: () =>
+    request<{ book: string; total: number; lessons: { no: number; title: string }[] }>('/api/knowledge/chanlun'),
+  getChanlunLesson: (no: number) =>
+    request<{ no: number; title: string; content: string }>(`/api/knowledge/chanlun/${no}`),
 }
 
 // ===== Knowledge types =====
-export type KnowledgeCategory = 'basics' | 'indicators' | 'patterns' | 'strategies' | 'risk' | 'terms' | 'macro'
+export type KnowledgeCategory = 'basics' | 'indicators' | 'patterns' | 'strategies' | 'risk' | 'terms' | 'macro' | 'books'
 
 export interface KnowledgeEntry {
   id: string

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
+from app.services import chanlun_book
 from app.services.knowledge_store import knowledge_store
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
@@ -27,6 +28,27 @@ def list_entries(
 @router.get("/categories")
 def list_categories():
     return knowledge_store.categories_summary()
+
+
+# ---- 《缠中说禅》108 课 (本地化全文) ----
+# 注意: 必须定义在 /{entry_id} 之前, 否则会被通配路径吞掉
+
+@router.get("/chanlun")
+def chanlun_toc():
+    """《缠中说禅》108 课目录。"""
+    lessons = chanlun_book.list_lessons()
+    return {"book": chanlun_book.book_title(), "total": len(lessons), "lessons": lessons}
+
+
+@router.get("/chanlun/{lesson_no}")
+def chanlun_lesson(lesson_no: int):
+    """《缠中说禅》单课全文。"""
+    if lesson_no < 1 or lesson_no > 108:
+        return {"detail": "课程编号必须在 1-108 之间"}
+    lesson = chanlun_book.get_lesson(lesson_no)
+    if lesson is None:
+        return {"detail": "课程不存在"}
+    return lesson
 
 
 @router.get("/{entry_id}")

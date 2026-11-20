@@ -240,8 +240,17 @@ export function Knowledge() {
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
   const [activeCategory, setActiveCategory] = useState<KnowledgeCategory | null>(null)
-  const [expandedCats, setExpandedCats] = useState<Set<KnowledgeCategory>>(new Set(ALL_CATEGORIES as any))
+  // 默认全部折叠
+  const [expandedCats, setExpandedCats] = useState<Set<KnowledgeCategory>>(new Set())
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // 《缠中说禅》书籍视图: null=普通条目; 'toc'=目录; 数字=第 N 课
+  const [chanlunLesson, setChanlunLesson] = useState<number | 'toc' | null>(null)
+
+  const allExpanded = expandedCats.size === ALL_CATEGORIES.length
+
+  const toggleAllCats = useCallback(() => {
+    setExpandedCats(allExpanded ? new Set() : new Set(ALL_CATEGORIES))
+  }, [allExpanded])
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(searchQuery), 300)
@@ -285,6 +294,22 @@ export function Knowledge() {
     })
   }, [])
 
+  // 选中普通条目时退出缠中说禅视图; 反之亦然
+  const selectEntry = useCallback((id: string) => {
+    setSelectedId(id)
+    setChanlunLesson(null)
+  }, [])
+
+  const openChanlun = useCallback(() => {
+    setSelectedId(null)
+    setChanlunLesson('toc')
+  }, [])
+
+  const openChanlunLesson = useCallback((no: number) => {
+    setSelectedId(null)
+    setChanlunLesson(no)
+  }, [])
+
   return (
     <div className="flex flex-col h-full">
       <PageHeader
@@ -309,20 +334,30 @@ export function Knowledge() {
         {/* 左侧目录树 */}
         <aside className="w-56 shrink-0 border-r border-border overflow-y-auto py-2 px-2">
           <div className="mb-2">
-            <button
-              onClick={() => {
-                setActiveCategory(null)
-                setSelectedId(null)
-              }}
-              className={cn(
-                'flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded-md transition-colors',
-                !activeCategory ? 'bg-accent/10 text-accent' : 'hover:bg-elevated',
-              )}
-            >
-              <BookOpen className="h-3.5 w-3.5" />
-              全部
-              <span className="ml-auto text-[10px] text-muted">{total}</span>
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => {
+                  setActiveCategory(null)
+                  setSelectedId(null)
+                  setChanlunLesson(null)
+                }}
+                className={cn(
+                  'flex items-center gap-1.5 flex-1 px-2 py-1.5 text-xs rounded-md transition-colors',
+                  !activeCategory ? 'bg-accent/10 text-accent' : 'hover:bg-elevated',
+                )}
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                全部
+                <span className="ml-auto text-[10px] text-muted">{total}</span>
+              </button>
+              <button
+                onClick={toggleAllCats}
+                className="shrink-0 px-1.5 py-1 text-[10px] rounded text-muted hover:bg-elevated hover:text-foreground transition-colors"
+                title={allExpanded ? '收起全部' : '展开全部'}
+              >
+                {allExpanded ? '收起' : '展开'}
+              </button>
+            </div>
           </div>
 
           {ALL_CATEGORIES.map(cat => {
@@ -360,6 +395,28 @@ export function Knowledge() {
                 </div>
 
                 <AnimatePresence initial={false}>
+                  {isExpanded && cat === 'books' && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      className="overflow-hidden ml-4"
+                    >
+                      <button
+                        onClick={openChanlun}
+                        className={cn(
+                          'flex items-center gap-1 w-full pl-2 pr-1.5 py-1 text-[11px] rounded transition-colors text-left',
+                          chanlunLesson !== null
+                            ? 'bg-accent/10 text-accent'
+                            : 'text-secondary hover:bg-elevated hover:text-foreground',
+                        )}
+                      >
+                        <Library className="h-3 w-3 shrink-0 text-purple-500" />
+                        <span className="truncate">《缠中说禅》</span>
+                        <span className="ml-auto text-[10px] text-muted">108课</span>
+                      </button>
+                    </motion.div>
+                  )}
                   {isExpanded && catItems.length > 0 && (
                     <motion.div
                       initial={{ height: 0, opacity: 0 }}
@@ -370,7 +427,7 @@ export function Knowledge() {
                       {catItems.map(item => (
                         <button
                           key={item.id}
-                          onClick={() => setSelectedId(item.id)}
+                          onClick={() => selectEntry(item.id)}
                           className={cn(
                             'flex items-center w-full pl-2 pr-1.5 py-1 text-[11px] rounded transition-colors text-left',
                             selectedId === item.id
@@ -397,9 +454,17 @@ export function Knowledge() {
         </aside>
 
         {/* 右侧内容区 */}
-        <div className={cn('flex-1 overflow-hidden', selectedEntry ? '' : 'overflow-y-auto px-5 py-4')}>
+        <div className={cn('flex-1 overflow-hidden', selectedEntry || chanlunLesson !== null ? '' : 'overflow-y-auto px-5 py-4')}>
           {isLoading ? (
             <div className="h-full grid place-items-center text-sm text-muted">加载中...</div>
+          ) : chanlunLesson === 'toc' ? (
+            <ChanlunTocView onSelect={openChanlunLesson} />
+          ) : typeof chanlunLesson === 'number' ? (
+            <ChanlunLessonView
+              no={chanlunLesson}
+              onBack={() => setChanlunLesson('toc')}
+              onNavigate={openChanlunLesson}
+            />
           ) : selectedEntry ? (
             <KnowledgeDetail entry={selectedEntry} onClose={() => setSelectedId(null)} />
           ) : items.length === 0 ? (
@@ -412,7 +477,7 @@ export function Knowledge() {
             <KnowledgeGrid
               items={items}
               groupedItems={groupedItems}
-              onSelect={setSelectedId}
+              onSelect={selectEntry}
             />
           )}
         </div>
@@ -626,5 +691,158 @@ function KnowledgeCard({ item, onClick }: { item: KnowledgeEntry; onClick: () =>
         <ChevronRight className="h-4 w-4 text-muted shrink-0 mt-1 group-hover:text-accent transition-colors" />
       </div>
     </button>
+  )
+}
+
+// ---- 《缠中说禅》目录 ----
+function ChanlunTocView({ onSelect }: { onSelect: (no: number) => void }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['chanlun', 'toc'],
+    queryFn: () => api.getChanlunToc(),
+  })
+
+  if (isLoading) {
+    return <div className="h-full grid place-items-center text-sm text-muted">加载中...</div>
+  }
+
+  const lessons = data?.lessons ?? []
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="max-w-3xl mx-auto px-5 py-4">
+        <div className="flex items-center gap-2.5 mb-1">
+          <div className="w-9 h-9 rounded-lg bg-purple-50 dark:bg-purple-950/40 grid place-items-center shrink-0">
+            <Library className="h-5 w-5 text-purple-500" />
+          </div>
+          <div>
+            <h1 className="text-lg font-semibold text-foreground leading-tight">缠中说禅</h1>
+            <p className="text-xs text-muted">教你炒股票 108 课 · 全文收录于本地知识库</p>
+          </div>
+        </div>
+
+        <div className="mt-4 mb-2 flex items-center gap-2 pb-1 border-b border-border">
+          <BookMarked className="h-4 w-4 text-purple-500" />
+          <h2 className="text-sm font-semibold text-foreground">目录</h2>
+          <span className="text-[10px] text-muted">{data?.total ?? lessons.length} 课</span>
+        </div>
+
+        <div className="grid grid-cols-1 gap-1">
+          {lessons.map(l => (
+            <button
+              key={l.no}
+              onClick={() => onSelect(l.no)}
+              className="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left hover:bg-elevated transition-colors group"
+            >
+              <span className="shrink-0 w-9 text-[10px] text-muted tabular-nums">
+                第{l.no}课
+              </span>
+              <span className="flex-1 text-[13px] text-secondary group-hover:text-accent transition-colors truncate">
+                {l.title.replace(/^第\d+课 · /, '')}
+              </span>
+              <ChevronRight className="h-3.5 w-3.5 text-muted shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </button>
+          ))}
+        </div>
+
+        <div className="h-8" />
+      </div>
+    </div>
+  )
+}
+
+// ---- 《缠中说禅》单课 ----
+function ChanlunLessonView({
+  no,
+  onBack,
+  onNavigate,
+}: {
+  no: number
+  onBack: () => void
+  onNavigate: (no: number) => void
+}) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['chanlun', 'lesson', no],
+    queryFn: () => api.getChanlunLesson(no),
+  })
+
+  if (isLoading) {
+    return <div className="h-full grid place-items-center text-sm text-muted">加载中...</div>
+  }
+  if (!data || data.no == null) {
+    return (
+      <div className="h-full grid place-items-center">
+        <EmptyState icon={BookOpen} title="课程不存在" hint="课程编号必须在 1-108 之间" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="max-w-3xl mx-auto px-5 py-4">
+        {/* 面包屑 + 返回 */}
+        <div className="flex items-center justify-between mb-3 sticky top-0 bg-surface/80 backdrop-blur-sm py-1 z-10">
+          <div className="flex items-center gap-1.5 text-xs text-muted min-w-0">
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-purple-50 dark:bg-purple-950/40 text-purple-500 shrink-0">
+              <Library className="h-3 w-3" />
+              缠中说禅
+            </span>
+            <ChevronRight className="h-3 w-3 shrink-0" />
+            <span className="text-foreground font-medium truncate">第{data.no}课</span>
+          </div>
+          <button
+            onClick={onBack}
+            className="p-1 rounded-md text-muted hover:bg-elevated hover:text-foreground transition-colors shrink-0 ml-2"
+            title="返回目录"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* 标题 */}
+        <h1 className="text-xl font-semibold text-foreground mb-4 leading-snug">
+          {data.title.replace(/^第\d+课 · /, '')}
+        </h1>
+
+        {/* 正文 */}
+        <div
+          className="knowledge-content text-sm text-foreground"
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(data.content) }}
+        />
+
+        {/* 上一课 / 下一课 */}
+        <div className="flex items-center justify-between gap-2 mt-8 pt-4 border-t border-border">
+          {data.no > 1 ? (
+            <button
+              onClick={() => onNavigate(data.no - 1)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border text-secondary hover:border-accent/40 hover:text-accent transition-colors"
+            >
+              <ChevronRight className="h-3.5 w-3.5 rotate-180" />
+              上一课（第{data.no - 1}课）
+            </button>
+          ) : (
+            <span />
+          )}
+          <button
+            onClick={onBack}
+            className="px-3 py-1.5 text-xs rounded-md border border-border text-secondary hover:border-accent/40 hover:text-accent transition-colors"
+          >
+            返回目录
+          </button>
+          {data.no < 108 ? (
+            <button
+              onClick={() => onNavigate(data.no + 1)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border text-secondary hover:border-accent/40 hover:text-accent transition-colors"
+            >
+              下一课（第{data.no + 1}课）
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          ) : (
+            <span />
+          )}
+        </div>
+
+        <div className="h-8" />
+      </div>
+    </div>
   )
 }
