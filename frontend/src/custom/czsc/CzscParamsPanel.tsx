@@ -40,7 +40,8 @@ export interface CzscParams {
   ma_periods?: number[]        // 均线周期列表 (最多 3 条, 参考同花顺)
   bs_macd_area_mode?: 'split' | 'total_abs' | 'dif_dea'  // 背驰 MACD 面积口径
   bs_use_dif?: boolean         // 背驰是否启用 DIF 极值条件
-  bs_use_dea?: boolean         // 背驰是否启用 DEA 极值条件
+  /** @deprecated 缠师原文未要求 DEA, 保留字段兼容后端, 恒 false */
+  bs_use_dea?: boolean
   bs_use_macd_area?: boolean   // 背驰是否启用 MACD 面积条件
 }
 
@@ -94,10 +95,10 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
   const [forceRefresh, setForceRefresh] = useState(false)
   // 均线周期: 默认 [5, 10, 20], 最多 3 条 (同花顺惯例)
   const [maPeriods, setMaPeriods] = useState<number[]>([5, 10, 20])
-  // 背驰配置: 默认三条件全开, 面积口径 split (红绿柱分计)
+  // 背驰配置: 默认两条件 (MACD面积 + DIF) 全开, 面积口径 split (红绿柱分计)
+  // DEA 已废弃 (缠师原文未要求), 不再暴露 UI; 提交时恒传 false 兼容后端
   const [bsMacdAreaMode, setBsMacdAreaMode] = useState<'split' | 'total_abs' | 'dif_dea'>('split')
   const [bsUseDif, setBsUseDif] = useState(true)
-  const [bsUseDea, setBsUseDea] = useState(true)
   const [bsUseMacdArea, setBsUseMacdArea] = useState(true)
   // 设置抽屉开关
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -153,7 +154,7 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
       ma_periods: maPeriods,
       bs_macd_area_mode: bsMacdAreaMode,
       bs_use_dif: bsUseDif,
-      bs_use_dea: bsUseDea,
+      bs_use_dea: false,  // 已废弃, 恒 false 兼容后端
       bs_use_macd_area: bsUseMacdArea,
     })
   }
@@ -392,10 +393,10 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
                     </select>
                   </div>
 
-                  {/* 三条件 */}
+                  {/* 两条件 (缠师原文: MACD面积 + DIF, 无 DEA) */}
                   <div className="text-sm text-foreground mt-3 mb-2 flex items-center">
                     背驰条件 (AND 全满足)
-                    <HelpTip text="三个条件全部满足才算背驰 (AND 关系)。取消勾选任一条件可放宽识别, 买卖点信号会增多但准确度下降。&#10;• MACD面积: 当前笔面积 < 趋势起始笔面积&#10;• DIF极值: 当前笔 DIF 高点 < 趋势起始笔 DIF 高点&#10;• DEA极值: 当前笔 DEA 高点 < 趋势起始笔 DEA 高点" />
+                    <HelpTip text="两个条件全部满足才算背驰 (AND 关系), 严格对齐缠师原文第 24 课。取消勾选任一条件可放宽识别, 买卖点信号会增多但准确度下降。&#10;• MACD面积: c 段面积 < a 段面积 (a 段=趋势起始/中枢进入, c 段=末笔/离开段)&#10;• DIF极值: c 段 DIF 高点 < a 段 DIF 高点 (上涨取 max, 下跌取 min)&#10;注: DEA 条件已移除 (缠师原文未要求)" />
                   </div>
                   <div className="flex flex-col gap-2">
                     <label className={`flex items-center gap-2 px-3 py-2 rounded-btn border text-sm cursor-pointer transition-colors ${bsUseMacdArea ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>
@@ -415,15 +416,6 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
                         className="accent-accent"
                       />
                       DIF 极值弱化
-                    </label>
-                    <label className={`flex items-center gap-2 px-3 py-2 rounded-btn border text-sm cursor-pointer transition-colors ${bsUseDea ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>
-                      <input
-                        type="checkbox"
-                        checked={bsUseDea}
-                        onChange={e => setBsUseDea(e.target.checked)}
-                        className="accent-accent"
-                      />
-                      DEA 极值弱化
                     </label>
                   </div>
                   <div className="mt-2 text-[11px] text-muted">

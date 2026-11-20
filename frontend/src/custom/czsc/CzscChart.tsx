@@ -708,9 +708,8 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
             lines.push(`<span style="color:${color};font-weight:bold">━━ ${bp.type} (${bp.direction}) ${bp.price.toFixed(2)} ━━</span>`)
             lines.push(`背驰类型: ${bp.divergence_type ?? '—'}`)
             lines.push(`命中条件: ${bp.divergence_pass.length ? bp.divergence_pass.join(' + ') : '—'}`)
-            lines.push(`MACD面积 (前→今): ${bp.macd_area_prev != null ? bp.macd_area_prev.toFixed(4) : '—'} → ${bp.macd_area_cur != null ? bp.macd_area_cur.toFixed(4) : '—'}`)
-            lines.push(`DIF高点 (前→今): ${bp.dif_peak_prev != null ? bp.dif_peak_prev.toFixed(4) : '—'} → ${bp.dif_peak_cur != null ? bp.dif_peak_cur.toFixed(4) : '—'}`)
-            lines.push(`DEA高点 (前→今): ${bp.dea_peak_prev != null ? bp.dea_peak_prev.toFixed(4) : '—'} → ${bp.dea_peak_cur != null ? bp.dea_peak_cur.toFixed(4) : '—'}`)
+            lines.push(`MACD面积 (a→c): ${bp.macd_area_prev != null ? bp.macd_area_prev.toFixed(4) : '—'} → ${bp.macd_area_cur != null ? bp.macd_area_cur.toFixed(4) : '—'}`)
+            lines.push(`DIF极值 (a→c): ${bp.dif_peak_prev != null ? bp.dif_peak_prev.toFixed(4) : '—'} → ${bp.dif_peak_cur != null ? bp.dif_peak_cur.toFixed(4) : '—'}`)
             lines.push(`面积口径: ${bp.macd_area_mode}`)
             if (bp.zs_index >= 0) lines.push(`关联中枢: ZS${bp.zs_index + 1}`)
           }

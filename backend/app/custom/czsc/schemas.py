@@ -86,12 +86,17 @@ class BsPointItem(BaseModel):
     bi_direction: 触发该买卖点的笔方向 ('Direction.Up'/'Direction.Down')。
     zs_index: 关联的中枢在 zs_list 中的下标 (无中枢关联的 B1/S1 取 -1)。
 
-    背驰详细信息 (严格按缠论计算, 鼠标悬浮显示):
-        macd_area_prev / macd_area_cur   — 前后两同向笔的 MACD 柱面积 (按 macd_area_mode 口径)
-        dif_peak_prev / dif_peak_cur     — 前后两笔区间内 DIF 极值 (上涨取 max, 下跌取 min)
-        dea_peak_prev / dea_peak_cur     — 前后两笔区间内 DEA 极值
-        divergence_type                  — 背驰类型描述, 如 'MACD面积+DIF+DEA三重背驰'
-        divergence_pass                  — 本次判定命中的背驰条件集合, 如 ['macd_area','dif','dea']
+    背驰详细信息 (严格按缠师原文第 15/17/18/20/24/25/27/37 课计算, 鼠标悬浮显示):
+        macd_area_prev / macd_area_cur   — a 段 / c 段的 MACD 柱面积 (按 macd_area_mode 口径)
+        dif_peak_prev / dif_peak_cur     — a 段 / c 段区间内 DIF 极值 (上涨取 max, 下跌取 min)
+        dea_peak_prev / dea_peak_cur     — 已废弃 (缠师原文未要求 DEA), 恒 None, 保留字段兼容前端
+        divergence_type                  — 背驰类型描述, 如 '趋势背驰:macd_area+dif' / '盘整背驰:macd_area+dif'
+        divergence_pass                  — 本次判定命中的背驰条件集合, 如 ['macd_area','dif']
+
+    背驰类型对应关系 (对齐缠师原文):
+        B1/S1 — 趋势背驰 (a+A+b+B+c, c 段创新高/低, MACD 面积 + DIF 弱化)
+        B2/S2 — 盘整背驰 (a 段 vs c 段, 围绕 B1/S1 前中枢)
+        B3/S3 — 盘整背驰 (A 段=中枢进入段 vs C 段=离开段, C 段突破中枢)
 
     macd_area_mode 取值 (与后端 _identify_bs_points 配置一致):
         'split'     — 红绿柱分计 (默认; 下跌笔只计绿柱面积, 上涨笔只计红柱面积)

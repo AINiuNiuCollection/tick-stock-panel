@@ -201,9 +201,8 @@ function BsTable({ list }: { list: CzscBsPoint[] }) {
           <th className="text-center p-2 font-bold text-base text-white">关联中枢</th>
           <th className="text-center p-2 font-bold text-base text-white">背驰类型</th>
           <th className="text-center p-2 font-bold text-base text-white">命中条件</th>
-          <th className="text-center p-2 font-bold text-base text-white">MACD面积 (前→今)</th>
-          <th className="text-center p-2 font-bold text-base text-white">DIF高点 (前→今)</th>
-          <th className="text-center p-2 font-bold text-base text-white">DEA高点 (前→今)</th>
+          <th className="text-center p-2 font-bold text-base text-white">MACD面积 (a→c)</th>
+          <th className="text-center p-2 font-bold text-base text-white">DIF极值 (a→c)</th>
           <th className="text-center p-2 font-bold text-base text-white">面积口径</th>
         </tr>
       </thead>
@@ -239,9 +238,6 @@ function BsTable({ list }: { list: CzscBsPoint[] }) {
               </td>
               <td className="p-2 text-center font-mono tabular-nums font-bold text-foreground text-xs">
                 {bp.dif_peak_prev != null ? bp.dif_peak_prev.toFixed(4) : '—'} → {bp.dif_peak_cur != null ? bp.dif_peak_cur.toFixed(4) : '—'}
-              </td>
-              <td className="p-2 text-center font-mono tabular-nums font-bold text-foreground text-xs">
-                {bp.dea_peak_prev != null ? bp.dea_peak_prev.toFixed(4) : '—'} → {bp.dea_peak_cur != null ? bp.dea_peak_cur.toFixed(4) : '—'}
               </td>
               <td className="p-2 text-center font-bold text-foreground text-xs">{bp.macd_area_mode}</td>
             </tr>

@@ -152,7 +152,7 @@ def build_router() -> APIRouter:
         symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
         bs_macd_area_mode: str = Query("split", description="背驰 MACD 面积口径: split/total_abs/dif_dea"),
         bs_use_dif: bool = Query(True, description="背驰是否启用 DIF 极值条件"),
-        bs_use_dea: bool = Query(True, description="背驰是否启用 DEA 极值条件"),
+        bs_use_dea: bool = Query(False, description="[已废弃] 缠师原文未要求 DEA, 保留参数兼容旧前端, 内部忽略"),
         bs_use_macd_area: bool = Query(True, description="背驰是否启用 MACD 面积条件"),
         ma_periods: str | None = Query(None, description="逗号分隔的 SMA 周期, 如 '5,20,250'; 后端取数自动扩展暖机"),
     ) -> JSONResponse:
@@ -214,7 +214,7 @@ def build_router() -> APIRouter:
         symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
         bs_macd_area_mode: str = Query("split"),
         bs_use_dif: bool = Query(True),
-        bs_use_dea: bool = Query(True),
+        bs_use_dea: bool = Query(False),
         bs_use_macd_area: bool = Query(True),
     ) -> StreamingResponse:
         """SSE 流式分析 (适合分钟K等大数据量)。"""

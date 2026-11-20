@@ -4278,9 +4278,11 @@ export interface CzscBsPoint {
   macd_area_cur: number | null
   dif_peak_prev: number | null
   dif_peak_cur: number | null
+  /** @deprecated 缠师原文未要求 DEA, 后端恒返回 null, 保留字段兼容 */
   dea_peak_prev: number | null
+  /** @deprecated 同上 */
   dea_peak_cur: number | null
-  divergence_type: string | null
+  divergence_type: string | null  // '趋势背驰:macd_area+dif' / '盘整背驰:macd_area+dif' / '未构成...'
   divergence_pass: string[]
   macd_area_mode: string
 }
@@ -4339,7 +4341,8 @@ export interface CzscAnalyzeParams {
   ma_periods?: number[]        // 均线周期列表 (传后端, 后端取数自动扩展暖机并计算 SMA 后下发)
   bs_macd_area_mode?: 'split' | 'total_abs' | 'dif_dea'  // 背驰 MACD 面积口径
   bs_use_dif?: boolean         // 背驰是否启用 DIF 极值条件
-  bs_use_dea?: boolean         // 背驰是否启用 DEA 极值条件
+  /** @deprecated 缠师原文未要求 DEA, 后端忽略, 保留字段兼容 */
+  bs_use_dea?: boolean
   bs_use_macd_area?: boolean   // 背驰是否启用 MACD 面积条件
 }
 
