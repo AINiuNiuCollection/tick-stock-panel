@@ -342,3 +342,59 @@ body {
   border: 1px solid hsl(var(--border) / 0.5);
 }
 
+/* === 《缠中说禅》书籍阅读排版 === */
+/* 中文长文阅读习惯: 衬线字体 (宋体系)、首行缩进两字符、两端对齐、
+   加大段间距与行距 (2.1)、标题居中带装饰分隔线 */
+
+.chanlun-book-title {
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'STSong', 'SimSun', serif;
+  font-weight: 700;
+  color: hsl(var(--fg-primary));
+}
+
+.chanlun-book {
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'STSong', 'SimSun', serif;
+  font-size: 0.9375rem;
+  line-height: 2.1;
+  letter-spacing: 0.015em;
+  color: hsl(var(--fg-primary));
+}
+
+.chanlun-book p {
+  margin: 1.15em 0;
+  text-indent: 2em;            /* 首行缩进两字符 */
+  text-align: justify;         /* 两端对齐 */
+}
+
+.chanlun-book p:first-child {
+  margin-top: 0.5em;
+}
+
+.chanlun-book h2,
+.chanlun-book h3,
+.chanlun-book h4 {
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'STSong', 'SimSun', serif;
+  font-weight: 700;
+  color: hsl(var(--fg-primary));
+  margin: 1.6em 0 0.6em;
+  text-indent: 0;
+  text-align: left;
+}
+
+.chanlun-book h2 { font-size: 1.0625rem; }
+.chanlun-book h3 { font-size: 1rem; }
+.chanlun-book h4 { font-size: 0.9375rem; }
+
+.chanlun-book blockquote {
+  margin: 1.2em 0;
+  padding: 0.6em 1.2em;
+  border-left: 3px solid hsl(var(--accent));
+  background: hsl(var(--accent) / 0.04);
+}
+
+.chanlun-book blockquote p {
+  text-indent: 0;
+  margin: 0.3em 0;
+  color: hsl(var(--fg-secondary));
+}
+

@@ -798,14 +798,18 @@ function ChanlunLessonView({
           </button>
         </div>
 
-        {/* 标题 */}
-        <h1 className="text-xl font-semibold text-foreground mb-4 leading-snug">
-          {data.title.replace(/^第\d+课 · /, '')}
-        </h1>
+        {/* 标题 (书籍章节式: 居中 + 衬线 + 课号眉标) */}
+        <div className="text-center mt-4 mb-8">
+          <p className="text-xs text-muted tracking-[0.3em] mb-3">第 {data.no} 课</p>
+          <h1 className="chanlun-book-title text-2xl leading-relaxed">
+            {data.title.replace(/^第\d+课 · /, '')}
+          </h1>
+          <div className="mx-auto mt-5 w-12 border-t-2 border-border" />
+        </div>
 
-        {/* 正文 */}
+        {/* 正文 (中文书籍排版: 首行缩进 + 段间距 + 衬线) */}
         <div
-          className="knowledge-content text-sm text-foreground"
+          className="chanlun-book"
           dangerouslySetInnerHTML={{ __html: renderMarkdown(data.content) }}
         />
 
