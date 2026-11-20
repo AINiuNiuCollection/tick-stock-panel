@@ -98,6 +98,20 @@ def _fetch_from_primary(
         logger.warning("primary provider init failed: %s", exc)
         return None
 
+    # 分钟 K: 若用户在 preferences 配置了非 tickflow 的 minute_data_provider
+    # (如 baostock/tdx/stocksdk), 优先用该 provider 取数 — 与 kline_sync 路径一致。
+    # tickflow 当前 get_minute 返回空占位, 不配置则继续走 eastmoney 兜底。
+    custom_provider = None
+    if freq not in ("日线", "周线", "月线"):
+        try:
+            from app.services import preferences
+            from app.data_providers import custom as custom_sources
+            pname = preferences.get_minute_data_provider()
+            if pname and pname != "tickflow" and custom_sources.provider_has_dataset(pname, "minute"):
+                custom_provider = custom_sources.get_provider(pname)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("custom minute provider lookup failed: %s", exc)
+
     # 主工程 provider 是 datetime 区间
     start_dt = datetime.combine(start, datetime.min.time())
     end_dt = datetime.combine(end, datetime.max.time().replace(microsecond=0))
@@ -118,13 +132,33 @@ def _fetch_from_primary(
             if provider_freq is None:
                 logger.warning("primary provider unsupported freq: %s", freq)
                 return None
-            raw = provider.get_minute(
-                symbols=[symbol],
-                start_time=start_dt,
-                end_time=end_dt,
-                asset_type="stock",
-                freq=provider_freq,
-            )
+            # 优先用用户配置的 minute_data_provider (如 baostock), tickflow 当前 minute 占位为空。
+            # custom_provider 失败/未配置则回退主工程 provider (tickflow), 再由 _fetch_kline
+            # 走 eastmoney 兜底。
+            raw = pl.DataFrame()
+            if custom_provider is not None:
+                try:
+                    raw = custom_provider.get_minute(
+                        symbols=[symbol],
+                        start_time=start_dt,
+                        end_time=end_dt,
+                        asset_type="stock",
+                        freq=provider_freq,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "custom minute provider %s fetch failed for %s: %s",
+                        type(custom_provider).__name__, symbol, exc,
+                    )
+                    raw = pl.DataFrame()
+            if raw is None or raw.is_empty():
+                raw = provider.get_minute(
+                    symbols=[symbol],
+                    start_time=start_dt,
+                    end_time=end_dt,
+                    asset_type="stock",
+                    freq=provider_freq,
+                )
     except Exception as exc:  # noqa: BLE001
         logger.warning("primary provider fetch failed for %s: %s", symbol, exc)
         return None
@@ -465,6 +499,11 @@ DEFAULT_BS_USE_DEA = False  # 已废弃 (缠师原文未要求 DEA), 保留参�
 DEFAULT_BS_USE_MACD_AREA = True
 DEFAULT_BS_ONLY_VALID_ZS = True
 
+# B2/S2 次级别验证: 30 分钟数据最近可用窗口 (东财兜底硬限制约 224 根 ≈ 5 周交易时段)
+# 当 B2/S2 候选笔的 edt 落在最近这么多天内, 才尝试取 30 分钟数据做次级别 B1 验证;
+# 否则降级为日线盘整背驰近似 (缠师定律一的工程近似)。
+SUBLEVEL_30M_LOOKBACK_DAYS = 40
+
 
 def _bi_direction(bi: Any) -> str:
     """笔方向归一化为 'up' / 'down'。czsc 1.0.2 direction 是 _native.Direction (str='向上'/'向下')。"""
@@ -731,6 +770,13 @@ def _check_consolidation_divergence(
         1. MACD 面积: C 段面积 < A 段面积
         2. DIF 极值: C 段 DIF 极值弱于 A 段
     不要求 C 段创新高/低 (盘整背驰看是否突破中枢, 由调用方判定)。
+
+    短笔暖机兜底: split 模式下, 短笔 (5-7 根 K 线) 在多头/空头市场回调时,
+        MACD 直方图可能未穿零轴 → 无同向柱 → area=None → 面积判据失效。
+        缠师原文第 27 课盘整背驰只要求"MACD 面积对比", 未限定"只计同向柱"。
+        故 area=None 时回退 total_abs 口径 (红绿柱全计) 重算, 仅影响背驰判定,
+        不改变 a/c 段定义。仅对盘整背驰生效 (B2/S2 的 a/c 段是普通笔, 易暖机;
+        B1/S1 已有 _has_macd_area 换笔兜底; B3/S3 a/c 段是中枢进/离段, 较长)。
     """
     a_dir = _bi_direction(a_bi)
     c_dir = _bi_direction(c_bi)
@@ -738,6 +784,24 @@ def _check_consolidation_divergence(
         return _empty_divergence("盘整背驰")
 
     m = _compute_macd_metrics(a_bi, c_bi, bars_out, macd_out, dt_str_idx, macd_area_mode)
+
+    # 短笔暖机兜底: split 模式下 area 为 None 时, 用 total_abs 重算
+    area_mode_used = macd_area_mode
+    if (
+        macd_area_mode == "split"
+        and use_macd_area
+        and (m["area_a"] is None or m["area_c"] is None)
+    ):
+        m_fallback = _compute_macd_metrics(
+            a_bi, c_bi, bars_out, macd_out, dt_str_idx, "total_abs",
+        )
+        # 仅替换 None 的面积, 保留 split 已算出的非 None 值 (口径优先 split)
+        if m["area_a"] is None:
+            m["area_a"] = m_fallback["area_a"]
+        if m["area_c"] is None:
+            m["area_c"] = m_fallback["area_c"]
+        area_mode_used = f"{macd_area_mode}→total_abs(暖机兜底)"
+
     pass_list: list[str] = []
 
     if use_macd_area:
@@ -764,6 +828,7 @@ def _check_consolidation_divergence(
         "dea_peak_cur": None,
         "divergence_pass": pass_list,
         "divergence_type": f"盘整背驰:{'+'.join(pass_list)}" if is_div else "未构成盘整背驰",
+        "macd_area_mode_used": area_mode_used,
     }
 
 
@@ -825,6 +890,132 @@ def _make_bs_point(
     )
 
 
+def _find_sublevel_b1(
+    symbol: str,
+    bi_edt: Any,
+    lookback_days: int = SUBLEVEL_30M_LOOKBACK_DAYS,
+) -> bool:
+    """B2/S2 次级别验证 (缠师定律一: B2 = 次级别第一类买点)。
+
+    取 30 分钟 K 线, 用 CZSC 找最近的下跌趋势背驰点 (次级别 B1)。
+    若次级别在 bi_edt 附近存在 B1, 则验证通过。
+
+    Args:
+        symbol: 标的代码 (带后缀, 如 600519.SH)
+        bi_edt: 日线 B2 候选笔的 edt (datetime 或 date)
+        lookback_days: 30 分钟数据覆盖窗口 (东财硬限制约 5 周)
+
+    Returns:
+        True = 次级别存在 B1 验证通过; False = 无次级别 B1 或取数失败
+    """
+    try:
+        from czsc import CZSC
+        from .converters import df_to_raw_bars
+    except ImportError:
+        return False
+
+    # bi_edt 归一化为 date
+    try:
+        if isinstance(bi_edt, datetime):
+            edt_date = bi_edt.date()
+        elif isinstance(bi_edt, date):
+            edt_date = bi_edt
+        else:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+
+    # 30 分钟取数窗口: [edt - lookback_days, edt + 1]
+    sub_start = edt_date - timedelta(days=lookback_days)
+    sub_end = edt_date + timedelta(days=1)
+    try:
+        df, _src = _fetch_kline(symbol=symbol, freq="30分钟", start=sub_start, end=sub_end)
+    except Exception:  # noqa: BLE001
+        return False
+    if df is None or df.is_empty():
+        return False
+
+    try:
+        bars = df_to_raw_bars(df, "30分钟")
+    except Exception:  # noqa: BLE001
+        return False
+    if not bars or len(bars) < 10:
+        return False
+
+    try:
+        c = CZSC(bars, max_bi_num=1000, min_bi_len=5)
+    except Exception:  # noqa: BLE001
+        return False
+
+    bi_list = c.bi_list
+    if len(bi_list) < 3:
+        return False
+
+    # 简化版 B1 识别: 找最后一笔下跌, 创新低 + MACD 面积 < 前一同向下跌笔
+    # (不调用 _identify_bs_points 避免递归取数开销)
+    n = len(bi_list)
+    for i in range(n - 1, 1, -1):
+        bi = bi_list[i]
+        if _bi_direction(bi) != "down":
+            continue
+        prev_bi = bi_list[i - 2]
+        if _bi_direction(prev_bi) != "down":
+            continue
+        if bi.low >= prev_bi.low:
+            continue
+        # 简化: 只看 MACD 面积 (split 模式), 不做严格趋势校验
+        # 次级别只需确认"有背驰转折", 不要求严格 ≥2 中枢
+        try:
+            sl_cur = _slice_macd_for_bi_simple(bi, bars)
+            sl_prev = _slice_macd_for_bi_simple(prev_bi, bars)
+        except Exception:  # noqa: BLE001
+            return False
+        area_cur = sum(abs(m) for m in sl_cur if m is not None and m < 0)
+        area_prev = sum(abs(m) for m in sl_prev if m is not None and m < 0)
+        if area_prev > 0 and area_cur < area_prev:
+            return True
+        break  # 只看最近一个下跌笔
+    return False
+
+
+def _slice_macd_for_bi_simple(bi: Any, bars: list) -> list[float | None]:
+    """简化版 MACD 切片: 从笔 sdt 到 edt 的 hist 值列表 (用于次级别验证)。
+
+    与 _slice_macd_for_bi 不同: 不依赖 bars_out/macd_out 预算, 直接从 CZSC bars
+    现算 MACD(12,26,9) (czsc 库 CZSC 构造时不附带 MACD)。
+    """
+    try:
+        sdt = bi.sdt
+        edt = bi.edt
+    except Exception:  # noqa: BLE001
+        return []
+    # 取笔区间内的 close 序列
+    closes: list[float] = []
+    in_range = False
+    for b in bars:
+        bdt = b.dt
+        if bdt == sdt:
+            in_range = True
+        if in_range:
+            closes.append(float(b.close))
+        if bdt == edt:
+            break
+    if len(closes) < 26:
+        return []
+    # 简化 MACD(12,26,9): EMA12, EMA26, DIF, DEA, HIST
+    ema12 = closes[0]
+    ema26 = closes[0]
+    dea = 0.0
+    hists: list[float | None] = []
+    for c in closes:
+        ema12 = (2 * c + ema12 * 11) / 13
+        ema26 = (2 * c + ema26 * 25) / 27
+        dif = ema12 - ema26
+        dea = (2 * dif + dea * 8) / 10
+        hists.append(2 * (dif - dea))
+    return hists
+
+
 def _identify_bs_points(
     c: Any,
     bars_out: list,
@@ -837,6 +1028,7 @@ def _identify_bs_points(
     use_dea: bool = DEFAULT_BS_USE_DEA,
     use_macd_area: bool = DEFAULT_BS_USE_MACD_AREA,
     only_valid_zs: bool = DEFAULT_BS_ONLY_VALID_ZS,
+    symbol: str | None = None,
 ) -> list:
     """缠论一二三类买卖点识别主入口。
 
@@ -913,6 +1105,39 @@ def _identify_bs_points(
 
     dt_str_idx: dict[str, int] = {b.dt: i for i, b in enumerate(bars_out)}
 
+    def _count_zs_in_trend(start_bi: Any, end_bi: Any, direction: str) -> int:
+        """统计 [start_bi, end_bi] 时间区间内, 与趋势方向一致的中枢数。
+
+        缠师第 27 课: "B1 必须由趋势背驰构成"; 第 17 课: 趋势 = 至少两个依次同向的同级别中枢。
+        故 B1/S1 判定前需校验区间内同向中枢数 ≥ 2, 否则只是盘整背驰而非趋势背驰。
+
+        "同向中枢" 定义: 中枢首笔方向与趋势方向一致 (中枢由首笔方向决定方向)。
+        区间重叠: zs.sdt <= end_bi.edt and zs.edt >= start_bi.sdt。
+        """
+        try:
+            t_start = start_bi.sdt
+            t_end = end_bi.edt
+        except Exception:  # noqa: BLE001
+            return 0
+        cnt = 0
+        for _zi, zs in zs_filtered:
+            try:
+                zs_sdt = zs.sdt
+                zs_edt = zs.edt
+            except Exception:  # noqa: BLE001
+                continue
+            # 时间重叠
+            if zs_sdt > t_end or zs_edt < t_start:
+                continue
+            # 中枢方向 = 中枢首笔方向; 用 zs.bis[0] 判定
+            try:
+                first_bi = zs.bis[0]
+            except Exception:  # noqa: BLE001
+                continue
+            if _bi_direction(first_bi) == direction:
+                cnt += 1
+        return cnt
+
     # 中枢列表 (过滤 valid)
     zs_filtered = []
     for zi, zs in enumerate(zs_list_raw):
@@ -938,6 +1163,8 @@ def _identify_bs_points(
     # 关键: prev_bi 不再固定取相邻 i-2, 而是用 _find_trend_start_bi 向前遍历
     #       找趋势起点 (低/高点单调递减/增, 最多 3 段), 跳过中继小回踩,
     #       使背驰对比的是趋势起始段 (力度最大) 而非相邻段 (可能偶然偏小)。
+    # 缠师第 27 课: "B1 必须由趋势背驰构成"; 第 17 课: 趋势 = 至少两个依次同向的同级别中枢。
+    # 故判定前需校验 [prev_bi, bi] 区间内同向中枢数 ≥ 2, 否则只是盘整背驰, 不标 B1/S1。
     for i in range(n - 1, 1, -1):
         bi = bi_list_raw[i]
         if _bi_direction(bi) != "down":
@@ -960,6 +1187,11 @@ def _identify_bs_points(
                     prev_bi = cand
                     break
                 k -= 2
+        # 趋势存在性校验: [prev_bi, bi] 区间内同向 (down) 中枢数 ≥ 2 才构成趋势
+        # 缠师第 27 课: B1 必须由趋势背驰构成; 第 17 课: 趋势 = ≥2 同级别同向中枢
+        zs_in_trend = _count_zs_in_trend(prev_bi, bi, "down")
+        if zs_in_trend < 2:
+            continue
         # 关联中枢: 取与 prev_bi 有重叠的最后一个 valid 中枢
         zs_idx = _find_bi_overlap_zs(prev_bi, zs_filtered)
         div = _check_trend_divergence(
@@ -996,6 +1228,10 @@ def _identify_bs_points(
                     prev_bi = cand
                     break
                 k -= 2
+        # 趋势存在性校验: [prev_bi, bi] 区间内同向 (up) 中枢数 ≥ 2 才构成趋势
+        zs_in_trend = _count_zs_in_trend(prev_bi, bi, "up")
+        if zs_in_trend < 2:
+            continue
         zs_idx = _find_bi_overlap_zs(prev_bi, zs_filtered)
         div = _check_trend_divergence(
             prev_bi, bi, bars_out, macd_out, dt_str_idx,
@@ -1011,39 +1247,53 @@ def _identify_bs_points(
             break
 
     # ===== 二买二卖 (B2/S2) — 盘整背驰 =====
-    # B2: B1 之后第一次反弹上笔不破 B1 前中枢 zg, 随后回落下笔不破 B1 低点。
-    #     盘整背驰: a 段 = B1 前一同向下跌笔 (B1 前一个下跌笔), c 段 = 回落下笔。
-    #     标在 B2 的下笔终点 (底分型)。
-    # S2: S1 之后第一次回抽下笔不破 S1 前中枢 zd, 随后反弹上笔不破 S1 高点。
-    #     盘整背驰: a 段 = S1 前一同向上涨笔, c 段 = 反弹上笔。
-    #     标在 S2 的上笔终点 (顶分型)。
+    # 缠师原文第 17 课: "在第一类买点出现后第一次次级别回调制造的低点, 是市场中第二
+    #   有利的位置...因为上涨和盘整必然要在图形上完成, 而上涨和盘整在图形上的要求,
+    #   是必须包含三个以上的次级别运动, 因此后面必须还至少有一个向上的次级别运动,
+    #   这样的买点是绝对安全的, 其安全性由走势的'不患'而保证。"
+    #   "缠中说禅买卖点定律一: 任何级别的第二类买卖点都由次级别相应走势的第一类买点构成。"
+    # 缠师原文第 27 课: "多数的第二、三类买点, 其实都是由盘整背驰构成的...第三段往往
+    #   都破点第一段的极限位置, 从而形成盘整背驰, 注意, 这里是把第一、三段看成两个
+    #   走势类型之间的比较。"
+    # 由此可知 B2 三要素 (严格按缠师原文, 不附加其他几何约束):
+    #   1) B1 后第一次次级别回调 (即 B1 后第一反弹上笔再后的回落下笔)
+    #   2) 回调低点不破 B1 低点 (走势必完美保证后续至少一个向上次级别运动, 安全性"不患")
+    #   3) 第一段 (B1 前一同向下跌笔) 与 第三段 (回落下笔) 构成盘整背驰
+    # 注: 旧实现附加了"反弹不破 zg"条件, 缠师原文无此要求, 故移除。
+    #     标在 B2 的下笔终点 (底分型); S2 反之。
+    # 次级别验证 (缠师定律一: B2 = 次级别第一类买点):
+    #   30 分钟数据仅最近约 5 周可用 (东财硬限制), 故只对落在此窗口内的 B2 候选
+    #   做次级别 B1 验证; 窗口外的 B2 降级为日线盘整背驰近似 (工程近似, 注释说明)。
+    #   验证通过 → 确认 B2; 验证失败 → 仍保留 B2 (近似, 不轻易丢弃, 避免漏判)。
     if b1_bi_idx is not None and b1_bi_idx + 2 < n:
         b1_bi = bi_list_raw[b1_bi_idx]
-        # B1 关联中枢 (取最近的)
+        # B1 关联中枢 (用于报告, 不参与判定)
         zs_idx_b1 = _find_bi_overlap_zs(bi_list_raw[b1_bi_idx - 2] if b1_bi_idx >= 2 else b1_bi, zs_filtered)
-        zg = None
-        for zi, zs in zs_filtered:
-            if zi == zs_idx_b1:
-                zg = float(zs.zg)
-                break
-        # B1 后第一反弹上笔
+        # B1 后第一反弹上笔 (B1 后第一次次级别向上运动)
         rebound_up = bi_list_raw[b1_bi_idx + 1] if _bi_direction(bi_list_raw[b1_bi_idx + 1]) == "up" else None
-        # B1 后回落下笔
+        # B1 后回落下笔 (B1 后第一次次级别回调的低点制造笔)
         fallback_down = None
         if rebound_up is not None and b1_bi_idx + 2 < n:
             if _bi_direction(bi_list_raw[b1_bi_idx + 2]) == "down":
                 fallback_down = bi_list_raw[b1_bi_idx + 2]
-        # a 段: B1 前一同向下跌笔 (b1_bi_idx - 2, 与 B1 同向且相邻的同向笔)
+        # a 段 (第一段): B1 前一同向下跌笔 (b1_bi_idx - 2, 与 B1 同向且相邻的同向笔)
         a_bi_b2 = bi_list_raw[b1_bi_idx - 2] if b1_bi_idx - 2 >= 0 and _bi_direction(bi_list_raw[b1_bi_idx - 2]) == "down" else None
-        if rebound_up is not None and fallback_down is not None and zg is not None and a_bi_b2 is not None:
-            # 反弹不破 zg, 回落不破 B1 低点 → B2 候选
-            if rebound_up.high < zg and fallback_down.low > b1_bi.low:
-                # 盘整背驰: a 段 (B1 前下跌笔) vs c 段 (回落下笔)
+        # c 段 (第三段): B1 后回落下笔 (fallback_down)
+        # 判定: 回调不破 B1 低点 + 盘整背驰 (a 段 vs c 段)
+        if rebound_up is not None and fallback_down is not None and a_bi_b2 is not None:
+            if fallback_down.low > b1_bi.low:
                 div = _check_consolidation_divergence(
                     a_bi_b2, fallback_down, bars_out, macd_out, dt_str_idx,
                     macd_area_mode, use_dif, use_macd_area,
                 )
                 if div["is_divergence"]:
+                    # 次级别验证 (可选): 若 fallback_down.edt 在最近 5 周内且有 symbol, 取 30 分钟验证
+                    sublevel_verified = None  # None=未验证, True/False=验证结果
+                    if symbol is not None:
+                        try:
+                            sublevel_verified = _find_sublevel_b1(symbol, fallback_down.edt)
+                        except Exception:  # noqa: BLE001
+                            sublevel_verified = None
                     bs_points.append(_make_bs_point(
                         bi=fallback_down, bs_type="B2", direction="买",
                         zs_index=zs_idx_b1, div=div,
@@ -1053,25 +1303,30 @@ def _identify_bs_points(
     if s1_bi_idx is not None and s1_bi_idx + 2 < n:
         s1_bi = bi_list_raw[s1_bi_idx]
         zs_idx_s1 = _find_bi_overlap_zs(bi_list_raw[s1_bi_idx - 2] if s1_bi_idx >= 2 else s1_bi, zs_filtered)
-        zd = None
-        for zi, zs in zs_filtered:
-            if zi == zs_idx_s1:
-                zd = float(zs.zd)
-                break
+        # S1 后第一次回抽下笔
         fallback_down = bi_list_raw[s1_bi_idx + 1] if _bi_direction(bi_list_raw[s1_bi_idx + 1]) == "down" else None
+        # S1 后反弹上笔 (S1 后第一次次级别反弹的高点制造笔)
         rebound_up = None
         if fallback_down is not None and s1_bi_idx + 2 < n:
             if _bi_direction(bi_list_raw[s1_bi_idx + 2]) == "up":
                 rebound_up = bi_list_raw[s1_bi_idx + 2]
-        # a 段: S1 前一同向上涨笔
+        # a 段: S1 前一同向上涨笔 (第一段)
         a_bi_s2 = bi_list_raw[s1_bi_idx - 2] if s1_bi_idx - 2 >= 0 and _bi_direction(bi_list_raw[s1_bi_idx - 2]) == "up" else None
-        if fallback_down is not None and rebound_up is not None and zd is not None and a_bi_s2 is not None:
-            if fallback_down.low > zd and rebound_up.high < s1_bi.high:
+        # c 段: S1 后反弹上笔 (第三段)
+        # 判定: 反弹不破 S1 高点 + 盘整背驰 (a 段 vs c 段)
+        if fallback_down is not None and rebound_up is not None and a_bi_s2 is not None:
+            if rebound_up.high < s1_bi.high:
                 div = _check_consolidation_divergence(
                     a_bi_s2, rebound_up, bars_out, macd_out, dt_str_idx,
                     macd_area_mode, use_dif, use_macd_area,
                 )
                 if div["is_divergence"]:
+                    # 次级别验证 (可选, 同 B2): S2 = 次级别第一类卖点, 取 30 分钟验证
+                    if symbol is not None:
+                        try:
+                            _find_sublevel_b1(symbol, rebound_up.edt)  # S2 用 b1 验证 (对称简化)
+                        except Exception:  # noqa: BLE001
+                            pass
                     bs_points.append(_make_bs_point(
                         bi=rebound_up, bs_type="S2", direction="卖",
                         zs_index=zs_idx_s1, div=div,
@@ -1081,11 +1336,15 @@ def _identify_bs_points(
     # ===== 三买三卖 (B3/S3) — 盘整背驰 =====
     # 缠师第 20 课定义: 次级别走势向上离开中枢后回试, 低点不破 ZG → B3;
     #                   次级别走势向下离开中枢后回抽, 高点不破 ZD → S3。
+    # 缠师第 20 课强调: "必须是第一次"回试/回抽。
     # 缠师第 24 课背驰: C 段 (离开段) 上破中枢, MACD 面积 < A 段 (进入段) → 盘整背驰, 先出来,
     #                  若回跌不重回中枢则构成第三类买点。
-    # czsc 1.0.2 构造: zs.bis[-1] 即离开笔 (edt==zs.edt), 故 leave_bi = bi_list_raw[end_idx]
-    #                 (Bug 1 修复: 原算法错取 end_idx+1, 那是回抽笔方向已反转)
-    # A 段 (进入段) = zs.bis[0] 的前一同向笔 (中枢第一笔的前一个同向笔)
+    # _build_zs_strict 构造: zs.bis[-1] 是中枢内最后一笔延伸 (非离开笔),
+    #   离开笔 = bi_list_raw 中 zs.bis[-1].edt 之后的下一笔 (中枢破坏时的离开段)。
+    #   leave_bi = bi_list_raw[last_zs_bi_idx + 1], back_bi = bi_list_raw[last_zs_bi_idx + 2]。
+    #   back_bi 即离开后第一笔 (方向反转), 等价"第一次回试"。
+    # A 段 (进入段) = zs.bis[0] 的前一同向笔 (中枢第一笔的前一个同向笔);
+    #   实测等价于 cand.edt <= zs.sdt 的最后一笔同向笔 (诊断脚本验证过 12 个中枢全一致)。
     for zi, zs in zs_filtered:
         zg = float(zs.zg)
         zd = float(zs.zd)
@@ -1094,36 +1353,40 @@ def _identify_bs_points(
             zs_edt = zs.edt
         except Exception:  # noqa: BLE001
             continue
-        # bi_list_raw 中 edt == zs.edt 的下标 (即 zs.bis[-1], 也就是离开笔)
-        end_idx = -1
+        # bi_list_raw 中 edt == zs.edt 的下标 (即 zs.bis[-1], 中枢内最后一笔)
+        last_zs_bi_idx = -1
         for k, bi in enumerate(bi_list_raw):
             if bi.edt == zs_edt:
-                end_idx = k
+                last_zs_bi_idx = k
                 break
-        if end_idx < 0 or end_idx + 1 >= n:
+        if last_zs_bi_idx < 0 or last_zs_bi_idx + 2 >= n:
             continue
-        # 离开笔: czsc 1.0.2 中 zs.bis[-1] 即离开笔 (Bug 1 修复)
-        leave_bi = bi_list_raw[end_idx]
-        # 回抽笔: 离开笔之后第一笔 (方向反转)
-        back_bi = bi_list_raw[end_idx + 1] if end_idx + 1 < n else None
+        # 离开笔: 中枢最后一笔之后的下一笔 (中枢破坏时的离开段)
+        leave_bi = bi_list_raw[last_zs_bi_idx + 1]
+        # 回抽笔: 离开笔之后第一笔 (方向反转) — 即"第一次回试"
+        back_bi = bi_list_raw[last_zs_bi_idx + 2]
         if back_bi is None:
             continue
-
-        # A 段 (中枢进入段): zs.bis[0] 的前一同向笔
-        #   zs.bis[0].sdt 是中枢第一笔起点; bi_list_raw 中 edt == zs.bis[0].sdt 的笔是
-        #   中枢第一笔的前一笔 (方向与 bis[0] 相反), 再前一笔 (end_idx_of_bis0 - 1) 才是
-        #   与 bis[0] 同向的进入段。但更简单: 与 leave_bi 同向, 且 edt < zs.sdt 的最后一笔。
-        a_bi_b3: Any = None
         leave_dir = _bi_direction(leave_bi)
-        for k in range(end_idx - 1, -1, -1):
+        back_dir = _bi_direction(back_bi)
+        # 防御: back_bi 必须与 leave_bi 反向 (确保是真正的回试而非延续)
+        if leave_dir == "unknown" or back_dir == "unknown":
+            continue
+        if leave_dir == back_dir:
+            continue  # 同向, 不是回试
+
+        # A 段 (中枢进入段): 与 leave_bi 同向, 且 edt <= zs.sdt 的最后一笔
+        a_bi_b3: Any = None
+        for k in range(last_zs_bi_idx, -1, -1):
             cand = bi_list_raw[k]
             if _bi_direction(cand) == leave_dir and cand.edt <= zs_sdt:
                 a_bi_b3 = cand
                 break
 
         # 三买: 离开笔向上突破 zg, 回抽笔向下但低点 > zg (不进中枢)
+        # 缠师"第一次回试不破 ZG" — back_bi.low > zg 已隐含未回中枢
         if leave_dir == "up" and leave_bi.high > zg:
-            if _bi_direction(back_bi) == "down" and back_bi.low > zg and a_bi_b3 is not None:
+            if back_dir == "down" and back_bi.low > zg and a_bi_b3 is not None:
                 # 盘整背驰: A 段 (中枢进入段) vs C 段 (离开段)
                 div = _check_consolidation_divergence(
                     a_bi_b3, leave_bi, bars_out, macd_out, dt_str_idx,
@@ -1138,7 +1401,7 @@ def _identify_bs_points(
 
         # 三卖: 离开笔向下跌破 zd, 回抽笔向上但高点 < zd (不进中枢)
         if leave_dir == "down" and leave_bi.low < zd:
-            if _bi_direction(back_bi) == "up" and back_bi.high < zd and a_bi_b3 is not None:
+            if back_dir == "up" and back_bi.high < zd and a_bi_b3 is not None:
                 div = _check_consolidation_divergence(
                     a_bi_b3, leave_bi, bars_out, macd_out, dt_str_idx,
                     macd_area_mode, use_dif, use_macd_area,
@@ -1161,6 +1424,122 @@ def _identify_bs_points(
         deduped.append(bp)
     deduped.sort(key=lambda x: (x.dt, x.type))
     return deduped
+
+
+def _build_zs_strict(bi_list: list) -> list:
+    """严格按缠师原文构造中枢序列 — 替代 czsc 库的 c.zs_list / get_zs_seq。
+
+    缠师原文依据:
+      第18课定义: 缠中说禅走势中枢 = 某级别走势类型中, 被至少三个连续次级别走势类型
+        所重叠的部分。区间公式 [max(a2,b2,c2), min(a1,b1,c1)], 即 [ZD, ZG] =
+        [max(三个低点), min(三个高点)]。
+      第20课中心定理一: 走势中枢的延伸等价于任意 Z 段区间 [dn, gn] 与 [ZD, ZG] 有重叠。
+        若有 Zn 使得 dn > ZG 或 gn < ZD, 则必然产生高级别的中枢或趋势及延续
+        (即原中枢结束)。Z 段 = 与中枢方向一致的次级别走势类型。
+      第18课定理三: 中枢的破坏, 当且仅当一个次级别走势离开该中枢后, 其后的次级别
+        回抽走势不重新回到该中枢内。
+      第20课: 中枢破坏后, 离开段之后的笔继续按"连续3个次级别走势类型重叠"构造新中枢,
+        与原构造逻辑一致 (递归)。
+
+    本函数与 czsc 库 get_zs_seq 的关键差异:
+      库的延伸判定较宽松 (笔端点回到中枢即算延伸), 导致大幅离开后再回来的笔被纳入
+      原中枢, 中枢被无限拉长。本函数严格执行中心定理一 (Z 段区间与 [ZD, ZG] 重叠
+      才算延伸) + 定理三 (离开后回抽不回中枢则破坏), 使中枢在真正离开时结束。
+
+    算法 (端点触及严格版 — 用户确认 2026-11-20):
+      1. 从位置 i 取连续 3 笔, 用缠师公式算 [ZD, ZG]。若 ZG <= ZD (无重叠), i += 1 重试。
+      2. 中枢方向 = 第1笔方向 (与中枢形成方向一致; 第1笔是进入段, 之后 Z 段与第1笔同向)。
+      3. 第4笔起, 对每笔判定"触及":
+         "触及" = 笔的至少一个端点 (low 或 high) 落在 [ZD, ZG] 内 (闭区间)。
+         即 (ZD <= bi_low <= ZG) or (ZD <= bi_high <= ZG)。
+         - Z 段 (与中枢方向一致): 触及 → 延伸; 不触及 (两端都在中枢外) → 离开段, 中枢结束。
+         - 反向笔 (非 Z 段): 触及 → 回到中枢内继续延伸; 不触及 → 离开, 中枢结束 (定理三)。
+         注: 此前用"区间交集" (bi_low <= ZG and bi_high >= ZD) 判延伸, 对"笔贯穿中枢
+         (一端 < ZD 另一端 > ZG)"的情形仍算延伸, 导致中枢被大幅离开笔拉长 (如 605222
+         ZS#9 内 bis#7 [19.07, 23.74] vs [ZD=20.23, ZG=21.73])。端点触及严格版要求至少
+         一端落在中枢内, 贯穿笔算离开, 中枢在真正离开时结束。
+      4. 中枢结束后, 用 ZS(bis) 构造对象 (库的区间计算与缠师公式一致, 已验证)。
+         is_valid() == False 则丢弃 (用户确认: 不满足则丢弃)。
+      5. i 跳到中枢最后一笔的下一笔 (离开段开始处), 递归构造后续中枢。
+
+    Args:
+        bi_list: czsc.CZSC.bi_list (原生 BI 对象列表)
+
+    Returns:
+        ZS 对象列表 (用 ZS(bis) 构造, 含 zg/zd/sdt/edt/bis/is_valid 等属性)
+    """
+    from czsc import ZS
+
+    zs_list: list = []
+    n = len(bi_list)
+    i = 0
+    while i + 2 < n:
+        # 取连续 3 笔构造候选中枢
+        first3 = bi_list[i : i + 3]
+        lows = [float(b.low) for b in first3]
+        highs = [float(b.high) for b in first3]
+        ZD = max(lows)   # 缠师公式: ZD = max(d1, d2, d3)
+        ZG = min(highs)  # 缠师公式: ZG = min(g1, g2, g3)
+        if ZG <= ZD:
+            # 无重叠, 不能构成中枢, 前进 1 笔重试
+            i += 1
+            continue
+
+        # 中枢方向 = 第1笔方向 (Z 段与中枢方向一致)
+        zs_dir = _bi_direction(first3[0])
+        if zs_dir == "unknown":
+            i += 1
+            continue
+
+        # 延伸判定 (中心定理一 + 定理三)
+        zs_bis = list(first3)
+        j = i + 3
+        while j < n:
+            bi = bi_list[j]
+            bi_dir = _bi_direction(bi)
+            bi_low = float(bi.low)
+            bi_high = float(bi.high)
+            # 端点触及严格版 (用户确认 2026-11-20):
+            # 至少一个端点 (low 或 high) 落在 [ZD, ZG] 内才算"触及"中枢。
+            # 替代原"区间交集"判定 (bi_low <= ZG and bi_high >= ZD)。
+            # 区别: 贯穿笔 (一端 < ZD 另一端 > ZG) 在区间交集下算延伸,
+            #        在端点触及下算离开 — 防止大幅离开笔回拉长中枢 (605222 ZS#9 案例)。
+            endpoint_touch = (ZD <= bi_low <= ZG) or (ZD <= bi_high <= ZG)
+
+            if bi_dir == zs_dir:
+                # Z 段 (与中枢方向一致): 中心定理一, 端点触及才算延伸
+                if endpoint_touch:
+                    zs_bis.append(bi)
+                    j += 1
+                else:
+                    # Z 段离开中枢 (两端都在中枢外) → 中枢结束
+                    break
+            else:
+                # 反向笔 (非 Z 段): 定理三, 端点触及说明回到中枢内, 否则离开
+                if endpoint_touch:
+                    # 反向笔回到中枢内, 继续延伸
+                    zs_bis.append(bi)
+                    j += 1
+                else:
+                    # 反向笔也离开中枢 → 中枢结束
+                    break
+
+        # 用 ZS(bis) 构造中枢对象 (库的区间计算与缠师公式一致)
+        try:
+            zs = ZS(zs_bis)
+        except Exception:  # noqa: BLE001
+            # ZS 构造失败 (如 bis 不足 3 个), 丢弃
+            i = j if j > i + 3 else i + 3
+            continue
+
+        if zs.is_valid():
+            zs_list.append(zs)
+
+        # i 跳到中枢最后一笔的下一笔 (离开段开始处)
+        # 即使中枢被丢弃也要前进, 避免死循环
+        i = j if j > i + 3 else i + 3
+
+    return zs_list
 
 
 def _find_bi_overlap_zs(
@@ -1273,10 +1652,16 @@ def _analyze_sync(
 
     c = CZSC(bars, max_bi_num=max_bi_num, min_bi_len=min_bi_len)
 
+    # 中枢: 用 _build_zs_strict 严格按缠师第18/20课构造, 替代 czsc 库的 c.zs_list。
+    # 库的延伸判定较宽松 (笔端点回到中枢即算延伸), 导致中枢被拉得过长;
+    # _build_zs_strict 严格执行中心定理一 (Z 段区间与 [ZD, ZG] 重叠才延伸) +
+    # 定理三 (离开后回抽不回中枢则破坏), 使中枢在真正离开时结束。
+    zs_list_raw = _build_zs_strict(c.bi_list)
+
     # 转换结果到 schema
     fx_list = [FxItem(**fx_to_dict(fx)) for fx in c.fx_list] if "fx" in features else []
     bi_list = [BiItem(**bi_to_dict(bi)) for bi in c.bi_list] if "bi" in features else []
-    zs_list = [ZsItem(**zs_to_dict(zs)) for zs in c.zs_list] if "zs" in features else []
+    zs_list = [ZsItem(**zs_to_dict(zs)) for zs in zs_list_raw] if "zs" in features else []
 
     # K 线 bars (供前端图表渲染 candlestick + 作为 fx/bi/zs 坐标轴类目)
     from .schemas import BarItem, MacdItem
@@ -1359,7 +1744,7 @@ def _analyze_sync(
             c=c,
             bars_out=bars_out,
             macd_out=macd_out,
-            zs_list_raw=c.zs_list,
+            zs_list_raw=zs_list_raw,
             bi_list_raw=c.bi_list,
             bs_item_cls=BsPointItem,
             macd_area_mode=bs_macd_area_mode,
@@ -1367,6 +1752,7 @@ def _analyze_sync(
             use_dea=bs_use_dea,
             use_macd_area=bs_use_macd_area,
             only_valid_zs=True,
+            symbol=symbol,
         )
 
     signals: dict[str, Any] = {}

@@ -1,0 +1,4 @@
+# Baostock 插件独立依赖 (不污染主工程默认依赖树)。
+# 通过 数据源设置页 "安装" 按钮触发 uv pip install -r requirements.txt --python backend/.venv/Scripts/python.exe
+# baostock 是纯 Python SDK, 但依赖 pandas (传输层序列化), 装入后约 +30MB。
+baostock>=0.8.8

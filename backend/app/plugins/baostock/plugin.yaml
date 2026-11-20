@@ -1,0 +1,23 @@
+# Baostock 数据源插件 — 证券宝 (http://baostock.com) 免费 A 股历史 K 线 SDK。
+# 纯 Python 实现 (runtime: python), 依赖 baostock 包 (requirements.txt 独立安装)。
+# 核心价值: 提供 30 分钟级别历史数据 (2015-01-01 起), 解决东财兜底仅近 5 周 30 分钟的限制,
+# 用于 czsc 缠论 B2/S2 次级别验证 (缠师定律一: B2 = 次级别第一类买点)。
+#
+# 数据特性:
+#   - 日 K: 1990-12-19 起, 频率 d/w/m
+#   - 分钟 K: 2015-01-01 起, 频率 5/15/30/60
+#   - 复权: adjustflag 1=后复权 2=前复权 3=不复权
+#   - 不支持实时行情 (T+1 盘后数据)
+#   - 网络协议: socket (baostock.com:10087), 非 HTTP, 可能绕过 HTTP 代理拦截
+#   - 免费无 token: bs.login() 即可, 返回 user_id
+
+name: baostock
+display_name: "Baostock 历史K线"
+runtime: python
+entry: app.plugins.baostock.provider:BaostockProvider
+check: app.plugins.baostock.provider:availability
+datasets: [daily, minute, adj_factor]
+description: "Baostock (证券宝) 免费 A 股历史 K 线 SDK。日 K (1990 起) / 分钟 K (2015 起, 5/15/30/60 分钟) / 除权因子。socket 协议直连 baostock.com:10087, 免费无 token。核心场景: 为 czsc 缠论 B2/S2 次级别验证提供 30 分钟历史数据 (覆盖 2 年), 突破东财兜底仅近 5 周的限制。不支持实时行情。"
+install_hint: "点击安装将自动 pip install -r requirements.txt 到后端 venv (baostock 包)。企业网络下若在线拉包失败, 需配置 SSL_CERT_FILE 或使用离线 wheel。"
+homepage: "http://baostock.com"
+config_fields: []
