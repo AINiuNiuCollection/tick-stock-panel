@@ -1446,18 +1446,20 @@ def _build_zs_strict(bi_list: list) -> list:
       原中枢, 中枢被无限拉长。本函数严格执行中心定理一 (Z 段区间与 [ZD, ZG] 重叠
       才算延伸) + 定理三 (离开后回抽不回中枢则破坏), 使中枢在真正离开时结束。
 
-    算法 (端点触及严格版 — 用户确认 2026-11-20):
+    算法 (方向性离开严格版 — 2026-11-20 修订, 修正 605222 ZS#10 偏差):
       1. 从位置 i 取连续 3 笔, 用缠师公式算 [ZD, ZG]。若 ZG <= ZD (无重叠), i += 1 重试。
       2. 中枢方向 = 第1笔方向 (与中枢形成方向一致; 第1笔是进入段, 之后 Z 段与第1笔同向)。
-      3. 第4笔起, 对每笔判定"触及":
-         "触及" = 笔的至少一个端点 (low 或 high) 落在 [ZD, ZG] 内 (闭区间)。
-         即 (ZD <= bi_low <= ZG) or (ZD <= bi_high <= ZG)。
-         - Z 段 (与中枢方向一致): 触及 → 延伸; 不触及 (两端都在中枢外) → 离开段, 中枢结束。
-         - 反向笔 (非 Z 段): 触及 → 回到中枢内继续延伸; 不触及 → 离开, 中枢结束 (定理三)。
-         注: 此前用"区间交集" (bi_low <= ZG and bi_high >= ZD) 判延伸, 对"笔贯穿中枢
-         (一端 < ZD 另一端 > ZG)"的情形仍算延伸, 导致中枢被大幅离开笔拉长 (如 605222
-         ZS#9 内 bis#7 [19.07, 23.74] vs [ZD=20.23, ZG=21.73])。端点触及严格版要求至少
-         一端落在中枢内, 贯穿笔算离开, 中枢在真正离开时结束。
+      3. 第4笔起, 按方向性离开判定:
+         - Z 段 (与中枢方向一致):
+           * 终点未越过同侧边界 (up: high <= ZG, down: low >= ZD) → 区间重叠, 延伸 (中心定理一)。
+           * 终点越过同侧边界 → 离开段。看下一笔 (反向笔回抽, 定理三):
+             - 回抽笔端点触及 [ZD, ZG] → 中枢未破坏, 离开段+回抽笔纳入延伸。
+             - 回抽笔端点不触及 → 中枢破坏, 中枢在离开段开始处结束。
+         - 反向笔 (非 Z 段):
+           * 终点越过反向边界 (up 中枢的 down: low < ZD; down 中枢的 up: high > ZG) → 离开, 中枢结束。
+           * 否则端点触及 [ZD, ZG] → 回到中枢内, 继续延伸。
+         注: 此前"端点触及版"对"起点在中枢内、终点远超边界的 Z 段"判为延伸 (因起点触及),
+              但按缠师定理三这是离开段。方向性离开版按终点越界判定, 避免此类误判。
       4. 中枢结束后, 用 ZS(bis) 构造对象 (库的区间计算与缠师公式一致, 已验证)。
          is_valid() == False 则丢弃 (用户确认: 不满足则丢弃)。
       5. i 跳到中枢最后一笔的下一笔 (离开段开始处), 递归构造后续中枢。
@@ -1491,7 +1493,16 @@ def _build_zs_strict(bi_list: list) -> list:
             i += 1
             continue
 
-        # 延伸判定 (中心定理一 + 定理三)
+        # 延伸判定 (中心定理一 + 定理三, 严格版 2026-11-20 修订)
+        # 缠师第18课定理三: 中枢的破坏当且仅当一个次级别走势离开该中枢后, 其后的
+        # 次级别回抽走势不重新回到该中枢内。
+        # 关键区分 (605222 ZS#10 偏差修正):
+        #   - Z 段 (与中枢同向) "离开" = 终点越过同侧边界 (up: high > ZG, down: low < ZD)。
+        #     起点在中枢内、终点远超边界的 Z 段是离开段, 不是延伸 (此前端点触及版误判)。
+        #   - 反向笔 "离开" = 终点越过反向边界 (up 中枢的 down 笔: low < ZD; down 中枢的 up 笔: high > ZG)。
+        #   - Z 段离开后, 需看下一笔 (反向笔回抽) 是否回到 [ZD, ZG] 才能定论:
+        #     * 回抽笔端点触及 [ZD, ZG] → 中枢未破坏, 离开段+回抽笔都纳入延伸
+        #     * 回抽笔端点不触及 → 中枢破坏, 离开段确立, 中枢在离开段开始处结束
         zs_bis = list(first3)
         j = i + 3
         while j < n:
@@ -1499,29 +1510,55 @@ def _build_zs_strict(bi_list: list) -> list:
             bi_dir = _bi_direction(bi)
             bi_low = float(bi.low)
             bi_high = float(bi.high)
-            # 端点触及严格版 (用户确认 2026-11-20):
-            # 至少一个端点 (low 或 high) 落在 [ZD, ZG] 内才算"触及"中枢。
-            # 替代原"区间交集"判定 (bi_low <= ZG and bi_high >= ZD)。
-            # 区别: 贯穿笔 (一端 < ZD 另一端 > ZG) 在区间交集下算延伸,
-            #        在端点触及下算离开 — 防止大幅离开笔回拉长中枢 (605222 ZS#9 案例)。
+            # 端点触及: 至少一个端点落在 [ZD, ZG] 内 (闭区间)
             endpoint_touch = (ZD <= bi_low <= ZG) or (ZD <= bi_high <= ZG)
+            # 方向性离开判定: 终点越过同向/反向边界
+            if zs_dir == "up":
+                # up 中枢: Z 段 (up) 离开 = high > ZG; 反向笔 (down) 离开 = low < ZD
+                z_seg_leaves = bi_high > ZG
+                reverse_leaves = bi_low < ZD
+            else:
+                # down 中枢: Z 段 (down) 离开 = low < ZD; 反向笔 (up) 离开 = high > ZG
+                z_seg_leaves = bi_low < ZD
+                reverse_leaves = bi_high > ZG
 
             if bi_dir == zs_dir:
-                # Z 段 (与中枢方向一致): 中心定理一, 端点触及才算延伸
-                if endpoint_touch:
+                # Z 段 (与中枢方向一致)
+                if not z_seg_leaves:
+                    # 终点未越过同侧边界, 区间与中枢重叠 → 延伸 (中心定理一)
                     zs_bis.append(bi)
                     j += 1
                 else:
-                    # Z 段离开中枢 (两端都在中枢外) → 中枢结束
-                    break
+                    # Z 段离开中枢 (终点越过同侧边界) → 看下一笔回抽 (定理三)
+                    if j + 1 < n:
+                        next_bi = bi_list[j + 1]
+                        next_low = float(next_bi.low)
+                        next_high = float(next_bi.high)
+                        next_touch = (ZD <= next_low <= ZG) or (ZD <= next_high <= ZG)
+                        if next_touch:
+                            # 回抽笔回到中枢内 → 中枢未破坏, 离开段+回抽笔都纳入延伸
+                            zs_bis.append(bi)
+                            zs_bis.append(next_bi)
+                            j += 2
+                            continue
+                        else:
+                            # 回抽笔不回到中枢 → 中枢破坏, 离开段确立
+                            break
+                    else:
+                        # 没有下一笔, 无法判定回抽, 中枢在离开段开始处结束
+                        break
             else:
-                # 反向笔 (非 Z 段): 定理三, 端点触及说明回到中枢内, 否则离开
-                if endpoint_touch:
-                    # 反向笔回到中枢内, 继续延伸
-                    zs_bis.append(bi)
-                    j += 1
+                # 反向笔 (非 Z 段)
+                if not reverse_leaves:
+                    # 终点未越过反向边界, 端点触及中枢 → 回到中枢内, 继续延伸
+                    if endpoint_touch:
+                        zs_bis.append(bi)
+                        j += 1
+                    else:
+                        # 端点不触及但未越过边界 (理论上不会发生, 边界外即越过)
+                        break
                 else:
-                    # 反向笔也离开中枢 → 中枢结束
+                    # 反向笔越过反向边界 → 离开, 中枢结束
                     break
 
         # 用 ZS(bis) 构造中枢对象 (库的区间计算与缠师公式一致)
