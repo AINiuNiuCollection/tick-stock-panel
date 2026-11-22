@@ -789,7 +789,8 @@ export interface StrategyParamDef {
   min?: number
   max?: number
   step?: number
-  options?: string[]
+  // select 选项: 兼容纯字符串与 {label, value} 对象两种定义 (自定义策略两种都在用)
+  options?: (string | { label: string; value: string })[]
 }
 
 export interface CompositeChildInfo {

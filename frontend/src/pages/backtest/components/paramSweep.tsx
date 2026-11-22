@@ -105,7 +105,12 @@ export function useParamSweep(strategies: StrategyDetail[], onStrategyChange?: (
       const s = sweeps[p.id]
       if (!s?.enabled) continue
       if (p.type === 'bool') grid[p.id] = [true, false]
-      else if (p.type === 'select') grid[p.id] = p.options ?? []
+      else if (p.type === 'select') {
+        // options 兼容纯字符串与 {label, value} 对象, 网格取 value
+        grid[p.id] = (p.options ?? []).map((o: any) =>
+          typeof o === 'string' ? o : String(o?.value ?? o?.label ?? ''),
+        ).filter(v => v !== '')
+      }
       else grid[p.id] = { min: Number(s.min), max: Number(s.max), step: Number(s.step) }
     }
     return grid

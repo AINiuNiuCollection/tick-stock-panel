@@ -115,6 +115,14 @@ function RangeField({ label, minVal, maxVal, onMinChange, onMaxChange, unit, ste
 // 板块标签
 const ALL_BOARDS = ['沪主板', '深主板', '创业板', '科创板', '北交所']
 
+// select 参数 options 归一化: 兼容纯字符串与 {label, value} 对象两种定义
+type NormOption = { label: string; value: string }
+function normOptions(options: any): NormOption[] {
+  return (options ?? [])
+    .map((o: any) => (typeof o === 'string' ? { label: o, value: o } : { label: String(o?.label ?? o?.value ?? ''), value: String(o?.value ?? o?.label ?? '') }))
+    .filter((o: NormOption) => o.label !== '' || o.value !== '')
+}
+
 // 策略参数字段
 function ParamField({ def, value, onChange }: {
   def: StrategyParamDef
@@ -142,6 +150,7 @@ function ParamField({ def, value, onChange }: {
     )
   }
   if (def.type === 'select' && def.options) {
+    const opts = normOptions(def.options)
     return (
       <div className="flex items-center gap-2">
         <span className="text-[11px] text-secondary w-16 shrink-0 text-right">{def.label}</span>
@@ -150,7 +159,7 @@ function ParamField({ def, value, onChange }: {
           onChange={e => onChange(e.target.value)}
           className="w-24 px-1.5 py-0.5 rounded bg-base border border-border text-[11px] font-mono text-foreground focus:outline-none focus:border-accent/50"
         >
-          {def.options.map(o => <option key={o} value={o}>{o}</option>)}
+          {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>
     )

@@ -744,11 +744,15 @@ function StrategyParamInput({ param, value, onChange }: {
     )
   }
   if (param.type === 'select') {
+    // options 兼容纯字符串与 {label, value} 对象两种定义
+    const opts = (param.options ?? []).map((o: any) =>
+      typeof o === 'string' ? { label: o, value: o } : { label: String(o?.label ?? o?.value ?? ''), value: String(o?.value ?? o?.label ?? '') },
+    )
     return (
       <label className="block">
         <span className="mb-1 block text-[11px] text-secondary">{param.label}</span>
         <select value={value ?? param.default} onChange={e => onChange(e.target.value)} className={INPUT_CLS}>
-          {(param.options ?? []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          {opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </label>
     )
