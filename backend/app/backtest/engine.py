@@ -2541,6 +2541,9 @@ class BacktestEngine:
             "buy_same_day_reentry": 0,
             "buy_exposure": 0,
             "buy_score_filter": 0,
+            # 键位对齐 matrix 路径 (engine.py:1792)。注意: legacy 匹配路径未实现
+            # 连亏冷却拦截逻辑, 该计数恒为 0 —— cooldown 目前仅 matrix_native 生效。
+            "buy_cooldown": 0,
             "sell_invalid_price": 0,
             "sell_suspended": 0,
             "sell_limit_down": 0,

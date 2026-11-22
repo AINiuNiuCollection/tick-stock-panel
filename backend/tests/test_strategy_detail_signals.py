@@ -28,6 +28,8 @@ def _make_strategy(
         trailing_take_profit_activate=None,
         trailing_take_profit_drawdown=None,
         max_hold_days=10,
+        cooldown_loss_streak=None,
+        cooldown_days=None,
         filter_fn=None,
         filter_history_fn=None,
         lookback_days=60,

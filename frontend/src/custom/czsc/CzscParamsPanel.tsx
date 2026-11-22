@@ -43,14 +43,24 @@ export interface CzscParams {
   /** @deprecated 缠师原文未要求 DEA, 保留字段兼容后端, 恒 false */
   bs_use_dea?: boolean
   bs_use_macd_area?: boolean   // 背驰是否启用 MACD 面积条件
+  /** 趋势中枢重叠口径(第18课): practical=[ZD,ZG]核心区间(默认); strict=[DD,GG]波动区间(更保守) */
+  bs_trend_overlap_mode?: 'practical' | 'strict'
 }
 
 interface Props {
   initialSymbol?: string
+  /** 上次提交的参数, 用于恢复表单显示 (不自动触发分析) */
+  initialParams?: CzscParams | null
   onAnalyze: (params: CzscParams) => void
   loading?: boolean
   /** 均线变化实时回调 (无需重新点分析即可更新图表) */
   onMaPeriodsChange?: (periods: number[]) => void
+  /** 图表显示选项: 中枢高低数据标签 (实时生效) */
+  onZsPriceVisibleChange?: (v: boolean) => void
+  /** 图表显示选项: 分型标记 (实时生效) */
+  onFxMarksVisibleChange?: (v: boolean) => void
+  zsPriceVisible?: boolean
+  fxMarksVisible?: boolean
 }
 
 const FREQ_OPTIONS = ['日线', '周线', '月线', '30分钟', '60分钟', '15分钟', '5分钟']
@@ -81,25 +91,34 @@ const BS_MACD_AREA_MODES = [
   { value: 'dif_dea', label: 'Σ|DIF-DEA|' },
 ] as const
 
-export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPeriodsChange }: Props) {
+export function CzscParamsPanel({ initialSymbol = '', initialParams, onAnalyze, loading, onMaPeriodsChange, onZsPriceVisibleChange, onFxMarksVisibleChange, zsPriceVisible = false, fxMarksVisible = true }: Props) {
   const today = new Date().toISOString().slice(0, 10)
   const defaultStart = new Date(Date.now() - 365 * 86400 * 1000).toISOString().slice(0, 10)
-  const [symbol, setSymbol] = useState(initialSymbol)
-  const [symbolName, setSymbolName] = useState<string | null>(null)
-  const [freq, setFreq] = useState('日线')
-  const [startDate, setStartDate] = useState(defaultStart)
-  const [endDate, setEndDate] = useState(today)
-  const [maxBiNum, setMaxBiNum] = useState(100)
-  const [minBiLen, setMinBiLen] = useState(7)
-  const [features, setFeatures] = useState<string[]>(['fx', 'bi', 'zs', 'signals', 'bs_points'])
-  const [forceRefresh, setForceRefresh] = useState(false)
+  // 表单初值优先取上次提交的参数, 否则用默认值。仅恢复显示, 不自动分析。
+  const [symbol, setSymbol] = useState(initialSymbol || initialParams?.symbol || '')
+  const [symbolName, setSymbolName] = useState<string | null>(initialParams?.symbol_name ?? null)
+  const [freq, setFreq] = useState(initialParams?.freq ?? '日线')
+  const [startDate, setStartDate] = useState(initialParams?.start_date ?? defaultStart)
+  const [endDate, setEndDate] = useState(initialParams?.end_date ?? today)
+  const [maxBiNum, setMaxBiNum] = useState(initialParams?.max_bi_num ?? 100)
+  const [minBiLen, setMinBiLen] = useState(initialParams?.min_bi_len ?? 7)
+  const [features, setFeatures] = useState<string[]>(
+    initialParams?.features ?? ['fx', 'bi', 'zs', 'signals', 'bs_points'],
+  )
+  const [forceRefresh, setForceRefresh] = useState(initialParams?.force_refresh ?? false)
   // 均线周期: 默认 [5, 10, 20], 最多 3 条 (同花顺惯例)
-  const [maPeriods, setMaPeriods] = useState<number[]>([5, 10, 20])
+  const [maPeriods, setMaPeriods] = useState<number[]>(initialParams?.ma_periods ?? [5, 10, 20])
   // 背驰配置: 默认两条件 (MACD面积 + DIF) 全开, 面积口径 split (红绿柱分计)
   // DEA 已废弃 (缠师原文未要求), 不再暴露 UI; 提交时恒传 false 兼容后端
-  const [bsMacdAreaMode, setBsMacdAreaMode] = useState<'split' | 'total_abs' | 'dif_dea'>('split')
-  const [bsUseDif, setBsUseDif] = useState(true)
-  const [bsUseMacdArea, setBsUseMacdArea] = useState(true)
+  const [bsMacdAreaMode, setBsMacdAreaMode] = useState<'split' | 'total_abs' | 'dif_dea'>(
+    initialParams?.bs_macd_area_mode ?? 'split',
+  )
+  const [bsUseDif, setBsUseDif] = useState(initialParams?.bs_use_dif ?? true)
+  const [bsUseMacdArea, setBsUseMacdArea] = useState(initialParams?.bs_use_macd_area ?? true)
+  // 趋势中枢重叠口径: 默认 practical (第20课原文的中枢区间 [ZD,ZG])
+  const [bsTrendOverlapMode, setBsTrendOverlapMode] = useState<'practical' | 'strict'>(
+    initialParams?.bs_trend_overlap_mode ?? 'practical',
+  )
   // 设置抽屉开关
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -156,6 +175,7 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
       bs_use_dif: bsUseDif,
       bs_use_dea: false,  // 已废弃, 恒 false 兼容后端
       bs_use_macd_area: bsUseMacdArea,
+      bs_trend_overlap_mode: bsTrendOverlapMode,
     })
   }
 
@@ -393,6 +413,48 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
                     </select>
                   </div>
 
+                  {/* 趋势中枢重叠口径 (第18课: 影响趋势判定 → 一/二类买卖点) */}
+                  <div className="py-2 mt-1">
+                    <div className="text-sm text-foreground mb-2">
+                      趋势中枢重叠口径
+                      <HelpTip text="这一项决定缠论里的「趋势」能不能成立（第18课：趋势 = 至少两个同方向、且互相不重叠的中枢）。一买/一卖/二买/二卖都必须先有趋势，所以这项直接影响它们会不会出现；三买/三卖只看单个中枢的位置，不受影响。简单说：选「核心区间」更容易看到一二类买卖点，选「波动区间」更保守、信号更少。" />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className={`flex items-start gap-2 px-3 py-2 rounded-btn border text-sm cursor-pointer transition-colors ${bsTrendOverlapMode === 'practical' ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>
+                        <input
+                          type="radio"
+                          name="bsTrendOverlapMode"
+                          checked={bsTrendOverlapMode === 'practical'}
+                          onChange={() => setBsTrendOverlapMode('practical')}
+                          className="accent-accent mt-1 shrink-0"
+                        />
+                        <span className="min-w-0">
+                          <span className="flex items-center">
+                            核心区间（默认）
+                            <HelpTip text="用什么判断两个中枢「不重叠」？只看中枢本身的价格范围（前三段走势的重叠部分，公式 ZG=min(g1,g2)、ZD=max(d1,d2)，来自缠师第20课原文）。&#10;打个比方：两个中枢像上下两层楼，只要楼板错开（上层地板低于下层天花板就算重叠），错开了就是趋势。&#10;效果：缠师原文口径，下跌/上涨趋势更容易成立，一买/一卖/二买/二卖能正常输出。" />
+                          </span>
+                          <span className="block text-[11px] text-muted mt-0.5">按中枢本身的价格范围判重叠，贴近缠师原文，一二类点可正常输出</span>
+                        </span>
+                      </label>
+                      <label className={`flex items-start gap-2 px-3 py-2 rounded-btn border text-sm cursor-pointer transition-colors ${bsTrendOverlapMode === 'strict' ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}>
+                        <input
+                          type="radio"
+                          name="bsTrendOverlapMode"
+                          checked={bsTrendOverlapMode === 'strict'}
+                          onChange={() => setBsTrendOverlapMode('strict')}
+                          className="accent-accent mt-1 shrink-0"
+                        />
+                        <span className="min-w-0">
+                          <span className="flex items-center">
+                            波动区间（严格）
+                            <HelpTip text="判断重叠时把中枢震荡期间碰过的最高价、最低价（含上影线/下影线）都算进去。只要两段走势的影线扫过对方的价格范围，就判为重叠、合并成一个大中枢 → 不算趋势。&#10;打个比方：不只看楼板，连窗户探头出去的边缘都算，两栋楼只要窗户稍微搭到就判为同一栋。&#10;效果：比缠师原文更保守。震荡市里能过滤掉假趋势（中枢扩张），但正常下跌/上涨中的一二类买卖点也会大量消失，只剩三买/三卖。" />
+                          </span>
+                          <span className="block text-[11px] text-muted mt-0.5">连影线扫过的范围都算重叠，更保守，一二类点大量减少</span>
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
                   {/* 两条件 (缠师原文: MACD面积 + DIF, 无 DEA) */}
                   <div className="text-sm text-foreground mt-3 mb-2 flex items-center">
                     背驰条件 (AND 全满足)
@@ -428,10 +490,40 @@ export function CzscParamsPanel({ initialSymbol = '', onAnalyze, loading, onMaPe
                   <div className="flex items-center gap-2 mb-3">
                     <SlidersHorizontal className="h-4 w-4 text-accent" />
                     <h3 className="text-sm font-medium text-foreground">
-                      高级设置<HelpTip text="影响分析行为的全局开关。" />
+                      图表显示<HelpTip text="纯显示层开关, 改动立即生效, 无需重新点「分析」。" />
                     </h3>
                   </div>
                   <label className="flex items-center justify-between gap-4 py-2 cursor-pointer">
+                    <div className="min-w-0">
+                      <div className="text-sm text-foreground flex items-center">
+                        中枢高低数据
+                        <HelpTip text="在中枢方框的右上/右下角显示 ZG/ZD 价格数值。ZG 是中枢上沿、ZD 是中枢下沿（前三段次级别走势重叠区间的上下边界, 缠师第20课公式 ZG=min(g1,g2)、ZD=max(d1,d2)）。三买看回试低点是否守住 ZG, 三卖看回抽高点是否不过 ZD, 需要核对具体价位时打开。默认关闭, 保持图面简洁。" />
+                      </div>
+                      <div className="text-[11px] text-muted truncate">中枢方框上显示 ZG/ZD 价格数值</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={zsPriceVisible}
+                      onChange={e => onZsPriceVisibleChange?.(e.target.checked)}
+                      className="accent-accent h-4 w-4"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-4 py-2 cursor-pointer">
+                    <div className="min-w-0">
+                      <div className="text-sm text-foreground flex items-center">
+                        分型标记
+                        <HelpTip text="在每笔的端点显示分型三角：底部转折画绿色▼，顶部转折画红色▲。缠论里笔的两端必须是分型——底分型（中间那根K线最低）是潜在的低点转折，一买/二买/三买都落在某个底分型上；顶分型（中间那根K线最高）对应高点转折，一卖/二卖/三卖落在顶分型上。勾选时顶底都显示，取消勾选则两种标记全部隐藏（上方的分型虚线不受影响，仍可在图例里单独关）。默认开启。" />
+                      </div>
+                      <div className="text-[11px] text-muted truncate">笔端点的顶▲ / 底▼ 分型标记</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={fxMarksVisible}
+                      onChange={e => onFxMarksVisibleChange?.(e.target.checked)}
+                      className="accent-accent h-4 w-4"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-4 py-2 cursor-pointer border-t border-border mt-2 pt-3">
                     <div className="min-w-0">
                       <div className="text-sm text-foreground flex items-center">
                         强制刷新缓存

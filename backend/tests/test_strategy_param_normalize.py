@@ -114,6 +114,8 @@ def _make_strategy_with_params(params) -> StrategyDef:
         stop_loss=None, trailing_stop=None,
         trailing_take_profit_activate=None, trailing_take_profit_drawdown=None,
         max_hold_days=None,
+        cooldown_loss_streak=None,
+        cooldown_days=None,
         filter_fn=None, filter_history_fn=None,
         lookback_days=60, source="custom",
     )

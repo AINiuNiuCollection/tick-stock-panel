@@ -24,6 +24,8 @@ def _strategy(**kwargs) -> StrategyDef:
         trailing_take_profit_activate=None,
         trailing_take_profit_drawdown=None,
         max_hold_days=None,
+        cooldown_loss_streak=None,
+        cooldown_days=None,
         filter_fn=lambda df, params: pl.lit(True),
         filter_history_fn=None,
         lookback_days=1,
@@ -347,6 +349,8 @@ def test_full_mode_executes_every_candidate_with_strategy_rules():
     strategy = _strategy(
         filter_fn=lambda df, params: pl.col("date") == start,
         max_hold_days=1,
+        cooldown_loss_streak=None,
+        cooldown_days=None,
     )
     service = StrategyBacktestService(engine=engine, strategy_engine=_StrategyEngineStub(strategy))
 
@@ -600,6 +604,8 @@ def test_matrix_cache_preserves_trades_daily_equity_and_core_stats():
         matrix_strategy=RollingEntry(),
         required_features=frozenset({"amount"}),
         max_hold_days=1,
+        cooldown_loss_streak=None,
+        cooldown_days=None,
     )
     service = StrategyBacktestService(engine=engine, strategy_engine=_StrategyEngineStub(strategy))
     config = StrategyBacktestConfig(
@@ -667,6 +673,8 @@ def test_full_mode_reports_factor_attribution():
     strategy = _strategy(
         filter_fn=lambda df, params: pl.col("date") == start,
         max_hold_days=1,
+        cooldown_loss_streak=None,
+        cooldown_days=None,
     )
     strategy.meta["scoring"] = {"factor": 1.0}
     service = StrategyBacktestService(engine=engine, strategy_engine=_StrategyEngineStub(strategy))

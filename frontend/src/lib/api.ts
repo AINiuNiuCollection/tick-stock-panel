@@ -4290,6 +4290,16 @@ export interface CzscBsPoint {
   divergence_type: string | null  // '趋势背驰:macd_area+dif' / '盘整背驰:macd_area+dif' / '未构成...'
   divergence_pass: string[]
   macd_area_mode: string
+  /** 区间套下钻(缠师第27课): 级别标注, 开启次级别确认后为 '日线+次级别' */
+  level?: string
+  /** 次级别(30分钟)背驰是否确认, 未开启/数据不可用时为 null */
+  nest_confirmed?: boolean | null
+  /** 下钻到的级别标识, 如 '30分钟' */
+  nest_level?: string | null
+  /** 次级别背驰力度比 (面积cur/area_a, <1 为背驰) */
+  nest_ratio?: number | null
+  /** 下钻结论/降级原因 */
+  nest_note?: string | null
 }
 
 /** 缠论均线一根 — 后端计算 SMA 后下发, 前端零计算直接渲染。
@@ -4349,6 +4359,7 @@ export interface CzscAnalyzeParams {
   /** @deprecated 缠师原文未要求 DEA, 后端忽略, 保留字段兼容 */
   bs_use_dea?: boolean
   bs_use_macd_area?: boolean   // 背驰是否启用 MACD 面积条件
+  bs_trend_overlap_mode?: 'practical' | 'strict'  // 趋势中枢重叠口径(第18课趋势判定)
 }
 
 /** 检查 czsc-serve 健康状态 (静默, 失败不弹 toast) */
@@ -4377,6 +4388,7 @@ export async function fetchCzscAnalyze(params: CzscAnalyzeParams): Promise<CzscA
   if (params.bs_use_dif != null) qs.set('bs_use_dif', String(params.bs_use_dif))
   if (params.bs_use_dea != null) qs.set('bs_use_dea', String(params.bs_use_dea))
   if (params.bs_use_macd_area != null) qs.set('bs_use_macd_area', String(params.bs_use_macd_area))
+  if (params.bs_trend_overlap_mode) qs.set('bs_trend_overlap_mode', params.bs_trend_overlap_mode)
   // 均线周期 (后端取数自动扩展暖机并计算 SMA 后下发, 前端零计算)
   if (params.ma_periods && params.ma_periods.length > 0) {
     qs.set('ma_periods', params.ma_periods.join(','))
@@ -4438,6 +4450,7 @@ export function streamCzscAnalyze(
   if (params.bs_use_dif != null) qs.set('bs_use_dif', String(params.bs_use_dif))
   if (params.bs_use_dea != null) qs.set('bs_use_dea', String(params.bs_use_dea))
   if (params.bs_use_macd_area != null) qs.set('bs_use_macd_area', String(params.bs_use_macd_area))
+  if (params.bs_trend_overlap_mode) qs.set('bs_trend_overlap_mode', params.bs_trend_overlap_mode)
 
   void (async () => {
     try {
@@ -4488,10 +4501,10 @@ export function streamCzscAnalyze(
   return ctl
 }
 
-/** 主动刷新 czsc-serve 数据缓存 */
+/** 主动刷新缠论数据 (后端重新取数, 不写本地缓存) */
 export async function refreshCzscData(symbol: string, freq: string = '日线'): Promise<{ ok: boolean; cached_bars: number; latest_date: string | null }> {
   return request('/api/czsc/data/refresh', {
     method: 'POST',
-    body: JSON.stringify({ symbol, freq, force: true }),
+    body: JSON.stringify({ symbol, freq }),
   })
 }

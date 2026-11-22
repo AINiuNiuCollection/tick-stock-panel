@@ -130,8 +130,20 @@ export const QK = {
 
   // czsc-serve 缠论分析 (自定义扩展, 不进入 SSE 失效列表)
   czscHealth:           ['czsc-health'] as const,
-  czscAnalyze:          (symbol: string, freq: string, start?: string, end?: string) =>
-    ['czsc-analyze', symbol, freq, start ?? '', end ?? ''] as const,
+  // 缠论分析查询键: 必须覆盖所有会改变分析结果的参数, 否则改了参数会命中旧缓存。
+  // 后4个参数可选, 兼容旧调用方 (如个股弹层 CzscFooterEntry 只传 symbol+freq)。
+  czscAnalyze: (
+    symbol: string, freq: string, start?: string, end?: string,
+    maxBiNum?: number, minBiLen?: number, features?: string,
+    bsMacdAreaMode?: string, bsUseDif?: boolean, bsUseMacdArea?: boolean,
+    maPeriods?: number[], forceRefresh?: boolean, bsTrendOverlapMode?: string,
+  ) => [
+    'czsc-analyze', symbol, freq, start ?? '', end ?? '',
+    maxBiNum ?? 100, minBiLen ?? 7, features ?? '',
+    bsMacdAreaMode ?? 'split', bsUseDif ?? true, bsUseMacdArea ?? true,
+    (maPeriods ?? []).join(','), forceRefresh ?? false,
+    bsTrendOverlapMode ?? 'practical',
+  ] as const,
 } as const
 
 // ===== SSE 应该 invalidate 的 key 前缀列表 =====

@@ -10,26 +10,28 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import date, timedelta
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.config import settings
 
 from .analyzer import (
+    DEFAULT_MAX_BI_NUM,
+    DEFAULT_MIN_BI_LEN,
     AnalyzerError,
+    _fetch_kline,
     _probe_czsc,
     analyze_async,
     analyze_stream,
-    DEFAULT_MAX_BI_NUM,
-    DEFAULT_MIN_BI_LEN,
+    error_status,
+    get_default_service,
 )
+from .config import AnalyzeRequest
 from .schemas import (
-    AnalyzeResult,
     CapabilitiesResult,
-    ErrorResponse,
     HealthResult,
     RefreshRequest,
     RefreshResult,
@@ -40,7 +42,9 @@ logger = logging.getLogger(__name__)
 API_VERSION = 1
 
 
-def _build_error_response(code: str, message: str, hint: str | None = None, status: int = 503) -> JSONResponse:
+def _build_error_response(
+    code: str, message: str, hint: str | None = None, status: int = 503
+) -> JSONResponse:
     """统一错误响应。"""
     error_obj: dict[str, str] = {"code": code, "message": message}
     if hint:
@@ -52,16 +56,18 @@ def _build_error_response(code: str, message: str, hint: str | None = None, stat
     )
 
 
-def _build_success_response(data: dict, status: int = 200) -> Response:
-    """统一成功响应, 带契约版本头。
+def _parse_ma_periods(value: str | None) -> list[int] | None:
+    if not value:
+        return None
+    try:
+        return [int(p.strip()) for p in value.split(",") if p.strip()]
+    except ValueError:
+        return None
 
-    注意: starlette JSONResponse 默认用 stdlib json.dumps 且不接受 default 参数,
-    不识别 Pydantic 模型 / datetime / Enum 等。调用方应先 model_dump() 把 Pydantic
-    模型转 dict; 这里用 json.dumps(data, default=str) 自行序列化后传 body 给
-    通用 Response (media_type=application/json), 让 starlette 自动设置正确的
-    Content-Length。default=str 兜底未识别对象 (如 signals 中残留的 czsc Enum 值)。
-    """
-    body = json.dumps(data, default=str, ensure_ascii=False).encode("utf-8")
+
+def _build_success_response(data: dict, status: int = 200) -> Response:
+    """统一成功响应, 带契约版本头。"""
+    body = json.dumps(data, default=str, ensure_ascii=False).encode()
     return Response(
         content=body,
         status_code=status,
@@ -73,20 +79,22 @@ def _build_success_response(data: dict, status: int = 200) -> Response:
 def build_router() -> APIRouter:
     """构建 czsc 路由。在 setup() 中调用, 由 loader 自动发现。"""
     if not settings.czsc_enabled:
-        # 配置层关闭: 仍注册路由但所有端点返回 503
         router = APIRouter(prefix="/api/czsc", tags=["czsc"])
 
         @router.get("/health")
         async def health_disabled() -> JSONResponse:
             return _build_error_response(
-                "CZSC_DISABLED", "czsc extension disabled by config (czsc_enabled=false)",
+                "CZSC_DISABLED",
+                "czsc extension disabled by config (czsc_enabled=false)",
             )
 
         @router.get("/capabilities")
         async def capabilities_disabled() -> JSONResponse:
-            return _build_success_response(CapabilitiesResult(
-                available=False, install_hint="set czsc_enabled=true to enable",
-            ).model_dump())
+            return _build_success_response(
+                CapabilitiesResult(
+                    available=False, install_hint="set czsc_enabled=true to enable"
+                ).model_dump()
+            )
 
         @router.get("/analyze")
         async def analyze_disabled() -> JSONResponse:
@@ -96,7 +104,8 @@ def build_router() -> APIRouter:
         async def analyze_stream_disabled() -> StreamingResponse:
             async def _err() -> AsyncIterator[bytes]:
                 err = json.dumps({"code": "CZSC_DISABLED", "message": "czsc extension disabled"})
-                yield f"event: error\ndata: {err}\n\n".encode("utf-8")
+                yield f"event: error\ndata: {err}\n\n".encode()
+
             return StreamingResponse(_err(), media_type="text/event-stream")
 
         @router.post("/data/refresh")
@@ -143,45 +152,64 @@ def build_router() -> APIRouter:
     async def analyze(
         symbol: str = Query(..., description="标的代码, 如 600519.SH"),
         freq: str = Query("日线"),
-        start_date: date | None = Query(None),
-        end_date: date | None = Query(None),
+        start_date: date | None = None,
+        end_date: date | None = None,
         max_bi_num: int = Query(DEFAULT_MAX_BI_NUM, ge=10, le=500),
         min_bi_len: int = Query(DEFAULT_MIN_BI_LEN, ge=3, le=30),
         features: str = Query("fx,bi,zs,signals,bs_points"),
         force_refresh: bool = Query(False),
         symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
-        bs_macd_area_mode: str = Query("split", description="背驰 MACD 面积口径: split/total_abs/dif_dea"),
+        bs_macd_area_mode: str = Query(
+            "split", description="背驰 MACD 面积口径: split/total_abs/dif_dea"
+        ),
         bs_use_dif: bool = Query(True, description="背驰是否启用 DIF 极值条件"),
-        bs_use_dea: bool = Query(False, description="[已废弃] 缠师原文未要求 DEA, 保留参数兼容旧前端, 内部忽略"),
+        bs_use_dea: bool = Query(
+            False,
+            description="[已废弃] 缠师原文未要求 DEA, 保留参数兼容旧前端, 内部忽略",
+        ),
         bs_use_macd_area: bool = Query(True, description="背驰是否启用 MACD 面积条件"),
-        ma_periods: str | None = Query(None, description="逗号分隔的 SMA 周期, 如 '5,20,250'; 后端取数自动扩展暖机"),
+        bs_divergence_logic: str = Query(
+            "and", description="背驰条件组合: and=面积与DIF同时满足(严格); or=任一满足(第27课)"
+        ),
+        bs_trend_overlap_mode: str = Query(
+            "practical",
+            description=(
+                "趋势中枢重叠口径(第18课趋势成立前提): "
+                "practical=[ZD,ZG]核心区间(第20课原文中枢区间, 默认); "
+                "strict=[DD,GG]波动区间(影线扫过即重叠, 更保守, 一/二类点更少)"
+            ),
+        ),
+        bs_enable_interval_nest: bool = Query(
+            False, description="区间套下钻: 对买卖点做30分钟次级别背驰确认(第27课)"
+        ),
+        ma_periods: str | None = Query(
+            None, description="逗号分隔的 SMA 周期, 如 '5,20,250'; 后端取数自动扩展暖机"
+        ),
     ) -> JSONResponse:
         """同步分析 (适合日K等小数据量)。"""
-        _ = force_refresh  # 首版忽略, 每次重新取数; 二期可接缓存层
-        feature_list = [f.strip() for f in features.split(",") if f.strip()]
-        # ma_periods 解析: "5,20,250" → [5, 20, 250]; None/空 → None (不计算 MA)
-        ma_periods_list: list[int] | None = None
-        if ma_periods:
-            try:
-                ma_periods_list = [int(p.strip()) for p in ma_periods.split(",") if p.strip()]
-            except ValueError:
-                ma_periods_list = None
+        ma_periods_list = _parse_ma_periods(ma_periods)
+
+        request = AnalyzeRequest.from_query(
+            symbol=symbol,
+            freq=freq,
+            start=start_date,
+            end=end_date,
+            max_bi_num=max_bi_num,
+            min_bi_len=min_bi_len,
+            features=features,
+            symbol_name=symbol_name,
+            ma_periods=ma_periods_list,
+            bs_macd_area_mode=bs_macd_area_mode,
+            bs_use_dif=bs_use_dif,
+            bs_use_dea=bs_use_dea,
+            bs_use_macd_area=bs_use_macd_area,
+            bs_divergence_logic=bs_divergence_logic,
+            bs_trend_overlap_mode=bs_trend_overlap_mode,
+            bs_enable_interval_nest=bs_enable_interval_nest,
+            force_refresh=force_refresh,
+        )
         try:
-            result = await analyze_async(
-                symbol=symbol, freq=freq,
-                start=start_date, end=end_date,
-                max_bi_num=max_bi_num, min_bi_len=min_bi_len,
-                features=feature_list,
-                symbol_name=symbol_name,
-                bs_macd_area_mode=bs_macd_area_mode,
-                bs_use_dif=bs_use_dif,
-                bs_use_dea=bs_use_dea,
-                bs_use_macd_area=bs_use_macd_area,
-                ma_periods=ma_periods_list,
-            )
-            # fx_list/bi_list/zs_list/bars/macd/bs_points 是 Pydantic 模型实例, starlette
-            # JSONResponse 默认 json.dumps 不识别 Pydantic 模型, 这里统一 model_dump() 转 dict。
-            # mas 是 list[dict] (非 Pydantic 模型), 直接透传。
+            result = await analyze_async(request)
             payload = {
                 **result,
                 "ok": True,
@@ -195,18 +223,17 @@ def build_router() -> APIRouter:
             }
             return _build_success_response(payload)
         except AnalyzerError as exc:
-            # 503: 服务暂时不可用 (czsc 未装 / 取数失败 / 超时) — 业务可重试错误
-            # 500: 仅 INTERNAL_ERROR 等真正未预期异常
-            status = 500 if exc.code == "INTERNAL_ERROR" else 503
             hint = "run: uv sync --extra czsc" if exc.code == "CZSC_NOT_INSTALLED" else None
-            return _build_error_response(exc.code, exc.message, hint, status=status)
+            return _build_error_response(
+                exc.code, exc.message, hint, status=error_status(exc.code)
+            )
 
     @router.get("/analyze/stream")
     async def analyze_stream_endpoint(
         symbol: str = Query(...),
         freq: str = Query("日线"),
-        start_date: date | None = Query(None),
-        end_date: date | None = Query(None),
+        start_date: date | None = None,
+        end_date: date | None = None,
         max_bi_num: int = Query(DEFAULT_MAX_BI_NUM, ge=10, le=500),
         min_bi_len: int = Query(DEFAULT_MIN_BI_LEN, ge=3, le=30),
         features: str = Query("fx,bi,zs,signals,bs_points"),
@@ -216,31 +243,47 @@ def build_router() -> APIRouter:
         bs_use_dif: bool = Query(True),
         bs_use_dea: bool = Query(False),
         bs_use_macd_area: bool = Query(True),
+        bs_divergence_logic: str = Query("and", description="背驰组合: and=严格; or=第27课口径"),
+        bs_trend_overlap_mode: str = Query(
+            "practical",
+            description="趋势中枢重叠(第18课): practical=[ZD,ZG]核心区间(默认); strict=[DD,GG]波动区间(更保守)",
+        ),
+        bs_enable_interval_nest: bool = Query(False, description="区间套下钻到30分钟次级别"),
+        ma_periods: str | None = Query(
+            None, description="逗号分隔的 SMA 周期, 如 '5,20,250'"
+        ),
     ) -> StreamingResponse:
         """SSE 流式分析 (适合分钟K等大数据量)。"""
-        _ = force_refresh
-        feature_list = [f.strip() for f in features.split(",") if f.strip()]
+        request = AnalyzeRequest.from_query(
+            symbol=symbol,
+            freq=freq,
+            start=start_date,
+            end=end_date,
+            max_bi_num=max_bi_num,
+            min_bi_len=min_bi_len,
+            features=features,
+            symbol_name=symbol_name,
+            ma_periods=_parse_ma_periods(ma_periods),
+            bs_macd_area_mode=bs_macd_area_mode,
+            bs_use_dif=bs_use_dif,
+            bs_use_dea=bs_use_dea,
+            bs_use_macd_area=bs_use_macd_area,
+            bs_divergence_logic=bs_divergence_logic,
+            bs_trend_overlap_mode=bs_trend_overlap_mode,
+            bs_enable_interval_nest=bs_enable_interval_nest,
+            force_refresh=force_refresh,
+        )
 
         async def stream_gen() -> AsyncIterator[bytes]:
             try:
-                async for event in analyze_stream(
-                    symbol=symbol, freq=freq,
-                    start=start_date, end=end_date,
-                    max_bi_num=max_bi_num, min_bi_len=min_bi_len,
-                    features=feature_list,
-                    symbol_name=symbol_name,
-                    bs_macd_area_mode=bs_macd_area_mode,
-                    bs_use_dif=bs_use_dif,
-                    bs_use_dea=bs_use_dea,
-                    bs_use_macd_area=bs_use_macd_area,
-                ):
+                async for event in analyze_stream(request):
                     event_type = event["event"]
                     payload = json.dumps(event["data"], ensure_ascii=False, default=str)
-                    yield f"event: {event_type}\ndata: {payload}\n\n".encode("utf-8")
-            except Exception as exc:  # noqa: BLE001
+                    yield f"event: {event_type}\ndata: {payload}\n\n".encode()
+            except Exception as exc:
                 logger.exception("czsc SSE stream unexpected error")
                 err = json.dumps({"code": "INTERNAL_ERROR", "message": str(exc)})
-                yield f"event: error\ndata: {err}\n\n".encode("utf-8")
+                yield f"event: error\ndata: {err}\n\n".encode()
 
         return StreamingResponse(
             stream_gen(),
@@ -255,11 +298,7 @@ def build_router() -> APIRouter:
 
     @router.post("/data/refresh")
     async def refresh_data(body: RefreshRequest) -> JSONResponse:
-        """数据刷新 — 取数并丢弃 (本扩展无独立缓存, 仅触发主工程数据源刷新)。
-
-        首版: 验证 symbol/freq 能取到数据, 返回最新日期; 不写本地缓存。
-        二期可接入主工程 parquet 缓存层。
-        """
+        """数据刷新 — 重新取数并清空分析缓存, 触发主工程数据源刷新。"""
         has_czsc, _ = _probe_czsc()
         if not has_czsc:
             return _build_error_response(
@@ -268,23 +307,26 @@ def build_router() -> APIRouter:
                 hint="run: uv sync --extra czsc",
             )
 
-        from .analyzer import _fetch_kline
         end = date.today()
-        from datetime import timedelta
         start = end - timedelta(days=365)
         try:
             df, source = _fetch_kline(body.symbol, body.freq, start, end)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return _build_error_response("FETCH_FAILED", str(exc), status=500)
 
         if df.is_empty():
             return _build_error_response("NO_DATA", f"no data for {body.symbol} {body.freq}")
 
+        get_default_service().clear_cache()
+
         latest = df["dt"].max()
         latest_date = latest.date().isoformat() if latest is not None else None
         result = RefreshResult(
-            symbol=body.symbol, freq=body.freq,
-            cached_bars=df.height, latest_date=latest_date, source=source,
+            symbol=body.symbol,
+            freq=body.freq,
+            cached_bars=df.height,
+            latest_date=latest_date,
+            source=source,
         )
         return _build_success_response(result.model_dump())
 

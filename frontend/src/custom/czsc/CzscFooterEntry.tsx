@@ -64,8 +64,9 @@ export function CzscFooterEntry({ symbol, name }: SlotProps) {
           <div className="flex-1 overflow-auto p-3">
             {!serveOk ? (
               <div className="text-xs text-amber-500 bg-amber-500/10 rounded-btn px-3 py-2">
-                ⚠ czsc-serve 未启动。请执行:
-                <code className="mx-1 px-1 bg-elevated rounded">cd D:/Code/githubProject/czsc && uv sync --extra serve && python -m czsc.serve</code>
+                ⚠ 缠论后端未就绪。请执行:
+                <code className="mx-1 px-1 bg-elevated rounded">cd backend && uv sync --extra czsc</code>
+                安装依赖后重启后端。
               </div>
             ) : analyze.isFetching ? (
               <div className="text-center text-sm text-muted py-8">分析中…</div>

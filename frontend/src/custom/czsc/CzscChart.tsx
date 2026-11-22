@@ -11,9 +11,45 @@
  *   - BI 笔: 深靛蓝实线, 连接笔端点 (czsc 原生 bi)
  *   - 中枢: 紫色虚线边框矩形 + ZS 序号标签 (czsc 原生不画中枢, 本工程自定义)
  */
-import { useEffect, useRef, useImperativeHandle, forwardRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useImperativeHandle, forwardRef, useState } from 'react'
 import * as echarts from 'echarts'
 import type { CzscAnalyzeResult, CzscMa } from '@/lib/api'
+
+/** 键盘缩放的最小可视窗口 (百分比), 避免一直按 ↑ 缩成一根 K 线 */
+const MIN_ZOOM_SPAN = 2
+/** 键盘平移时每次移动的步长 (占当前可视窗口的比例) */
+const PAN_STEP_RATIO = 0.12
+
+/** 从 ECharts 实例读取当前 dataZoom 窗口 (百分比); 失败返回 null */
+function readZoomWindow(chart: echarts.ECharts | null): { start: number; end: number } | null {
+  if (!chart) return null
+  try {
+    const opt = chart.getOption() as { dataZoom?: Array<{ start?: number; end?: number }> }
+    const dz = opt.dataZoom?.[0]
+    if (dz && typeof dz.start === 'number' && typeof dz.end === 'number') {
+      return { start: dz.start, end: dz.end }
+    }
+  } catch {
+    // getOption 在实例未初始化完成时可能抛错, 静默回退
+  }
+  return null
+}
+
+/**
+ * 读取当前图例选中态 (用户点掉的系列)。
+ * setOption(option, notMerge=true) 会把 legend.selected 重置为"全部显示",
+ * 所以每次重建 option 前先读出真实状态再回填, 否则点击图例关掉的均线会自己回来。
+ */
+function readLegendSelected(chart: echarts.ECharts | null): Record<string, boolean> | null {
+  if (!chart) return null
+  try {
+    const opt = chart.getOption() as { legend?: Array<{ selected?: Record<string, boolean> }> }
+    const sel = opt.legend?.[0]?.selected
+    return sel && Object.keys(sel).length > 0 ? { ...sel } : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * 监听 html.dark 类变化, 触发图表重渲染以切换 light/dark 主题。
@@ -131,9 +167,9 @@ function calcSMA(closes: number[], period: number): Array<number | null> {
  */
 function formatVol(vol: number): string {
   if (!isFinite(vol)) return '—'
-  if (vol >= 1e9) return (vol / 1e9).toFixed(2) + 'B'
-  if (vol >= 1e6) return (vol / 1e6).toFixed(2) + 'M'
-  if (vol >= 1e3) return (vol / 1e3).toFixed(2) + 'K'
+  // 中文单位 (A股惯例: 万手/亿手; vol 字段单位为"手")
+  if (vol >= 1e8) return (vol / 1e8).toFixed(2) + '亿'
+  if (vol >= 1e4) return (vol / 1e4).toFixed(2) + '万'
   return vol.toFixed(0)
 }
 
@@ -187,6 +223,16 @@ interface Props {
    * 空数组表示不画均线。
    */
   maPeriods?: number[]
+  /**
+   * 是否在中枢方框上显示 ZG/ZD 价格数值标签 (中枢上沿/下沿价位)。
+   * 默认 false (关闭), 保持图面简洁; GG/DD 等延伸极值不画 (原文只要求 [ZD,ZG] 区间)。
+   */
+  showZsPriceLabels?: boolean
+  /**
+   * 是否显示笔端点的分型标记 (顶部红▲ / 底部绿▼)。
+   * 默认 true (开启); 关闭后顶底分型标记全部隐藏, 只保留 FX 分型虚线。
+   */
+  showFxMarks?: boolean
 }
 
 // 均线配色表 — 按周期映射 (与 CzscParamsPanel.MA_PERIOD_COLORS 同步,
@@ -205,21 +251,31 @@ const MA_COLORS: Record<number, string> = {
 const MA_COLOR_FALLBACK = ['#C78A2E', '#2D6A8C', '#9D6FD4', '#D94F70', '#3F8E58', '#B58A1F', '#5B6FA8', '#8C6BA8']
 
 export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
-  { result, klines, height = 480, maPeriods },
+  { result, klines, height = 480, maPeriods, showZsPriceLabels = false, showFxMarks = true },
   ref,
 ) {
+  // 均线周期 key — 只在周期集合真正变化时才重建数组, 避免每次渲染都生成新引用
+  // 导致下方的 setOption effect 空转 (会把 legend 选中态 / 缩放窗口重置掉)。
+  const maKey = (maPeriods && maPeriods.length > 0 ? maPeriods : [5, 10, 20]).join(',')
   // 均线周期: 默认 [5, 10, 20], 不限条数
-  const maPeriodsNorm = (maPeriods && maPeriods.length > 0)
-    ? maPeriods.filter(p => p > 0)
-    : [5, 10, 20]
+  const maPeriodsNorm = useMemo(() => {
+    const src = maKey.split(',').map(Number).filter(p => p > 0)
+    return src.length > 0 ? src : [5, 10, 20]
+  }, [maKey])
   // 优先用显式传入的 klines; 否则从 result.bars 推导 (date 字段 = dt)
-  const resolvedKlines = klines && klines.length
-    ? klines
-    : (result.bars ?? []).map(b => ({ date: b.dt, open: b.open, high: b.high, low: b.low, close: b.close, vol: b.vol }))
+  const resolvedKlines = useMemo(
+    () => (klines && klines.length
+      ? klines
+      : (result.bars ?? []).map(b => ({ date: b.dt, open: b.open, high: b.high, low: b.low, close: b.close, vol: b.vol }))),
+    [klines, result.bars],
+  )
   const containerRef = useRef<HTMLDivElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<echarts.ECharts | null>(null)
   // 右上角数据面板拖动后的位置 (像素坐标, 相对画布); null 表示用默认右上角定位
   const panelPosRef = useRef<{ left: number; top: number } | null>(null)
+  // 缩放/平移窗口兜底值 (百分比) — 优先从图表实例实时读取, 读不到时用它
+  const zoomRef = useRef<{ start: number; end: number }>({ start: 0, end: 100 })
   // 主题切换时触发图表重渲染
   const isDark = useDarkMode()
 
@@ -233,6 +289,48 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       chartRef.current = null
     }
   }, [])
+
+  /** 应用缩放窗口到图表 (同步 slider 与 inside 两个 dataZoom 组件) */
+  const applyZoomWindow = useCallback((next: { start: number; end: number }) => {
+    const chart = chartRef.current
+    if (!chart) return
+    zoomRef.current = next
+    chart.dispatchAction({ type: 'dataZoom', start: next.start, end: next.end })
+  }, [])
+
+  /**
+   * 键盘交互: ↑ 放大 (窗口收窄) / ↓ 缩小 / ← 左移 / → 右移。
+   * 缩放保持可视窗口中心不动, 平移按当前窗口宽度的固定比例步进。
+   * 当前窗口从图表实时读取 (鼠标滚轮/拖动后也准确), 读不到时退回 zoomRef。
+   */
+  const onChartKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const key = e.key
+    if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'ArrowLeft' && key !== 'ArrowRight') return
+    if (!chartRef.current) return
+    e.preventDefault()
+    const live = readZoomWindow(chartRef.current) ?? zoomRef.current
+    const { start, end } = live
+    const span = Math.max(end - start, 0.1)
+    let s = start
+    let t = end
+    if (key === 'ArrowUp' || key === 'ArrowDown') {
+      const factor = key === 'ArrowUp' ? 0.8 : 1.25
+      const nextSpan = Math.min(100, Math.max(MIN_ZOOM_SPAN, span * factor))
+      const center = (start + end) / 2
+      s = center - nextSpan / 2
+      t = center + nextSpan / 2
+    } else {
+      const step = Math.max(0.5, span * PAN_STEP_RATIO)
+      const delta = key === 'ArrowLeft' ? -step : step
+      s += delta
+      t += delta
+    }
+    // 越界时整体回收到 [0, 100], 保持窗口宽度不变
+    if (s < 0) { t -= s; s = 0 }
+    if (t > 100) { s -= t - 100; t = 100 }
+    s = Math.max(0, s)
+    applyZoomWindow({ start: s, end: t })
+  }, [applyZoomWindow])
 
   // 暴露 getDataURL 给父组件, 供 HTML 报告导出嵌入 PNG
   useImperativeHandle(ref, () => ({
@@ -254,6 +352,12 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
   useEffect(() => {
     if (!chartRef.current) return
     const theme = getChartTheme()
+    // 先读出图表当前的真实交互状态 (图例选中态 / 缩放窗口)。
+    // setOption(notMerge=true) 会把这些状态整体重置, 不回填就会出现
+    // "点了图例关掉均线, 一刷新又回来" 和 "按 ↑ 缩放后一刷新回到全览"。
+    const legendSelected = readLegendSelected(chartRef.current)
+    const zoomWindow = readZoomWindow(chartRef.current) ?? zoomRef.current
+    zoomRef.current = zoomWindow
 
     // K 线数据 (优先用显式 klines, 否则从 result.bars 推导)
     const candleData = resolvedKlines.length
@@ -375,6 +479,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       symbolRotate: number
       itemStyle: { color: string }
       label: { show: boolean }
+      fxKind: 'bottom' | 'top'
     }> = []
     const biEndpointMap = new Map<string, typeof fxMarkPoints[number]>()
     for (const bi of result.bi_list) {
@@ -387,6 +492,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         symbolRotate: isUp ? 180 : 0,   // 向上笔起点是底分型▼ / 向下笔起点是顶分型▲
         itemStyle: { color: isUp ? theme.down : theme.up },
         label: { show: false },
+        fxKind: (isUp ? 'bottom' : 'top') as 'bottom' | 'top',
       }
       // 终点
       const endPt = {
@@ -396,12 +502,15 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         symbolRotate: isUp ? 0 : 180,   // 向上笔终点是顶分型▲ / 向下笔终点是底分型▼
         itemStyle: { color: isUp ? theme.up : theme.down },
         label: { show: false },
+        fxKind: (isUp ? 'top' : 'bottom') as 'bottom' | 'top',
       }
       // 用 dt 去重: 同一 dt 上的端点只保留一个 (相邻笔共享端点)
       if (!biEndpointMap.has(bi.sdt)) biEndpointMap.set(bi.sdt, startPt)
       if (!biEndpointMap.has(bi.edt)) biEndpointMap.set(bi.edt, endPt)
     }
-    fxMarkPoints.push(...biEndpointMap.values())
+    const allFxMarkPoints = [...biEndpointMap.values()]
+    // 分型标记开关: 关闭时顶▲ / 底▼ 全部隐藏 (只保留上方的 FX 分型虚线)
+    if (showFxMarks) fxMarkPoints.push(...allFxMarkPoints)
 
     // 中枢矩形 (markArea) — czsc 中枢 = 至少 3 笔重叠的价格区间 [zd, zg]
     // 对齐示例图: 紫色虚线边框, 浅粉底色 (项5), 不画 zd/zg 数值标签 (项4 单独标)
@@ -485,33 +594,36 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       coord: [string, number]
       label: { show: boolean; formatter: string; color: string; fontSize: number; position: string; backgroundColor: string; padding: number[] }
     }> = []
-    zsRanges.forEach(({ zs, end_dt }) => {
-      const [zd, zg] = zs.zs_range
-      zsPriceLabels.push({
-        coord: [end_dt, zg],
-        label: {
-          show: true,
-          formatter: zg.toFixed(2),
-          color: theme.zsLabel,
-          fontSize: 10,
-          position: 'insideTopRight',
-          backgroundColor: theme.background,
-          padding: [1, 3],
-        },
+    // ZS 高低数据开关 (默认关): 中枢上下沿 ZG/ZD 数值标签, 需要看具体价位时打开
+    if (showZsPriceLabels) {
+      zsRanges.forEach(({ zs, end_dt }) => {
+        const [zd, zg] = zs.zs_range
+        zsPriceLabels.push({
+          coord: [end_dt, zg],
+          label: {
+            show: true,
+            formatter: zg.toFixed(2),
+            color: theme.zsLabel,
+            fontSize: 10,
+            position: 'insideTopRight',
+            backgroundColor: theme.background,
+            padding: [1, 3],
+          },
+        })
+        zsPriceLabels.push({
+          coord: [end_dt, zd],
+          label: {
+            show: true,
+            formatter: zd.toFixed(2),
+            color: theme.zsLabel,
+            fontSize: 10,
+            position: 'insideBottomRight',
+            backgroundColor: theme.background,
+            padding: [1, 3],
+          },
+        })
       })
-      zsPriceLabels.push({
-        coord: [end_dt, zd],
-        label: {
-          show: true,
-          formatter: zd.toFixed(2),
-          color: theme.zsLabel,
-          fontSize: 10,
-          position: 'insideBottomRight',
-          backgroundColor: theme.background,
-          padding: [1, 3],
-        },
-      })
-    })
+    }
 
     // 三栏布局: 主图 60% / 成交量 15% / MACD 20% (剩余 5% 留给 dataZoom 与边距)
     // 三个 grid 共享 category xAxis, 各自独立 yAxis。axisIndex 将 series 绑定到对应 grid。
@@ -673,7 +785,13 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       //   SMA5 / SMA20 / VOL / MACD / DIFF / DEA
       tooltip: {
         trigger: 'axis',
-        axisPointer: { type: 'cross' },
+        // 十字准星: 水平线与垂直线都为虚线。垂直线靠下方顶层 axisPointer.link
+        // 联动三个 grid 的 xAxis, 贯穿主图 / VOL / MACD; y 轴量纲不同不联动。
+        axisPointer: {
+          type: 'cross',
+          lineStyle: { type: 'dashed' },
+          crossStyle: { type: 'dashed' },
+        },
         formatter: (params: unknown) => {
           if (!Array.isArray(params) || params.length === 0) return ''
           const arr = params as Array<{ axisValue?: string; seriesName?: string; value?: unknown; color?: string; dataIndex?: number; axisIndex?: number; data?: { bsInfo?: import('@/lib/api').CzscBsPoint } }>
@@ -725,7 +843,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
               lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
             } else if (nm === 'VOL') {
               const n = typeof v === 'number' ? v : null
-              lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
+              lines.push(`${nm} ${n != null ? formatVol(n) : '—'}`)
             } else if (nm === 'MACD' || nm === 'DIFF' || nm === 'DEA') {
               const n = typeof v === 'number' ? v : null
               lines.push(`${nm} ${n != null ? n.toFixed(2) : '—'}`)
@@ -741,12 +859,22 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           return lines.join('<br/>')
         },
       },
+      // 跨 grid 十字准星联动 — 三个 grid (主图/VOL/MACD) 共享同一 category xAxis,
+      // xAxisIndex:'all' 让垂直虚线从主图贯穿到两个副图; tooltip.axisPointer 已设为
+      // cross + dashed, 此处只负责"联动范围", 不联动 y 轴 (三栏量纲不同)。
+      axisPointer: {
+        link: [{ xAxisIndex: 'all' }],
+        lineStyle: { type: 'dashed' },
+        crossStyle: { type: 'dashed' },
+      },
       // 图例顺序与示例图对齐: 动态 SMA + FX (DASHED) + BI (SOLID) + 中枢 + 买卖点 + VOL + MACD
       // 均线名称随 maPeriodsNorm 动态生成 (SMA5/SMA10/SMA20/...)
       legend: {
         data: ['K线', ...maDataList.map(ma => `SMA${ma.period}`), 'FX', 'BI', '中枢', '买卖点', 'VOL', 'MACD'],
         top: 0,
         textStyle: { color: theme.text, fontSize: 11 },
+        // 回填用户上次的图例选中态 — 否则每次 setOption(notMerge) 都会重置为全显示
+        ...(legendSelected ? { selected: legendSelected } : {}),
       },
       grid: [mainGrid, volGrid, macdGrid],
       xAxis: [
@@ -802,7 +930,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           },
           axisLine: { show: true, lineStyle: { color: theme.grid } },
         },
-        // VOL yAxis (index 1) — 变更点8: 同样改右侧 + 两位小数
+        // VOL yAxis (index 1) — 右侧刻度用万/亿缩写, 避免 192150060.00 这类长数值
         {
           gridIndex: 1,
           position: 'right',
@@ -810,7 +938,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           splitLine: { show: false },
           axisLabel: {
             color: theme.text, fontSize: 10, width: 56,
-            formatter: (v: number) => isFinite(v) ? v.toFixed(2) : '',
+            formatter: (v: number) => isFinite(v) ? formatVol(v) : '',
           },
           axisLine: { show: true, lineStyle: { color: theme.grid } },
         },
@@ -828,8 +956,13 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         },
       ],
       dataZoom: [
-        { type: 'inside', xAxisIndex: [0, 1, 2], start: 0, end: 100 },
-        { show: true, type: 'slider', xAxisIndex: [0, 1, 2], top: '94%', start: 0, end: 100, textStyle: { color: theme.text } },
+        // start/end 取自当前窗口 — 键盘缩放或重渲染后保持可见区间
+        { type: 'inside', xAxisIndex: [0, 1, 2], start: zoomWindow.start, end: zoomWindow.end },
+        {
+          show: true, type: 'slider', xAxisIndex: [0, 1, 2], top: '94%',
+          start: zoomWindow.start, end: zoomWindow.end,
+          textStyle: { color: theme.text },
+        },
       ],
       graphic: graphicElements,
       series: [
@@ -1002,7 +1135,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     } as echarts.EChartsOption
 
     chartRef.current.setOption(option, true)
-  }, [result, resolvedKlines, isDark, maPeriodsNorm])
+  }, [result, resolvedKlines, isDark, maPeriodsNorm, showZsPriceLabels, showFxMarks])
 
   // 高度变化时 (拖动分割条 / 父容器 resize) 同步 echarts 实例尺寸。
   // 变更点1: height="100%" 时父容器尺寸变化由 ResizeObserver 捕获, 自动 resize echarts。
@@ -1022,5 +1155,29 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     return () => ro.disconnect()
   }, [])
 
-  return <div ref={containerRef} style={{ width: '100%', height }} />
+  // 鼠标移入时若焦点还在 body 上, 主动聚焦到图表容器, 让方向键立即可用;
+  // 已在 input/button 上时不抢焦点 (preventScroll 避免页面跳动)。
+  const onWrapperMouseEnter = useCallback(() => {
+    const el = wrapperRef.current
+    if (!el) return
+    if (typeof document !== 'undefined' && document.activeElement === document.body) {
+      el.focus({ preventScroll: true })
+    }
+  }, [])
+
+  return (
+    <div
+      ref={wrapperRef}
+      tabIndex={0}
+      role="application"
+      aria-label="K线图: 上下方向键缩放, 左右方向键平移"
+      title="点击图表后: ↑↓ 缩放, ←→ 平移 (也支持滚轮缩放 / 拖动平移)"
+      onKeyDown={onChartKeyDown}
+      onMouseEnter={onWrapperMouseEnter}
+      className="rounded-btn focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+      style={{ width: '100%', height }}
+    >
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+    </div>
+  )
 })

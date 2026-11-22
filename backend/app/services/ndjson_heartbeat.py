@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # 与 api/mining.py 的 SSE 心跳间隔保持一致
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 
-_HEARTBEAT_LINE = json.dumps({"type": "ping"})
+_HEARTBEAT_LINE = json.dumps({"type": "ping"}) + "\n"
 
 
 async def with_heartbeat(

@@ -23,6 +23,8 @@ def _make_engine() -> tuple[StrategyEngine, StrategyDataContext]:
         trailing_take_profit_activate=None,
         trailing_take_profit_drawdown=None,
         max_hold_days=None,
+        cooldown_loss_streak=None,
+        cooldown_days=None,
         filter_fn=lambda _df, params: pl.col("value") >= params.get("min_value", 1),
         filter_history_fn=None,
         lookback_days=1,

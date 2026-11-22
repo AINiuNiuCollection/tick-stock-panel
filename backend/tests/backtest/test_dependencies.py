@@ -20,6 +20,8 @@ def _strategy(**overrides) -> StrategyDef:
         trailing_take_profit_activate=None,
         trailing_take_profit_drawdown=None,
         max_hold_days=None,
+        cooldown_loss_streak=None,
+        cooldown_days=None,
         filter_fn=lambda df, params: pl.col("rsi_14") < params["rsi_max"],
         filter_history_fn=None,
         lookback_days=20,

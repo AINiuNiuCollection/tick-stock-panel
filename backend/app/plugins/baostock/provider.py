@@ -515,6 +515,7 @@ class BaostockProvider:
         """调用 baostock query_history_k_data_plus, 返回 polars DataFrame。
 
         日K返回: date, open, high, low, close, volume(股), amount(元), pre_close
+        (baostock 源字段名为 preclose, 归一化为工程契约的 pre_close)
         分钟K返回: date, time, open, high, low, close, volume(股), amount(元)
                    time 格式 HHMMSS (如 93000 = 09:30:00), 需组合 date+time 为 datetime
         """
@@ -523,10 +524,11 @@ class BaostockProvider:
         except ImportError:
             return None
 
-        # 日K带 pre_close 字段; 分钟K不带 pre_close 但带 time 字段
+        # 日K带 preclose 字段(baostock 官方字段名无下划线); 分钟K不带但带 time 字段。
+        # 旧写法传 "pre_close" → baostock [10004012] 日线指标参数传入错误。
         is_daily = frequency in ("d", "w", "m")
         if is_daily:
-            fields = "date,open,high,low,close,volume,amount,pre_close"
+            fields = "date,open,high,low,close,volume,amount,preclose"
         else:
             fields = "date,time,open,high,low,close,volume,amount"
 
@@ -569,7 +571,7 @@ class BaostockProvider:
                     # baostock volume 单位股, 工程契约手 → ÷100
                     "volume": _safe_float(row[fmap["volume"]]) / 100.0,
                     "amount": _safe_float(row[fmap["amount"]]),
-                    "pre_close": _safe_float(row[fmap["pre_close"]]),
+                    "pre_close": _safe_float(row[fmap["preclose"]]),
                 })
             else:
                 date_str = row[fmap["date"]]

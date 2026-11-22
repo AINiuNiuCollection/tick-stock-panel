@@ -4,13 +4,14 @@
  * 布局: 参数面板 + ECharts 图表 (上) + 结果 Tab 列表 (下, 可滚动)
  * 数据流: 调主工程后端 /api/czsc/analyze (optional-dependency 直接集成, 非 czsc-serve)
  *
- * 持久化策略: 离开页面再返回时, 从 react-query 缓存中取出最后一次成功的
- * czsc-analyze 结果作为初始展示 (gcTime 默认 5min, 足以覆盖常规切换);
- * 同时把最后一次 params 持久化到 sessionStorage, 让返回后能 refetch 同一查询。
+ * 触发策略: 进入页面【不自动分析】。用户点「分析」才提交请求。
+ *   上次的参数持久化到 sessionStorage, 仅用于恢复表单显示, 不触发分析;
+ *   已提交的分析结果从 react-query 缓存取出展示 (离开再返回仍可见上次图表),
+ *   但要发起新分析必须再次点击。
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, GripHorizontal } from 'lucide-react'
+import { Download, GripHorizontal, Maximize2, Minimize2 } from 'lucide-react'
 import { fetchCzscAnalyze, fetchCzscHealth, ApiError, type CzscAnalyzeResult } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { PageHeader } from '@/components/PageHeader'
@@ -57,12 +58,34 @@ function loadLastParams(): CzscParams | null {
 
 export function CzscPage() {
   const qc = useQueryClient()
-  const [params, setParams] = useState<CzscParams | null>(() => loadLastParams())
+  // 上次参数仅用于恢复【表单显示】; 进入页面不自动分析, 必须点击「分析」才提交。
+  const [savedParams, setSavedParams] = useState<CzscParams | null>(() => loadLastParams())
+  const [submittedParams, setSubmittedParams] = useState<CzscParams | null>(null)
   // 均线实时状态 — 下拉变更立即更新图表, 无需重新点分析;
-  // 初始值取 params.ma_periods (恢复上次会话) 或默认 [5,10,20]
+  // 初始值取 savedParams.ma_periods (恢复上次会话) 或默认 [5,10,20]
   const [liveMaPeriods, setLiveMaPeriods] = useState<number[]>(
-    () => params?.ma_periods ?? [5, 10, 20],
+    () => savedParams?.ma_periods ?? [5, 10, 20],
   )
+  // 图表显示选项 (实时生效, 无需重新分析): 中枢高低数据默认关, 分型标记默认开
+  const [liveZsPriceVisible, setLiveZsPriceVisible] = useState(false)
+  const [liveFxMarksVisible, setLiveFxMarksVisible] = useState(true)
+  // 全屏切换 — 对图表面板元素用 Fullscreen API; ECharts 由 ResizeObserver 自动跟随尺寸
+  const fsPanelRef = useRef<HTMLDivElement>(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const toggleFullscreen = useCallback(() => {
+    const el = fsPanelRef.current
+    if (!el) return
+    if (document.fullscreenElement) {
+      void document.exitFullscreen()
+    } else {
+      void el.requestFullscreen?.()
+    }
+  }, [])
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement)
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [])
   const chartRef = useRef<CzscChartHandle>(null)
   // 整体可拉伸容器高度 (px), 由 ResizeObserver 实时跟踪
   const containerRef = useRef<HTMLDivElement>(null)
@@ -124,21 +147,20 @@ export function CzscPage() {
     }
   }, [chartRatio])
 
-  // 持久化 params 到 sessionStorage (每次 setParams 时写)
-  useEffect(() => {
-    if (params) {
-      try {
-        sessionStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(params))
-      } catch {
-        // sessionStorage 满或禁用时忽略
-      }
-      // 同步 liveMaPeriods: 提交分析或从 sessionStorage 恢复 params 时,
-      // 让 live 状态对齐 params.ma_periods (避免下拉改了又重新分析导致回退)
-      if (params.ma_periods && params.ma_periods.length > 0) {
-        setLiveMaPeriods(params.ma_periods)
-      }
+  // 点击「分析」才提交: 记录本次参数(触发查询) + 持久化表单初值 + 同步均线。
+  // 与旧行为的区别: 恢复的 savedParams 不再自动触发查询, 必须显式点击。
+  const handleAnalyze = useCallback((next: CzscParams) => {
+    setSubmittedParams(next)
+    setSavedParams(next)
+    try {
+      sessionStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(next))
+    } catch {
+      // sessionStorage 满或禁用时忽略
     }
-  }, [params])
+    if (next.ma_periods && next.ma_periods.length > 0) {
+      setLiveMaPeriods(next.ma_periods)
+    }
+  }, [])
 
   const health = useQuery({
     queryKey: QK.czscHealth,
@@ -148,28 +170,38 @@ export function CzscPage() {
   })
 
   const analyze = useQuery<CzscAnalyzeResult>({
-    queryKey: params
-      ? QK.czscAnalyze(params.symbol, params.freq, params.start_date, params.end_date)
+    queryKey: submittedParams
+      ? QK.czscAnalyze(
+          submittedParams.symbol, submittedParams.freq,
+          submittedParams.start_date, submittedParams.end_date,
+          submittedParams.max_bi_num, submittedParams.min_bi_len,
+          submittedParams.features.join(','),
+          submittedParams.bs_macd_area_mode, submittedParams.bs_use_dif,
+          submittedParams.bs_use_macd_area, submittedParams.ma_periods,
+          submittedParams.force_refresh, submittedParams.bs_trend_overlap_mode,
+        )
       : ['czsc-analyze', 'idle'],
     queryFn: () => fetchCzscAnalyze({
-      symbol: params!.symbol,
-      symbol_name: params!.symbol_name,
-      freq: params!.freq,
-      start_date: params!.start_date,
-      end_date: params!.end_date,
-      max_bi_num: params!.max_bi_num,
-      min_bi_len: params!.min_bi_len,
-      features: params!.features.join(','),
-      force_refresh: params!.force_refresh,
-      bs_macd_area_mode: params!.bs_macd_area_mode,
-      bs_use_dif: params!.bs_use_dif,
-      bs_use_dea: params!.bs_use_dea,
-      bs_use_macd_area: params!.bs_use_macd_area,
-      // 透传当前勾选的均线周期 — 后端取数自动扩展暖机 (max(ma)*1.5 日历日),
-      // 计算含 120/250 的 SMA 序列后下发, 前端零计算。
-      ma_periods: liveMaPeriods,
+      symbol: submittedParams!.symbol,
+      symbol_name: submittedParams!.symbol_name,
+      freq: submittedParams!.freq,
+      start_date: submittedParams!.start_date,
+      end_date: submittedParams!.end_date,
+      max_bi_num: submittedParams!.max_bi_num,
+      min_bi_len: submittedParams!.min_bi_len,
+      features: submittedParams!.features.join(','),
+      force_refresh: submittedParams!.force_refresh,
+      bs_macd_area_mode: submittedParams!.bs_macd_area_mode,
+      bs_use_dif: submittedParams!.bs_use_dif,
+      bs_use_dea: submittedParams!.bs_use_dea,
+      bs_use_macd_area: submittedParams!.bs_use_macd_area,
+      bs_trend_overlap_mode: submittedParams!.bs_trend_overlap_mode,
+      // 透传【提交时】勾选的均线周期 — 后端取数自动扩展暖机并计算 SMA 后下发。
+      // 注意: 用提交值而非 liveMaPeriods, 避免仅改图表均线就触发重新请求。
+      ma_periods: submittedParams!.ma_periods,
     }),
-    enabled: !!params,
+    // 只有点击提交后才发起; 进入页面 submittedParams=null → 不自动分析
+    enabled: !!submittedParams,
     staleTime: 5 * 60_000,
     // gcTime 默认 5min; 提高到 30min 让用户离开再返回更可能命中缓存
     gcTime: 30 * 60_000,
@@ -236,10 +268,15 @@ export function CzscPage() {
       )}
 
       <CzscParamsPanel
-        initialSymbol={params?.symbol ?? ''}
-        onAnalyze={setParams}
+        initialSymbol={savedParams?.symbol ?? ''}
+        initialParams={savedParams}
+        onAnalyze={handleAnalyze}
         loading={analyze.isFetching}
         onMaPeriodsChange={setLiveMaPeriods}
+        zsPriceVisible={liveZsPriceVisible}
+        onZsPriceVisibleChange={setLiveZsPriceVisible}
+        fxMarksVisible={liveFxMarksVisible}
+        onFxMarksVisibleChange={setLiveFxMarksVisible}
       />
 
       {/* 上下布局: 图表在上, 可拖动分割条, 结果数据在下 (可滚动显示全部 fx/bi/zs 行)。
@@ -248,11 +285,29 @@ export function CzscPage() {
                    containerHeight 仅用于拖动增量计算, 不参与布局。 */}
       <div ref={containerRef} className="flex-1 flex flex-col gap-1 min-h-0">
         <div
-          className="bg-elevated rounded-btn p-2 min-h-0 flex flex-col"
-          style={{ flex: `${chartRatio} 1 0` }}
+          ref={fsPanelRef}
+          className="bg-elevated rounded-btn p-2 min-h-0 flex flex-col relative"
+          style={{ flex: isFullscreen ? undefined : `${chartRatio} 1 0` }}
         >
+          {/* 全屏切换按钮 — 悬浮在图表区右上角 (让开 ECharts 悬浮面板, 贴右上角内边) */}
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            title={isFullscreen ? '退出全屏 (Esc)' : '全屏显示'}
+            className="absolute top-2 right-14 z-20 h-7 w-7 flex items-center justify-center rounded-btn
+                       border border-border bg-base text-muted hover:text-foreground hover:border-accent transition-colors"
+          >
+            {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          </button>
           {displayData ? (
-            <CzscChart ref={chartRef} result={displayData} height="100%" maPeriods={liveMaPeriods} />
+            <CzscChart
+              ref={chartRef}
+              result={displayData}
+              height="100%"
+              maPeriods={liveMaPeriods}
+              showZsPriceLabels={liveZsPriceVisible}
+              showFxMarks={liveFxMarksVisible}
+            />
           ) : analyze.isFetching ? (
             <EmptyState title="分析中…" />
           ) : analyze.isError ? (
@@ -293,6 +348,7 @@ export function CzscPage() {
             共 {displayData.bar_count} 根 K 线 · 数据源: {displayData.source}
             {displayData.cached ? ' · 缓存' : ' · 实时'}
             {!analyze.data && lastFromCache ? ' · 显示上次缓存结果' : ''}
+            <span className="ml-2 opacity-70">· 点击图表后 ↑↓ 缩放、←→ 平移</span>
           </div>
           <button
             type="button"

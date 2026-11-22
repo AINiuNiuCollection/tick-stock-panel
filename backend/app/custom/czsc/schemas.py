@@ -118,6 +118,15 @@ class BsPointItem(BaseModel):
     divergence_type: str | None = None
     divergence_pass: list[str] = Field(default_factory=list)
     macd_area_mode: str = "split"
+    # 判定口径: 'strict'=缠师原文[DD,GG]重叠; 'practical'=笔级近似的[ZD,ZG];
+    # 'n/a'=三买三卖只凭位置, 与重叠口径无关。不把工程近似冒充原文严格口径。
+    definition_mode: str = "n/a"
+    # 区间套下钻(第27课): 次级别背驰确认, 未开启/数据不可用时为 None。
+    level: str = "日线"
+    nest_confirmed: bool | None = None
+    nest_level: str | None = None
+    nest_ratio: float | None = None
+    nest_note: str | None = None
 
 
 class AnalyzeResult(BaseModel):
