@@ -338,7 +338,8 @@ def build_default_service() -> AnalyzeService:
     return AnalyzeService(
         chain,
         SublevelVerifier(chain),
-        AnalysisCache(),
+        # maxsize 覆盖策略面板默认 300 只扫描; 128 会互相驱逐导致重复分析
+        AnalysisCache(maxsize=2048, ttl_s=600.0),
         IntervalNestVerifier(chain),
     )
 
