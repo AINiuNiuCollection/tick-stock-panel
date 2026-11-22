@@ -2718,6 +2718,9 @@ export const api = {
     ),
   screenerCachedSummary: () =>
     request<ScreenerCachedSummary>('/api/screener/cached-summary'),
+  // 缠论扫描全局进度 (策略面板 run_preset 挂起期间 ~1s 轮询)
+  czscScanProgress: () =>
+    czscScanProgress(),
   screenerCachedResult: (strategyId: string, extColumns?: string) =>
     request<ScreenerCachedResult>(
       extColumns
