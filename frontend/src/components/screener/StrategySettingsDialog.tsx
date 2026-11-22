@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Settings2, RotateCcw, Save, ChevronDown, Filter, Star, TrendingUp, Sparkles, Download, Layers, Plus, Trash2 } from 'lucide-react'
+import { X, Settings2, RotateCcw, Save, ChevronDown, Filter, Star, TrendingUp, Sparkles, Download, Layers, Plus, Trash2, Clock } from 'lucide-react'
 import { api, type StrategyDetail, type StrategyParamDef, type CompositeChildInfo, type ScoringDirection } from '@/lib/api'
 import { toPercentages, normalizeWeights } from '@/lib/weights'
 import { BUILTIN_COLUMNS } from '@/lib/watchlist-columns'
@@ -219,6 +219,11 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteError, setDeleteError] = useState('')
 
+  // 每日定时筛选 (仅 timeframes 含 '1d' 的策略; 随"保存设置"一起提交)
+  const [schedEnabled, setSchedEnabled] = useState(false)
+  const [schedTime, setSchedTime] = useState('16:00')
+  const [schedLastRun, setSchedLastRun] = useState<{ date: string; ok: boolean; total?: number; error?: string; at?: string } | null>(null)
+
   // 辅助：更新 basicFilter 某个 key
   const setBF = useCallback((key: string, value: any) => {
     setBasicFilter(prev => ({ ...prev, [key]: value }))
@@ -250,6 +255,19 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
         setExitSignals(d.exit_signals ?? [])
         setDisplayLimit(d.display_limit ?? null)
         setBasicFilterEnabled(d.basic_filter?.enabled !== false)
+        // 定时筛选: 从全局 schedules 读该策略当前设置
+        api.screenerGetSchedules().then(data => {
+          const s = data.schedules?.[strategyId]
+          if (s) {
+            setSchedEnabled(!!s.enabled)
+            setSchedTime(`${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}`)
+            setSchedLastRun(s.last_run ?? null)
+          } else {
+            setSchedEnabled(false)
+            setSchedTime('16:00')
+            setSchedLastRun(null)
+          }
+        }).catch(() => {})
         setCompositeChildren((() => {
           // 存储的小数权重 → 滑块百分比口径
           const list = d.composite_children ?? []
@@ -310,6 +328,11 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
             })() }
           : {}),
       })
+      // 定时筛选: 与策略配置一起保存 (失败不阻塞主配置保存)
+      try {
+        const [hh, mm] = schedTime.split(':').map(v => parseInt(v, 10) || 0)
+        await api.screenerPutSchedule(strategyId, schedEnabled, hh, mm)
+      } catch {}
       onSaved?.(displayLimit)
       onClose()
     } finally {
@@ -702,6 +725,55 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
                     <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.04] px-3 py-2 text-[10px] leading-4 text-muted">
                       出入场触发器保存后对<b className="text-secondary">回测和监控</b>生效;选股扫描仍按策略本身的筛选规则,不受此影响。
                     </div>
+
+                    {/* 每日定时筛选: 仅日线策略 */}
+                    {detail?.timeframes?.includes('1d') && (
+                      <Section
+                        icon={Clock}
+                        title="每日定时筛选"
+                        accent="text-accent"
+                        defaultOpen={false}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] text-secondary">工作日自动执行选股</span>
+                          <button
+                            type="button"
+                            onClick={() => setSchedEnabled(v => !v)}
+                            className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors duration-200 cursor-pointer ${
+                              schedEnabled ? 'bg-accent' : 'bg-elevated'
+                            }`}
+                            aria-pressed={schedEnabled}
+                          >
+                            <span className={`inline-block h-3 w-3 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                              schedEnabled ? 'translate-x-[14px]' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                        </div>
+                        {schedEnabled && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] text-secondary">执行时间</span>
+                            <input
+                              type="time"
+                              value={schedTime}
+                              onChange={e => setSchedTime(e.target.value)}
+                              className="h-6 px-1.5 rounded bg-base border border-border text-[11px] font-mono text-foreground focus:outline-none focus:border-accent/50"
+                            />
+                            <span className="text-[10px] text-muted">趋势类策略按天执行一次即可, 结果按天展示</span>
+                          </div>
+                        )}
+                        {schedLastRun && (
+                          <div className="text-[10px] leading-4 text-muted/80 border-t border-border/10 pt-1.5">
+                            最近定时执行: {schedLastRun.date} {schedLastRun.at}
+                            {schedLastRun.ok
+                              ? <> · 命中 <span className="text-accent">{schedLastRun.total ?? 0}</span> 只</>
+                              : <> · <span className="text-danger">失败: {schedLastRun.error ?? '未知'}</span></>}
+                          </div>
+                        )}
+                        <div className="text-[10px] leading-4 text-muted/70">
+                          保存后生效; 结果写入盘后缓存, 与手动执行同一展示路径。
+                        </div>
+                      </Section>
+                    )}
 
                   </div>
                 </div>

@@ -1292,6 +1292,13 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         logger.info("scheduled_review enabled @%02d:%02d mon-fri",
                     review_sched["hour"], review_sched["minute"])
 
+    # 策略每日定时筛选: 恢复用户为各策略配置的定时执行任务
+    try:
+        from app.services import strategy_schedule
+        strategy_schedule.restore_scheduled_jobs(scheduler)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("strategy schedules restore failed: %s", e)
+
     scheduler.start()
     logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d, depth@%02d:%02d mon-fri",
                 inst_sched["hour"], inst_sched["minute"], sched["hour"], sched["minute"],

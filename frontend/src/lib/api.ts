@@ -3627,6 +3627,17 @@ export const api = {
       body: JSON.stringify({ strategy_id: strategyId, overrides }),
     }),
 
+  // 策略每日定时筛选
+  screenerGetSchedules: () =>
+    request<{ schedules: Record<string, { enabled: boolean; hour: number; minute: number; last_run?: { date: string; ok: boolean; total?: number; error?: string; at?: string } | null }> }>(
+      '/api/screener/schedules',
+    ),
+  screenerPutSchedule: (strategyId: string, enabled: boolean, hour: number, minute: number) =>
+    request<{ ok: boolean; schedule: { enabled: boolean; hour: number; minute: number } }>(
+      `/api/screener/schedules/${encodeURIComponent(strategyId)}`,
+      { method: 'PUT', body: JSON.stringify({ enabled, hour, minute }) },
+    ),
+
   strategyPatchConfig: (strategyId: string, overrides: Record<string, any>) =>
     request<{ ok: boolean }>('/api/strategies/config', {
       method: 'PATCH',

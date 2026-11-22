@@ -175,6 +175,9 @@ async def _application_lifespan(app: FastAPI):
     # 启动调度器(若 enriched 数据为空,首次启动可手动 POST /api/pipeline/run)
     try:
         daily_pipeline.set_app_state(app.state)  # 供 depth_finalize job 访问 depth_service
+        # 策略定时筛选 job 通过独立引用访问 repo/engine
+        from app.services import strategy_schedule
+        strategy_schedule.set_app_state(app.state)
         scheduler = daily_pipeline.start_scheduler(repo, capset)
         app.state.scheduler = scheduler
     except Exception as e:  # noqa: BLE001

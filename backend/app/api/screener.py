@@ -409,6 +409,46 @@ def get_cached(
     return _cache_payload_with_ext(cached, ext_values)
 
 
+# ===== 策略每日定时筛选 =====
+
+class ScheduleRequest(BaseModel):
+    enabled: bool
+    hour: int
+    minute: int
+
+
+@router.get("/schedules")
+def get_schedules(request: Request):
+    """全部策略定时设置 (含最近一次定时执行结果)。"""
+    from app.services import strategy_schedule
+    return {"schedules": strategy_schedule.load_schedules()}
+
+
+@router.put("/schedules/{strategy_id}")
+def put_schedule(strategy_id: str, req: ScheduleRequest, request: Request):
+    """设置/更新策略每日定时筛选 (仅日线策略; 立即注册或移除对应 job)。"""
+    from app.services import strategy_schedule
+
+    engine = getattr(request.app.state, "strategy_engine", None)
+    if not engine or not engine.has(strategy_id):
+        raise HTTPException(status_code=404, detail=f"策略 {strategy_id} 不存在")
+    meta = engine.get(strategy_id).meta
+    if "1d" not in (meta.get("timeframes") or ["1d"]):
+        raise HTTPException(status_code=400, detail="仅日线(timeframes 含 1d)策略支持每日定时执行")
+
+    try:
+        entry = strategy_schedule.set_schedule(
+            strategy_id, enabled=req.enabled, hour=req.hour, minute=req.minute,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is not None:
+        strategy_schedule.sync_job(scheduler, strategy_id)
+    return {"ok": True, "schedule": entry}
+
+
 @router.get("/cached-summary")
 def get_cached_summary(request: Request):
     """返回策略卡片所需的轻量摘要，不序列化股票明细。"""
