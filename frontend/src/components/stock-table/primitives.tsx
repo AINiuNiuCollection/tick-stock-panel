@@ -24,6 +24,34 @@ export function boardTag(symbol: string): { label: string; color: string } | nul
 
 // ===== RSI 指标带颜色 =====
 
+// 缠论 B1/B2 信号标签 — "B1@2026-11-12@12.34" → 带色标签; 无信号显示 —
+export function CzscSignalCell({ value }: { value: any }) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) return <span className="text-muted">—</span>
+  return (
+    <span className="flex flex-wrap gap-1">
+      {text.split(',').map(part => {
+        const seg = part.trim()
+        const [type, dt, price] = seg.split('@')
+        const isB1 = type === 'B1'
+        return (
+          <span
+            key={seg}
+            title={`${type} 信号日 ${dt ?? ''}${price ? ` 信号价 ${price}` : ''}`}
+            className={`inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium border ${
+              isB1
+                ? 'text-danger bg-danger/10 border-danger/30'
+                : 'text-warning bg-warning/10 border-warning/30'
+            }`}
+          >
+            {type}{dt ? ` ${dt.slice(5)}` : ''}{price ? ` ${price}` : ''}
+          </span>
+        )
+      })}
+    </span>
+  )
+}
+
 export function RSIBadge({ value }: { value: number | null | undefined }) {
   if (value == null || Number.isNaN(value)) return <span className="text-muted">—</span>
   let color = 'text-secondary'
@@ -56,6 +84,13 @@ export function renderBuiltinDataCell(r: any, col: ColumnConfig): ReactNode | nu
   const numCls = `${alignTdClass(col.align)} ${NUM_CELL_CLASS}`
 
   switch (key) {
+    // 缠论 B1/B2 信号 (strategy rows 透传字段)
+    case 'czsc_signal':
+      return (
+        <td key={col.id} className={alignTdClass(col.align)}>
+          <CzscSignalCell value={r.czsc_signal} />
+        </td>
+      )
     // 价格
     case 'price':
       return <td key={col.id} className={`${numCls} text-secondary`}>{fmtMaybePrice(r.close)}</td>

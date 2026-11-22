@@ -60,6 +60,9 @@ def test_filter_history_returns_only_hit_symbols(monkeypatch):
     class FakeHit:
         def __init__(self, symbol):
             self.symbol = symbol
+            self.type = "B1"
+            self.dt = "2026-11-12"
+            self.price = 12.34
 
     class FakeResult:
         hits = (FakeHit("600000.SH"),)
@@ -81,6 +84,9 @@ def test_filter_history_returns_only_hit_symbols(monkeypatch):
     assert out.height == 1
     assert out["symbol"].to_list() == ["600000.SH"]
     assert out["date"].max() == date(2026, 11, 20)
+    # 信号详情随行透出 (前端 B1/B2 信号列)
+    assert "czsc_signal" in out.columns
+    assert out["czsc_signal"].to_list() == ["B1@2026-11-12@12.34"]
     assert captured["freq"] == "30分钟"
     assert captured["signal_types"] == ("B1",)
     assert captured["div_base"] == "zg"

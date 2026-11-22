@@ -25,6 +25,8 @@ export const SCREENER_BUILTIN_COLUMNS: ColumnConfig[] = [
   // 策略特有列
   { id: 'builtin:strategies', source: { type: 'builtin', key: 'strategies' }, label: '策略', visible: true, align: 'left' },
   { id: 'builtin:score', source: { type: 'builtin', key: 'score' }, label: '评分', visible: true, align: 'right' },
+  // 缠论 B1/B2 信号 (仅缠论策略结果行携带 czsc_signal 字段, 其他策略该列显示 —)
+  { id: 'builtin:czsc_signal', source: { type: 'builtin', key: 'czsc_signal' }, label: 'B1/B2信号', visible: true, align: 'left' },
   // 价格
   { id: 'builtin:price', source: { type: 'builtin', key: 'price' }, label: '现价', visible: true, align: 'right' },
   { id: 'builtin:pct', source: { type: 'builtin', key: 'pct' }, label: '涨跌幅', visible: true, align: 'right' },
@@ -90,7 +92,7 @@ export const SCREENER_BUILTIN_COLUMNS: ColumnConfig[] = [
 ]
 
 export const SCREENER_COLUMN_GROUPS: ColumnGroup[] = [
-  { id: 'core', label: '核心', icon: '🎯', keys: ['strategies', 'score', 'signals'] },
+  { id: 'core', label: '核心', icon: '🎯', keys: ['strategies', 'score', 'signals', 'czsc_signal'] },
   { id: 'price', label: '价格', icon: '💰', keys: ['price', 'pct', 'change_amount', 'amplitude'] },
   { id: 'volume', label: '成交', icon: '📊', keys: ['turnover', 'amount', 'float_val', 'vol_ratio', 'annual_vol'] },
   { id: 'ma', label: '均线', icon: '📈', keys: ['ma5', 'ma10', 'ma20', 'ma60'] },
