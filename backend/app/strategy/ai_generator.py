@@ -347,6 +347,7 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
         "app.backtest.matrix",
         "app.strategy.builtin.factor_rank_research",
         "app.strategy.market_data",   # 新增: 策略可读取指数/ETF 日K
+        "app.custom.czsc",            # 缠论选股策略: 复用 B1/B2 识别与扫描服务(含子模块)
         "datetime",
         "__future__",
     })
@@ -376,9 +377,12 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
         } - extra_allowed_calls
 
         def _module_allowed(module: str) -> bool:
-            return (
-                module in allowed_import_modules
-                or module.split(".", 1)[0] in allowed_import_modules
+            # 逐级前缀匹配: 白名单 'app.custom.czsc' 放行其任意子模块
+            # (如 app.custom.czsc.application.scanner), 但不放行 app 下其他子树。
+            parts = module.split(".")
+            return any(
+                ".".join(parts[:i]) in allowed_import_modules
+                for i in range(1, len(parts) + 1)
             )
 
         # dunder 属性名: 访问这些属性可逃逸出策略沙箱拿到 os/subprocess 等

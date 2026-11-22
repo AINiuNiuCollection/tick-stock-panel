@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import socket as _socket
+import threading
 from collections.abc import Callable, Iterator
 from datetime import date, datetime
 from typing import Any
@@ -195,11 +196,72 @@ class _BaostockConfig:
     builtin = True
 
 
+# ===== 引用计数会话管理 =====
+# baostock SDK 的连接是进程级全局单连接 (login 写入模块全局)。
+# 之前每次查询前 login、查询后 logout, 批量扫描时每只股票一对
+# login/logout (stdout 刷屏 "login success!/logout success!")。
+# 改为引用计数: 第一个查询触发 login, 并发查询共享会话, 全部完成后
+# (引用归零) 才 logout。单次批量扫描全程只产生一对登录/登出日志。
+_bs_session_lock = threading.Lock()
+_bs_session_refs = 0
+
+
+def _session_acquire() -> tuple[bool, str]:
+    """进入一段 baostock 查询区, 返回 (是否成功, 错误)。
+
+    引用从 0→1 时真正 login; 已有会话则直接复用 (不重复 login)。
+    login 失败时不计数, 后续调用会重试。
+    """
+    global _bs_session_refs
+    with _bs_session_lock:
+        if _bs_session_refs == 0:
+            ok, msg = _do_login()
+            if not ok:
+                return False, msg
+        _bs_session_refs += 1
+    return True, ""
+
+
+def _session_release() -> None:
+    """退出一段 baostock 查询区。引用归零时 logout (业务全部完成)。"""
+    global _bs_session_refs
+    with _bs_session_lock:
+        if _bs_session_refs > 0:
+            _bs_session_refs -= 1
+        if _bs_session_refs == 0:
+            try:
+                import baostock as bs
+                bs.logout()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _do_login() -> tuple[bool, str]:
+    """真正登录 baostock, 返回 (是否成功, user_id 或错误)。"""
+    try:
+        import baostock as bs
+    except ImportError:
+        return False, "baostock not installed"
+
+    # baostock SDK 走原生 socket, 不读 HTTP_PROXY/HTTPS_PROXY。
+    # 企业网络需经 HTTP 代理出网时, 设置环境变量 BAOSTOCK_PROXY=host:port
+    # 触发 monkey-patch, 让 socket.connect 到 baostock:10030 时改走
+    # HTTP CONNECT 隧道。未设置则保持原生直连。
+    _maybe_install_proxy_from_env()
+
+    lg = bs.login()
+    if getattr(lg, "error_code", "0") != "0":
+        return False, f"login failed: {getattr(lg, 'error_msg', 'unknown')}"
+    return True, getattr(lg, "user_id", "")
+
+
 class BaostockProvider:
     """Baostock (证券宝) 数据 provider。
 
     纯 SDK 调用, 无 API Key。免费登录 bs.login()。
-    每次查询前 login, 查询后 logout (baostock session 单连接串行)。
+    会话采用模块级引用计数 (_session_acquire/_session_release):
+    首个查询触发 login, 并发/连续查询共享同一会话, 引用归零才 logout。
+    一次批量扫描全程只产生一对 login/logout。
     """
 
     name = "baostock"
@@ -209,37 +271,8 @@ class BaostockProvider:
         self.config = _BaostockConfig()
 
     def close(self) -> None:
-        """无持久资源需清理 (每次查询内部 login/logout)。"""
+        """无持久资源需清理 (会话由模块级引用计数管理)。"""
         pass
-
-    # ============================================================
-    # 内部: baostock session 管理
-    # ============================================================
-
-    def _login(self) -> tuple[bool, str]:
-        """登录 baostock, 返回 (是否成功, user_id 或错误)。"""
-        try:
-            import baostock as bs
-        except ImportError:
-            return False, "baostock not installed"
-
-        # baostock SDK 走原生 socket, 不读 HTTP_PROXY/HTTPS_PROXY。
-        # 企业网络需经 HTTP 代理出网时, 设置环境变量 BAOSTOCK_PROXY=host:port
-        # 触发 monkey-patch, 让 socket.connect 到 baostock:10030 时改走
-        # HTTP CONNECT 隧道。未设置则保持原生直连。
-        _maybe_install_proxy_from_env()
-
-        lg = bs.login()
-        if getattr(lg, "error_code", "0") != "0":
-            return False, f"login failed: {getattr(lg, 'error_msg', 'unknown')}"
-        return True, getattr(lg, "user_id", "")
-
-    def _logout(self) -> None:
-        try:
-            import baostock as bs
-            bs.logout()
-        except Exception:  # noqa: BLE001
-            pass
 
     # ============================================================
     # daily 数据集
@@ -266,7 +299,7 @@ class BaostockProvider:
         start_str = start_d.strftime("%Y-%m-%d") if start_d else "1990-12-19"
         end_str = end_d.strftime("%Y-%m-%d") if end_d else datetime.now().strftime("%Y-%m-%d")
 
-        ok, _ = self._login()
+        ok, _ = _session_acquire()
         if not ok:
             logger.warning("baostock login failed, skip daily fetch")
             return pl.DataFrame()
@@ -303,7 +336,7 @@ class BaostockProvider:
                 on_chunk_done(result)
             return result
         finally:
-            self._logout()
+            _session_release()
 
     def iter_daily(
         self,
@@ -322,7 +355,7 @@ class BaostockProvider:
         start_str = start_d.strftime("%Y-%m-%d") if start_d else "1990-12-19"
         end_str = end_d.strftime("%Y-%m-%d") if end_d else datetime.now().strftime("%Y-%m-%d")
 
-        ok, _ = self._login()
+        ok, _ = _session_acquire()
         if not ok:
             return
 
@@ -349,7 +382,7 @@ class BaostockProvider:
                     on_chunk_done(result)
                 yield result
         finally:
-            self._logout()
+            _session_release()
 
     # ============================================================
     # minute 数据集
@@ -386,7 +419,7 @@ class BaostockProvider:
         start_str = start_dt.strftime("%Y-%m-%d") if start_dt else "2015-01-01"
         end_str = end_dt.strftime("%Y-%m-%d") if end_dt else datetime.now().strftime("%Y-%m-%d")
 
-        ok, _ = self._login()
+        ok, _ = _session_acquire()
         if not ok:
             logger.warning("baostock login failed, skip minute fetch")
             return pl.DataFrame()
@@ -424,7 +457,7 @@ class BaostockProvider:
                 on_chunk_done(combined)
             return combined
         finally:
-            self._logout()
+            _session_release()
 
     # ============================================================
     # adj_factor 数据集
@@ -450,7 +483,7 @@ class BaostockProvider:
         start_str = start_d.strftime("%Y-%m-%d") if start_d else "1990-12-19"
         end_str = end_d.strftime("%Y-%m-%d") if end_d else datetime.now().strftime("%Y-%m-%d")
 
-        ok, _ = self._login()
+        ok, _ = _session_acquire()
         if not ok:
             logger.warning("baostock login failed, skip adj_factor fetch")
             return pl.DataFrame()
@@ -498,7 +531,7 @@ class BaostockProvider:
                 on_chunk_done(combined)
             return combined
         finally:
-            self._logout()
+            _session_release()
 
     # ============================================================
     # 内部: K 线查询 + 字段映射
