@@ -42,17 +42,6 @@ TREND_OVERLAP_MODES = ("strict", "practical")
 DEFAULT_TREND_OVERLAP_MODE = "practical"
 DEFAULT_BS_ONLY_VALID_ZS = True
 DEFAULT_TREND_MAX_STEPS = 3
-# 回抽确认的最小进入深度 (定理二/三的噪声过滤):
-#   回抽笔必须进入 [ZD,ZG] 至少该深度, 才算"重新回到中枢", 中枢才延伸;
-#   擦边 (如汇川日线 2025-02-14 只进 0.0175 元) 视为未回 -> 定理三破坏。
-#   base: 比例基准。'zg'=中枢上沿价位(默认, 缠师第20课三买以 ZG 为锚, 与"回试守住ZG"
-#         对称; 且跨标的语义一致: 2% 就是价格回撤 2%); 'height'=中枢高度(ZG-ZD)。
-#   ratio: 比例阈值, 默认 0.02 (2%); 0 表示关闭比例口径。
-#   depth: 绝对价格下限, 默认 0 (关闭); 两者取大。
-ZS_PULLBACK_BASES = ("zg", "height")
-DEFAULT_ZS_PULLBACK_BASE = "zg"
-DEFAULT_ZS_PULLBACK_MIN_DEPTH = 0.0
-DEFAULT_ZS_PULLBACK_MIN_RATIO = 0.02
 # B2/S2 次级别验证: 30 分钟数据最近可用窗口 (东财兜底硬限制约 224 根 ≈ 5 周)
 SUBLEVEL_30M_LOOKBACK_DAYS = 40
 
@@ -100,9 +89,6 @@ class DivergenceConfig:
     sublevel_lookback_days: int = SUBLEVEL_30M_LOOKBACK_DAYS
     divergence_logic: str = DEFAULT_DIVERGENCE_LOGIC
     trend_overlap_mode: str = DEFAULT_TREND_OVERLAP_MODE
-    zs_pullback_base: str = DEFAULT_ZS_PULLBACK_BASE
-    zs_pullback_min_depth: float = DEFAULT_ZS_PULLBACK_MIN_DEPTH
-    zs_pullback_min_ratio: float = DEFAULT_ZS_PULLBACK_MIN_RATIO
     # 区间套下钻(第27课): 是否对买卖点做次级别背驰确认标注。
     # 默认关闭——次级别取数有成本, 且数据不可用时只会降级为 None。
     enable_interval_nest: bool = False
@@ -116,21 +102,16 @@ class DivergenceConfig:
             self.trend_overlap_mode if self.trend_overlap_mode in TREND_OVERLAP_MODES
             else DEFAULT_TREND_OVERLAP_MODE
         )
-        depth = max(0.0, float(self.zs_pullback_min_depth))
-        ratio = min(1.0, max(0.0, float(self.zs_pullback_min_ratio)))
-        base = self.zs_pullback_base if self.zs_pullback_base in ZS_PULLBACK_BASES else DEFAULT_ZS_PULLBACK_BASE
         if (
             mode == self.macd_area_mode and steps == self.trend_max_steps
             and lookback == self.sublevel_lookback_days and logic == self.divergence_logic
-            and overlap == self.trend_overlap_mode and base == self.zs_pullback_base
-            and depth == self.zs_pullback_min_depth and ratio == self.zs_pullback_min_ratio
+            and overlap == self.trend_overlap_mode
         ):
             return self
         return replace(
             self, macd_area_mode=mode, trend_max_steps=steps,
             sublevel_lookback_days=lookback, divergence_logic=logic,
-            trend_overlap_mode=overlap, zs_pullback_base=base,
-            zs_pullback_min_depth=depth, zs_pullback_min_ratio=ratio,
+            trend_overlap_mode=overlap,
         )
 
     def cache_key(self) -> tuple[object, ...]:
@@ -143,9 +124,6 @@ class DivergenceConfig:
             self.sublevel_lookback_days,
             self.divergence_logic,
             self.trend_overlap_mode,
-            self.zs_pullback_base,
-            self.zs_pullback_min_depth,
-            self.zs_pullback_min_ratio,
             self.enable_interval_nest,
         )
 
@@ -187,9 +165,6 @@ class AnalyzeRequest:
         bs_use_macd_area: bool = DEFAULT_BS_USE_MACD_AREA,
         bs_divergence_logic: str = DEFAULT_DIVERGENCE_LOGIC,
         bs_trend_overlap_mode: str = DEFAULT_TREND_OVERLAP_MODE,
-        bs_zs_pullback_base: str = DEFAULT_ZS_PULLBACK_BASE,
-        bs_zs_pullback_min_depth: float = DEFAULT_ZS_PULLBACK_MIN_DEPTH,
-        bs_zs_pullback_min_ratio: float = DEFAULT_ZS_PULLBACK_MIN_RATIO,
         bs_enable_interval_nest: bool = False,
         force_refresh: bool = False,
     ) -> AnalyzeRequest:
@@ -209,9 +184,6 @@ class AnalyzeRequest:
                 use_macd_area=bs_use_macd_area,
                 divergence_logic=bs_divergence_logic,
                 trend_overlap_mode=bs_trend_overlap_mode,
-                zs_pullback_base=bs_zs_pullback_base,
-                zs_pullback_min_depth=bs_zs_pullback_min_depth,
-                zs_pullback_min_ratio=bs_zs_pullback_min_ratio,
                 enable_interval_nest=bs_enable_interval_nest,
             ).normalized(),
             force_refresh=force_refresh,
@@ -252,108 +224,4 @@ class AnalyzeRequest:
             self.symbol_name or "",
             self.ma_periods,
             self.divergence.cache_key(),
-        )
-
-
-# ===== B1/B2 信号选股扫描配置 =====
-SCAN_POOL_WHITELIST = ("CN_Equity_A", "CSI300", "CSI500", "SSE50", "watchlist")
-SCAN_SIGNAL_WHITELIST = ("B1", "B2")
-SCAN_ORDER_MODES = ("dt_desc", "divergence_desc")
-DEFAULT_SCAN_POOL = "CN_Equity_A"
-DEFAULT_SCAN_FREQ = "日线"
-DEFAULT_SCAN_LOOKBACK_DAYS = 425
-DEFAULT_SCAN_MAX_SIGNAL_AGE = 5
-DEFAULT_SCAN_LIMIT = 50
-DEFAULT_SCAN_MAX_WORKERS = 8
-DEFAULT_SCAN_PER_SYMBOL_TIMEOUT_S = 30.0
-# 分钟级别全市场扫描不可行(东财历史仅约5周+限流), 需要显式 symbols
-MINUTE_FREQS = ("5分钟", "15分钟", "30分钟", "60分钟")
-MINUTE_SCAN_MAX_SYMBOLS = 200
-# 超过该池规模走异步渐进模式
-ASYNC_SCAN_THRESHOLD = 200
-
-
-@dataclass(frozen=True)
-class ScanRequest:
-    """B1/B2 信号选股请求 — 复用 DivergenceConfig, 不复制任何买卖点判定参数。"""
-
-    pool: str = DEFAULT_SCAN_POOL
-    symbols: tuple[str, ...] = ()
-    freq: str = DEFAULT_SCAN_FREQ
-    as_of: date | None = None
-    lookback_days: int = DEFAULT_SCAN_LOOKBACK_DAYS
-    signal_types: tuple[str, ...] = SCAN_SIGNAL_WHITELIST
-    max_signal_age: int = DEFAULT_SCAN_MAX_SIGNAL_AGE
-    min_divergence_hits: int = 0
-    order_by: str = "dt_desc"
-    limit: int = DEFAULT_SCAN_LIMIT
-    max_workers: int = DEFAULT_SCAN_MAX_WORKERS
-    per_symbol_timeout_s: float = DEFAULT_SCAN_PER_SYMBOL_TIMEOUT_S
-    max_symbols: int | None = None
-    max_bi_num: int = DEFAULT_MAX_BI_NUM
-    min_bi_len: int = DEFAULT_MIN_BI_LEN
-    divergence: DivergenceConfig = field(default_factory=DivergenceConfig)
-    force_refresh: bool = False
-
-    def normalized(self) -> ScanRequest:
-        """白名单过滤 + 范围钳制; 分钟级别限制显式 symbols 数量。"""
-        pool = self.pool if self.pool in SCAN_POOL_WHITELIST else DEFAULT_SCAN_POOL
-        signals = tuple(
-            s.strip().upper() for s in self.signal_types
-            if s.strip().upper() in SCAN_SIGNAL_WHITELIST
-        ) or SCAN_SIGNAL_WHITELIST
-        order = self.order_by if self.order_by in SCAN_ORDER_MODES else "dt_desc"
-        symbols = tuple(dict.fromkeys(s.strip() for s in self.symbols if s and s.strip()))
-        if self.freq in MINUTE_FREQS and len(symbols) > MINUTE_SCAN_MAX_SYMBOLS:
-            symbols = symbols[:MINUTE_SCAN_MAX_SYMBOLS]
-        return replace(
-            self,
-            pool=pool,
-            symbols=symbols,
-            signal_types=signals,
-            order_by=order,
-            lookback_days=max(60, min(2000, int(self.lookback_days))),
-            max_signal_age=max(0, int(self.max_signal_age)),
-            min_divergence_hits=max(0, min(2, int(self.min_divergence_hits))),
-            limit=max(1, min(500, int(self.limit))),
-            max_workers=max(1, min(32, int(self.max_workers))),
-            per_symbol_timeout_s=max(1.0, min(300.0, float(self.per_symbol_timeout_s))),
-            max_symbols=(max(1, int(self.max_symbols)) if self.max_symbols else None),
-            max_bi_num=max(10, min(500, int(self.max_bi_num))),
-            min_bi_len=max(3, min(30, int(self.min_bi_len))),
-            divergence=self.divergence.normalized(),
-        )
-
-    def validate_for_execution(self, pool_size: int) -> list[str]:
-        """执行前校验, 返回错误列表(空=通过)。"""
-        errors: list[str] = []
-        if self.freq in MINUTE_FREQS and not self.symbols and pool_size > MINUTE_SCAN_MAX_SYMBOLS:
-            errors.append(
-                f"分钟级别({self.freq})不支持全市场扫描({pool_size}只), "
-                f"请用 symbols 指定不超过 {MINUTE_SCAN_MAX_SYMBOLS} 只标的"
-            )
-        return errors
-
-    def analysis_request(self, symbol: str, name: str | None = None, start: date | None = None, end: date | None = None) -> AnalyzeRequest:
-        """构造单股分析请求 — 只请求扫描所需特征, 判定口径整体复用。"""
-        return AnalyzeRequest(
-            symbol=symbol,
-            symbol_name=name,
-            freq=self.freq,
-            start=start,
-            end=end,
-            max_bi_num=self.max_bi_num,
-            min_bi_len=self.min_bi_len,
-            features=("zs", "bs_points"),
-            divergence=self.divergence,
-            force_refresh=self.force_refresh,
-        )
-
-    def cache_key(self) -> tuple[object, ...]:
-        return (
-            self.pool, self.symbols, self.freq,
-            self.as_of.isoformat() if self.as_of else "",
-            self.lookback_days, self.signal_types, self.max_signal_age,
-            self.min_divergence_hits, self.order_by, self.limit,
-            self.max_bi_num, self.min_bi_len, self.divergence.cache_key(),
         )

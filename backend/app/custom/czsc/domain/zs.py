@@ -31,12 +31,7 @@ def make_zs(bis: list[Bi]) -> Zs | None:
     )
 
 
-def build_zs_strict(
-    bi_list: list[Bi],
-    min_pullback_depth: float = 0.0,
-    min_pullback_ratio: float = 0.02,
-    pullback_base: str = "zg",
-) -> list[Zs]:
+def build_zs_strict(bi_list: list[Bi]) -> list[Zs]:
     """从笔序列构造中枢序列 — 严格按第 18/20 课的中枢延伸与终止规则。
 
     原文依据:
@@ -79,17 +74,6 @@ def build_zs_strict(
                - 下一笔不回到中枢内    → 定理三破坏成立, 该笔是真离开段,
                  **不并入**中枢 (否则拉升/断头铡刀段会被吞进方框),
                  前中枢在此刻正式终止, 新中枢从回抽笔起重新扫描。
-           "重新回到中枢内"需满足**最小进入深度**, 而非任意擦边: 回抽笔与本
-           中枢 [ZD,ZG] 的重叠长度必须 **> threshold** (等于也不算, 严格大于)。
-           threshold =
-           max(min_pullback_depth, min_pullback_ratio * base_value), 其中
-           base_value = ZG (pullback_base='zg', 默认) 或 (ZG - ZD) ('height')。
-           默认 ZG * 2%: 缠师第20课三买以 ZG 为锚("回试不破 ZG"), 破坏是
-           其对称面("回抽有效跌破 ZG"), 故以 ZG 为基准; 且跨标的语义一致
-           (2% 就是价格回撤 2%), 避免中枢高度宽窄不一导致阈值漂移。
-           缘起: 汇川日线 2025-02-14 回抽低点 63.8495, ZG=63.866986,
-           只进入 0.0175 元 —— 肉眼几乎贴着 ZG, 按"有交集即回"会被当成
-           中枢继续延伸, 实为噪声级擦边。默认阈值 1.277 元将其判为未回。
 
     被修正的缺陷 (上一轮):
         旧实现的条件是 `bi.high > zg or bi.low < zd` —— **任一端点越界即断**。
@@ -111,10 +95,6 @@ def build_zs_strict(
             continue
 
         zs_bis = list(first3)
-        base_value = zg if pullback_base == "zg" else (zg - zd)
-        # round 消除浮点尾差 (如 11*0.02=0.22000000000000003), 保证"恰好等于阈值"
-        # 稳定判为未回 (只有 overlap > threshold 才算回到中枢)
-        threshold = round(max(min_pullback_depth, min_pullback_ratio * base_value), 10)
         j = i + 3
         leave_idx: int | None = None
         while j < n:
@@ -127,11 +107,8 @@ def build_zs_strict(
                 if nxt is None:
                     leave_idx = j          # 数据末端, 离开未能确认
                     break
-                # 定理三回抽确认: 回抽笔与 [ZD,ZG] 的重叠长度 >= threshold
-                # 才算"重新回到中枢内" (定理二维持)。擦边 (重叠极浅) 视为未回,
-                # 判定理三破坏 —— 这是噪声过滤, 不改变定理本身。
-                overlap = round(min(nxt.high, zg) - max(nxt.low, zd), 10)
-                if overlap <= threshold:
+                # 定理三回抽确认: 重新回到 [ZD,ZG] 内 → 中枢维持 (定理二)
+                if not (nxt.low <= zg and nxt.high >= zd):
                     leave_idx = j
                     break
             zs_bis.append(bi)

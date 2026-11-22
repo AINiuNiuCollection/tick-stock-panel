@@ -85,12 +85,7 @@ class AnalyzeService:
 
         bars = [b for b in bars_all if bar_date(b) >= req.start] if fetch_start < req.start else bars_all
         fxs, bis, signals = run_czsc(bars, req.max_bi_num, req.min_bi_len)
-        zs_raw = build_zs_strict(
-            bis,
-            min_pullback_depth=req.divergence.zs_pullback_min_depth,
-            min_pullback_ratio=req.divergence.zs_pullback_min_ratio,
-            pullback_base=req.divergence.zs_pullback_base,
-        )
+        zs_raw = build_zs_strict(bis)
 
         bars_out = [
             BarItem(

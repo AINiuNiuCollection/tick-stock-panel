@@ -4360,12 +4360,6 @@ export interface CzscAnalyzeParams {
   bs_use_dea?: boolean
   bs_use_macd_area?: boolean   // 背驰是否启用 MACD 面积条件
   bs_trend_overlap_mode?: 'practical' | 'strict'  // 趋势中枢重叠口径(第18课趋势判定)
-  /** 回抽最小深度基准: zg=中枢上沿(默认,第20课以ZG为锚); height=中枢高度 */
-  bs_zs_pullback_base?: 'zg' | 'height'
-  /** 回抽最小深度比例, 默认 0.02 (2%), 相对上面的基准 */
-  bs_zs_pullback_min_ratio?: number
-  /** 回抽最小深度绝对值(元), 默认 0 关闭, 与比例取大 */
-  bs_zs_pullback_min_depth?: number
 }
 
 /** 检查 czsc-serve 健康状态 (静默, 失败不弹 toast) */
@@ -4395,9 +4389,6 @@ export async function fetchCzscAnalyze(params: CzscAnalyzeParams): Promise<CzscA
   if (params.bs_use_dea != null) qs.set('bs_use_dea', String(params.bs_use_dea))
   if (params.bs_use_macd_area != null) qs.set('bs_use_macd_area', String(params.bs_use_macd_area))
   if (params.bs_trend_overlap_mode) qs.set('bs_trend_overlap_mode', params.bs_trend_overlap_mode)
-  if (params.bs_zs_pullback_base) qs.set('bs_zs_pullback_base', params.bs_zs_pullback_base)
-  if (params.bs_zs_pullback_min_ratio != null) qs.set('bs_zs_pullback_min_ratio', String(params.bs_zs_pullback_min_ratio))
-  if (params.bs_zs_pullback_min_depth != null) qs.set('bs_zs_pullback_min_depth', String(params.bs_zs_pullback_min_depth))
   // 均线周期 (后端取数自动扩展暖机并计算 SMA 后下发, 前端零计算)
   if (params.ma_periods && params.ma_periods.length > 0) {
     qs.set('ma_periods', params.ma_periods.join(','))
@@ -4460,9 +4451,6 @@ export function streamCzscAnalyze(
   if (params.bs_use_dea != null) qs.set('bs_use_dea', String(params.bs_use_dea))
   if (params.bs_use_macd_area != null) qs.set('bs_use_macd_area', String(params.bs_use_macd_area))
   if (params.bs_trend_overlap_mode) qs.set('bs_trend_overlap_mode', params.bs_trend_overlap_mode)
-  if (params.bs_zs_pullback_base) qs.set('bs_zs_pullback_base', params.bs_zs_pullback_base)
-  if (params.bs_zs_pullback_min_ratio != null) qs.set('bs_zs_pullback_min_ratio', String(params.bs_zs_pullback_min_ratio))
-  if (params.bs_zs_pullback_min_depth != null) qs.set('bs_zs_pullback_min_depth', String(params.bs_zs_pullback_min_depth))
 
   void (async () => {
     try {
@@ -4519,18 +4507,4 @@ export async function refreshCzscData(symbol: string, freq: string = '日线'): 
     method: 'POST',
     body: JSON.stringify({ symbol, freq }),
   })
-}
-
-/** 缠论扫描全局进度 (策略面板 run_preset 挂起期间轮询) */
-export interface CzscScanProgress {
-  active: boolean
-  done: number
-  total: number
-  current_symbol: string | null
-  started_at: string | null
-  updated_at: string | null
-}
-
-export async function czscScanProgress(): Promise<CzscScanProgress> {
-  return request('/api/czsc/scan/progress', { quiet: true, timeoutMs: 3_000 })
 }

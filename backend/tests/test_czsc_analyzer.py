@@ -220,9 +220,8 @@ def test_zs_rally_then_pullback_into_box_remains_one_center():
     bis = [
         *_zs_center_bis(),
         _bi(7, 9, "up", 24.0, 10.0),     # 翻倍拉升
-        # 回抽低点 10.5, 低于 ZG=11 达 0.5 元 > 默认阈值 0.1 -> 有效回到中枢内
-        _bi(9, 11, "down", 24.0, 10.5),
-        _bi(11, 13, "up", 12.0, 10.5),
+        _bi(9, 11, "down", 24.0, 11.0),  # 回抽低点 11 <= ZG=11 -> 回到中枢内
+        _bi(11, 13, "up", 12.0, 11.0),
         _bi(13, 15, "down", 12.0, 10.5),
     ]
     zss = build_zs_strict(bis)
@@ -231,67 +230,6 @@ def test_zs_rally_then_pullback_into_box_remains_one_center():
     assert (z.zd, z.zg) == (10.0, 11.0), "ZD/ZG 由前三笔固定, 不随延伸变动"
     assert z.gg == 24.0 and z.dd == 9.0, "延伸只更新 GG/DD"
     assert len(z.bis) == 7
-
-
-def test_zs_pullback_min_ratio_rejects_eyebrow_touch():
-    """默认 ZG*2%: 擦边回抽(进 0.05 < 0.22)不算回中枢 -> 定理三破坏。
-
-    汇川日线 2025-02-14 案例的抽象: 回抽低点只比 ZG 低 0.0175 元,
-    按"有交集即回"会错误地继续延伸。默认以 ZG 为基准的 2% 阈值下,
-    这种噪声级擦边判为未回, 中枢在离开段处终止。
-    """
-    bis = [
-        *_zs_center_bis(),  # [ZD,ZG] = [10,11], ZG*2% = 0.22
-        _bi(7, 9, "up", 14.0, 10.0),      # 离开段: high 14 > ZG 11
-        _bi(9, 11, "down", 14.0, 10.95),  # 回抽低点 10.95, 仅进 0.05 < 0.22
-        _bi(11, 13, "up", 12.0, 10.95),
-        _bi(13, 15, "down", 12.0, 10.2),
-    ]
-    zss = build_zs_strict(bis)
-    assert len(zss) == 2, "擦边回抽应判定理三破坏, 形成两个中枢"
-    assert zss[0].edt == datetime(2024, 1, 7), "前中枢止于离开段之前"
-    assert zss[0].zd == 10.0 and zss[0].zg == 11.0
-
-    # 比例降到 0.001 -> 阈值 0.011, 0.05 足够 -> 回到旧行为(一个中枢)
-    zss_loose = build_zs_strict(bis, min_pullback_ratio=0.001)
-    assert len(zss_loose) == 1, "阈值降低后擦边算有效回抽, 中枢延伸"
-
-    # 1% 选项: 阈值 0.11, 0.05 仍不够 -> 破坏
-    assert len(build_zs_strict(bis, min_pullback_ratio=0.01)) == 2
-
-
-def test_zs_pullback_min_ratio_boundary_is_strictly_less():
-    """边界语义: 重叠深度 == 阈值时判为未回 (只有大于才算回踩)。
-
-    默认 ZG=11, 2% -> 阈值 0.22; 回抽低点 10.78 恰好进入 0.22 -> 不算回。
-    """
-    bis = [
-        *_zs_center_bis(),
-        _bi(7, 9, "up", 14.0, 10.0),
-        _bi(9, 11, "down", 14.0, 10.78),   # 进入 0.22 == 阈值 -> 不算
-        _bi(11, 13, "up", 12.0, 10.78),
-        _bi(13, 15, "down", 12.0, 10.2),
-    ]
-    assert len(build_zs_strict(bis)) == 2
-    # 略深 0.0001 -> 算有效回抽
-    bis[4] = _bi(9, 11, "down", 14.0, 10.7799)
-    assert len(build_zs_strict(bis)) == 1
-
-
-def test_zs_pullback_base_zg_vs_height():
-    """基准切换: ZG(11)*2%=0.22 比 高度(1)*2%=0.02 严格得多。
-
-    同一擦边回抽(进 0.05): ZG 基准判破坏, height 基准判延伸。
-    """
-    bis = [
-        *_zs_center_bis(),  # ZD=10, ZG=11, 高度=1
-        _bi(7, 9, "up", 14.0, 10.0),
-        _bi(9, 11, "down", 14.0, 10.95),  # 进入 0.05
-        _bi(11, 13, "up", 12.0, 10.95),
-        _bi(13, 15, "down", 12.0, 10.2),
-    ]
-    assert len(build_zs_strict(bis, pullback_base="zg")) == 2      # 0.05 < 0.22
-    assert len(build_zs_strict(bis, pullback_base="height")) == 1  # 0.05 > 0.02
 
 
 def test_zs_spike_into_box_is_extension_not_new_center():

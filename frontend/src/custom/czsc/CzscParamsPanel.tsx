@@ -45,10 +45,6 @@ export interface CzscParams {
   bs_use_macd_area?: boolean   // 背驰是否启用 MACD 面积条件
   /** 趋势中枢重叠口径(第18课): practical=[ZD,ZG]核心区间(默认); strict=[DD,GG]波动区间(更保守) */
   bs_trend_overlap_mode?: 'practical' | 'strict'
-  /** 回抽最小深度基准: zg=中枢上沿(默认); height=中枢高度 */
-  bs_zs_pullback_base?: 'zg' | 'height'
-  /** 回抽最小深度比例, 默认 0.02 (2%) */
-  bs_zs_pullback_min_ratio?: number
 }
 
 interface Props {
@@ -94,11 +90,6 @@ const BS_MACD_AREA_MODES = [
   { value: 'total_abs', label: 'Σ|hist|' },
   { value: 'dif_dea', label: 'Σ|DIF-DEA|' },
 ] as const
-// 回抽最小深度比例选项 (默认 2%): 回抽必须进入中枢至少该比例才算"回到中枢"
-const ZS_PULLBACK_RATIOS = [
-  { value: 0.01, label: '1%' },
-  { value: 0.02, label: '2%（默认）' },
-] as const
 
 export function CzscParamsPanel({ initialSymbol = '', initialParams, onAnalyze, loading, onMaPeriodsChange, onZsPriceVisibleChange, onFxMarksVisibleChange, zsPriceVisible = false, fxMarksVisible = true }: Props) {
   const today = new Date().toISOString().slice(0, 10)
@@ -127,13 +118,6 @@ export function CzscParamsPanel({ initialSymbol = '', initialParams, onAnalyze, 
   // 趋势中枢重叠口径: 默认 practical (第20课原文的中枢区间 [ZD,ZG])
   const [bsTrendOverlapMode, setBsTrendOverlapMode] = useState<'practical' | 'strict'>(
     initialParams?.bs_trend_overlap_mode ?? 'practical',
-  )
-  // 回抽最小深度: 基准默认 ZG(中枢上沿), 比例默认 2% (第20课三买以 ZG 为锚的对称口径)
-  const [bsZsPullbackBase, setBsZsPullbackBase] = useState<'zg' | 'height'>(
-    initialParams?.bs_zs_pullback_base ?? 'zg',
-  )
-  const [bsZsPullbackRatio, setBsZsPullbackRatio] = useState<number>(
-    initialParams?.bs_zs_pullback_min_ratio ?? 0.02,
   )
   // 设置抽屉开关
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -192,8 +176,6 @@ export function CzscParamsPanel({ initialSymbol = '', initialParams, onAnalyze, 
       bs_use_dea: false,  // 已废弃, 恒 false 兼容后端
       bs_use_macd_area: bsUseMacdArea,
       bs_trend_overlap_mode: bsTrendOverlapMode,
-      bs_zs_pullback_base: bsZsPullbackBase,
-      bs_zs_pullback_min_ratio: bsZsPullbackRatio,
     })
   }
 
@@ -470,39 +452,6 @@ export function CzscParamsPanel({ initialSymbol = '', initialParams, onAnalyze, 
                           <span className="block text-[11px] text-muted mt-0.5">连影线扫过的范围都算重叠，更保守，一二类点大量减少</span>
                         </span>
                       </label>
-                    </div>
-                  </div>
-
-                  {/* 回抽最小深度 (第20/24课: 过滤噪声级擦边回抽) */}
-                  <div className="py-2 mt-1 border-t border-border pt-3">
-                    <div className="text-sm text-foreground mb-2">
-                      回抽最小深度
-                      <HelpTip text="判断离开中枢后的回抽是否「真正回到中枢」时, 要求回抽笔进入中枢至少一定深度, 避免噪声级擦边(如只进 0.0175 元)被当成有效回抽而让中枢无限延伸。&#10;基准: 中枢上沿 ZG(默认, 缠师第20课三买以「回试不破 ZG」为锚, 破坏是其对称面)或中枢高度(ZG-ZD)。2% 即回抽需跌破 ZG 达其价格的 2% 才算回到中枢。&#10;修改后需重新点「分析」才生效。" />
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <select
-                        value={bsZsPullbackBase}
-                        onChange={e => setBsZsPullbackBase(e.target.value as typeof bsZsPullbackBase)}
-                        className="h-8 px-2 rounded-btn border border-border bg-surface text-sm"
-                      >
-                        <option value="zg">中枢上沿 ZG（默认）</option>
-                        <option value="height">中枢高度 ZG-ZD</option>
-                      </select>
-                      <div className="flex gap-1">
-                        {ZS_PULLBACK_RATIOS.map(r => (
-                          <button
-                            key={r.value}
-                            type="button"
-                            onClick={() => setBsZsPullbackRatio(r.value)}
-                            className={`h-8 px-3 rounded-btn border text-sm transition-colors ${bsZsPullbackRatio === r.value ? 'border-accent bg-accent/10 text-foreground' : 'border-border text-muted hover:text-foreground'}`}
-                          >
-                            {r.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="mt-2 text-[11px] text-muted">
-                      回抽进入深度 ≥ 基准 × 比例 才算回到中枢; 擦边按破坏处理
                     </div>
                   </div>
 
