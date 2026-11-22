@@ -558,6 +558,18 @@ export function Screener() {
     },
   })
 
+  // 缠论扫描逐股进度: run_preset 同步阻塞期间轮询后端全局进度注册表。
+  // 仅当单策略运行中且有进度数据时展示 (其他策略执行时后端无扫描活动, 展示无意义)。
+  const scanProgress = useQuery({
+    queryKey: ['czsc-scan-progress'],
+    queryFn: api.czscScanProgress,
+    enabled: run.isPending,
+    refetchInterval: 1000,
+  })
+  const sp = scanProgress.data
+  const showScanProgress =
+    run.isPending && sp?.active === true && (sp.total ?? 0) > 0
+
   const handleRun = (s: ScreenerStrategy) => {
     handleStrategySwitch(s.id)
     setActiveStrategy(s.id)
@@ -1054,6 +1066,25 @@ export function Screener() {
               <div className="flex flex-col items-center gap-1.5">
                 <span className="text-sm text-secondary">点击策略卡片查看选股结果</span>
                 <span className="text-[11px] text-muted">若提示 enriched 表无数据，请先运行盘后管道</span>
+              </div>
+            </div>
+          )}
+
+          {showScanProgress && (
+            <div className="rounded-lg border border-border bg-surface/60 px-4 py-3 flex flex-col gap-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-secondary">
+                  正在检测 <span className="font-medium text-primary">{sp?.current_symbol ?? '…'}</span>
+                </span>
+                <span className="text-muted tabular-nums">
+                  {sp?.done ?? 0} / {sp?.total ?? 0}
+                </span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-border/60 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-accent transition-[width] duration-500"
+                  style={{ width: `${Math.min(100, Math.round(((sp?.done ?? 0) / Math.max(1, sp?.total ?? 1)) * 100))}%` }}
+                />
               </div>
             </div>
           )}

@@ -29,7 +29,16 @@ from .analyzer import (
     error_status,
     get_default_service,
 )
-from .config import AnalyzeRequest
+from .config import (
+    DEFAULT_SCAN_FREQ,
+    DEFAULT_SCAN_LIMIT,
+    DEFAULT_SCAN_LOOKBACK_DAYS,
+    DEFAULT_SCAN_MAX_SIGNAL_AGE,
+    DEFAULT_SCAN_MAX_WORKERS,
+    DEFAULT_SCAN_POOL,
+    AnalyzeRequest,
+    ScanRequest,
+)
 from .schemas import (
     CapabilitiesResult,
     HealthResult,
@@ -112,6 +121,14 @@ def build_router() -> APIRouter:
         async def refresh_disabled() -> JSONResponse:
             return _build_error_response("CZSC_DISABLED", "czsc extension disabled")
 
+        @router.post("/scan")
+        async def scan_disabled() -> JSONResponse:
+            return _build_error_response("CZSC_DISABLED", "czsc extension disabled")
+
+        @router.get("/scan/{task_id}")
+        async def scan_task_disabled(task_id: str) -> JSONResponse:
+            return _build_error_response("CZSC_DISABLED", "czsc extension disabled")
+
         return router
 
     # ===== 正常路径: czsc_enabled=true =====
@@ -179,6 +196,15 @@ def build_router() -> APIRouter:
                 "strict=[DD,GG]波动区间(影线扫过即重叠, 更保守, 一/二类点更少)"
             ),
         ),
+        bs_zs_pullback_base: str = Query(
+            "zg", description="回抽最小深度基准: zg=中枢上沿(默认,第20课三买以ZG为锚); height=中枢高度"
+        ),
+        bs_zs_pullback_min_depth: float = Query(
+            0.0, ge=0.0, description="回抽最小进入深度(绝对价格), 与比例取大; 默认0关闭"
+        ),
+        bs_zs_pullback_min_ratio: float = Query(
+            0.02, ge=0.0, le=1.0, description="回抽最小进入深度比例, 默认0.02(2%)"
+        ),
         bs_enable_interval_nest: bool = Query(
             False, description="区间套下钻: 对买卖点做30分钟次级别背驰确认(第27课)"
         ),
@@ -205,6 +231,9 @@ def build_router() -> APIRouter:
             bs_use_macd_area=bs_use_macd_area,
             bs_divergence_logic=bs_divergence_logic,
             bs_trend_overlap_mode=bs_trend_overlap_mode,
+            bs_zs_pullback_base=bs_zs_pullback_base,
+            bs_zs_pullback_min_depth=bs_zs_pullback_min_depth,
+            bs_zs_pullback_min_ratio=bs_zs_pullback_min_ratio,
             bs_enable_interval_nest=bs_enable_interval_nest,
             force_refresh=force_refresh,
         )
@@ -248,6 +277,15 @@ def build_router() -> APIRouter:
             "practical",
             description="趋势中枢重叠(第18课): practical=[ZD,ZG]核心区间(默认); strict=[DD,GG]波动区间(更保守)",
         ),
+        bs_zs_pullback_base: str = Query(
+            "zg", description="回抽最小深度基准: zg=中枢上沿(默认); height=中枢高度"
+        ),
+        bs_zs_pullback_min_depth: float = Query(
+            0.0, ge=0.0, description="回抽最小进入深度(绝对价格), 与比例取大"
+        ),
+        bs_zs_pullback_min_ratio: float = Query(
+            0.02, ge=0.0, le=1.0, description="回抽最小进入深度比例, 默认0.02(2%)"
+        ),
         bs_enable_interval_nest: bool = Query(False, description="区间套下钻到30分钟次级别"),
         ma_periods: str | None = Query(
             None, description="逗号分隔的 SMA 周期, 如 '5,20,250'"
@@ -270,6 +308,9 @@ def build_router() -> APIRouter:
             bs_use_macd_area=bs_use_macd_area,
             bs_divergence_logic=bs_divergence_logic,
             bs_trend_overlap_mode=bs_trend_overlap_mode,
+            bs_zs_pullback_base=bs_zs_pullback_base,
+            bs_zs_pullback_min_depth=bs_zs_pullback_min_depth,
+            bs_zs_pullback_min_ratio=bs_zs_pullback_min_ratio,
             bs_enable_interval_nest=bs_enable_interval_nest,
             force_refresh=force_refresh,
         )
@@ -329,5 +370,97 @@ def build_router() -> APIRouter:
             source=source,
         )
         return _build_success_response(result.model_dump())
+
+    @router.post("/scan")
+    async def scan_signals(
+        pool: str = Query(DEFAULT_SCAN_POOL, description="股票池 id"),
+        symbols: str | None = Query(None, description="显式标的, 逗号分隔, 优先于 pool"),
+        freq: str = Query(DEFAULT_SCAN_FREQ, description="级别: 日线/周线/30分钟/..."),
+        as_of: date | None = None,  # 扫描截止日, 默认今日 (裸 None 避开 B008, FastAPI 同样识别为可选 query)
+        lookback_days: int = Query(DEFAULT_SCAN_LOOKBACK_DAYS, ge=60, le=2000),
+        signal_types: str = Query("B1,B2", description="目标信号, 逗号分隔"),
+        max_signal_age: int = Query(DEFAULT_SCAN_MAX_SIGNAL_AGE, ge=0, description="信号最大年龄(自然日), 0=不限"),
+        min_divergence_hits: int = Query(0, ge=0, le=2, description="至少命中几个背驰条件"),
+        order_by: str = Query("dt_desc", description="dt_desc / divergence_desc"),
+        limit: int = Query(DEFAULT_SCAN_LIMIT, ge=1, le=500),
+        max_workers: int = Query(DEFAULT_SCAN_MAX_WORKERS, ge=1, le=32),
+        max_symbols: int | None = Query(None, ge=1, description="扫描标的上限"),
+        force_refresh: bool = Query(False),
+        # 判定口径 — 与 /analyze 同名同默认
+        bs_macd_area_mode: str = Query("split"),
+        bs_use_dif: bool = Query(True),
+        bs_use_macd_area: bool = Query(True),
+        bs_divergence_logic: str = Query("and"),
+        bs_trend_overlap_mode: str = Query("practical"),
+        bs_zs_pullback_base: str = Query("zg"),
+        bs_zs_pullback_min_depth: float = Query(0.0, ge=0.0),
+        bs_zs_pullback_min_ratio: float = Query(0.02, ge=0.0, le=1.0),
+    ) -> Response:
+        """B1/B2 信号选股 — 与单股 /analyze 完全同口径。"""
+        has_czsc, _ = _probe_czsc()
+        if not has_czsc:
+            return _build_error_response(
+                "CZSC_NOT_INSTALLED", "czsc library not installed", hint="run: uv sync --extra czsc"
+            )
+
+        from .application.scanner import ScanService, get_scan_service
+        from .config import DivergenceConfig
+
+        divergence = DivergenceConfig(
+            macd_area_mode=bs_macd_area_mode,
+            use_dif=bs_use_dif,
+            use_macd_area=bs_use_macd_area,
+            divergence_logic=bs_divergence_logic,
+            trend_overlap_mode=bs_trend_overlap_mode,
+            zs_pullback_base=bs_zs_pullback_base,
+            zs_pullback_min_depth=bs_zs_pullback_min_depth,
+            zs_pullback_min_ratio=bs_zs_pullback_min_ratio,
+        )
+        req = ScanRequest(
+            pool=pool,
+            symbols=tuple(s.strip() for s in (symbols or "").split(",") if s.strip()),
+            freq=freq,
+            as_of=as_of,
+            lookback_days=lookback_days,
+            signal_types=tuple(s.strip().upper() for s in signal_types.split(",") if s.strip()),
+            max_signal_age=max_signal_age,
+            min_divergence_hits=min_divergence_hits,
+            order_by=order_by,
+            limit=limit,
+            max_workers=max_workers,
+            max_symbols=max_symbols,
+            force_refresh=force_refresh,
+            divergence=divergence,
+        ).normalized()
+
+        svc = get_scan_service()
+        pairs, _ = svc.resolve_symbols(req)
+        if ScanService.should_use_async(req, len(pairs)):
+            task_id = svc.start_task(req)
+            return _build_success_response({"ok": True, "task_id": task_id, "status": "running", "total": len(pairs)})
+
+        result = svc.scan(req)
+        return _build_success_response(result.model_dump())
+
+    @router.get("/scan/progress")
+    async def scan_progress() -> Response:
+        """全局扫描进度 (策略面板同步链路轮询用)。
+
+        返回最近一次/正在进行的扫描进度, 含正在检测的标的。
+        前端在 run_preset 挂起期间以 ~1s 间隔轮询本端点展示进度条。
+        """
+        from .application.scanner import get_scan_progress
+
+        return _build_success_response(get_scan_progress())
+
+    @router.get("/scan/{task_id}")
+    async def scan_task(task_id: str) -> Response:
+        """查询异步扫描任务进度/结果。"""
+        from .application.scanner import get_scan_service
+
+        status = get_scan_service().get_task(task_id)
+        if status is None:
+            return _build_error_response("SCAN_TASK_NOT_FOUND", f"scan task {task_id} not found", status=404)
+        return _build_success_response(status.model_dump())
 
     return router
