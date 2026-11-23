@@ -295,6 +295,7 @@ class ScanService:
                 "macd_area_mode": req.divergence.macd_area_mode,
                 "use_dif": req.divergence.use_dif,
                 "use_macd_area": req.divergence.use_macd_area,
+                "use_zero_axis": req.divergence.use_zero_axis,
                 "divergence_logic": req.divergence.divergence_logic,
                 "trend_overlap_mode": req.divergence.trend_overlap_mode,
                 "zs_pullback_base": req.divergence.zs_pullback_base,

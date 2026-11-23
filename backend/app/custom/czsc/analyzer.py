@@ -86,6 +86,7 @@ def _request_from_kwargs(kwargs: dict[str, Any]) -> AnalyzeRequest:
         bs_use_dif=kwargs.pop("bs_use_dif", DEFAULT_BS_USE_DIF),
         bs_use_dea=kwargs.pop("bs_use_dea", False),
         bs_use_macd_area=kwargs.pop("bs_use_macd_area", DEFAULT_BS_USE_MACD_AREA),
+        bs_use_zero_axis=kwargs.pop("bs_use_zero_axis", False),
         bs_divergence_logic=kwargs.pop("bs_divergence_logic", DEFAULT_DIVERGENCE_LOGIC),
         bs_trend_overlap_mode=kwargs.pop("bs_trend_overlap_mode", DEFAULT_TREND_OVERLAP_MODE),
         bs_enable_interval_nest=kwargs.pop("bs_enable_interval_nest", False),

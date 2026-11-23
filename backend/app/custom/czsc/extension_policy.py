@@ -81,6 +81,7 @@ class StrictDivergencePolicy(DivergencePolicy):
         use_dif: bool,
         use_macd_area: bool,
         logic: str = "and",
+        use_zero_axis: bool = False,
     ) -> dict[str, Any]:
         return check_trend_divergence(
             a_bi,
@@ -91,6 +92,7 @@ class StrictDivergencePolicy(DivergencePolicy):
             use_dif,
             use_macd_area,
             logic,
+            use_zero_axis,
         )
 
     def check_consolidation_divergence(
@@ -103,6 +105,7 @@ class StrictDivergencePolicy(DivergencePolicy):
         use_dif: bool,
         use_macd_area: bool,
         logic: str = "and",
+        use_zero_axis: bool = False,
     ) -> dict[str, Any]:
         return check_consolidation_divergence(
             a_bi,
@@ -113,4 +116,5 @@ class StrictDivergencePolicy(DivergencePolicy):
             use_dif,
             use_macd_area,
             logic,
+            use_zero_axis,
         )

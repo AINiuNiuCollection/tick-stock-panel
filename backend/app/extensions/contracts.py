@@ -91,6 +91,7 @@ class DivergencePolicy(ABC):
         use_dif: bool,
         use_macd_area: bool,
         logic: str = "and",
+        use_zero_axis: bool = False,
     ) -> dict[str, Any]:
         """Return a divergence result dict for the trend case."""
         raise NotImplementedError
@@ -106,6 +107,7 @@ class DivergencePolicy(ABC):
         use_dif: bool,
         use_macd_area: bool,
         logic: str = "and",
+        use_zero_axis: bool = False,
     ) -> dict[str, Any]:
         """Return a divergence result dict for the consolidation case."""
         raise NotImplementedError

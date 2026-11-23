@@ -84,6 +84,7 @@ def _third_point_div(
     use_macd_area: bool,
     logic: str = "and",
     label: str = "三买",
+    use_zero_axis: bool = False,
     divergence_fn: Callable[..., dict[str, Any]] = check_consolidation_divergence,
 ) -> dict[str, Any]:
     """三类买卖点的背驰【附加信息】——不参与成立判定。
@@ -100,7 +101,8 @@ def _third_point_div(
             "divergence_pass": [], "divergence_type": f"{label}(位置成立,无进入段参照)",
         }
     div = divergence_fn(
-        a_bi, leave_bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic
+        a_bi, leave_bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic,
+        use_zero_axis=use_zero_axis,
     )
     # 语义标注:三类点的背驰只是附加力度信息,不是成立条件
     div["divergence_type"] = (
@@ -165,6 +167,7 @@ def identify_bs_points(
     use_dif = divergence.use_dif
     use_macd_area = divergence.use_macd_area
     logic = divergence.divergence_logic
+    use_zero_axis = divergence.use_zero_axis
     overlap_mode = divergence.trend_overlap_mode
     # B2/S2 输出模式 (R1/方案A): strict=旧口径(背驰+次级别均为必要条件);
     # structural=第17课纯结构定义, 背驰与次级别验证降为置信度标注。
@@ -249,7 +252,8 @@ def identify_bs_points(
         if bi.low >= last_zs.zd:
             continue
         zs_idx = find_bi_overlap_zs(prev_bi, zs_filtered)
-        div = trend_div(prev_bi, bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic)
+        div = trend_div(prev_bi, bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic,
+                        use_zero_axis=use_zero_axis)
         if div["is_divergence"]:
             b1_candidates.append((bi, zs_idx, div))
 
@@ -291,7 +295,8 @@ def identify_bs_points(
         if bi.high <= last_zs.zg:
             continue
         zs_idx = find_bi_overlap_zs(prev_bi, zs_filtered)
-        div = trend_div(prev_bi, bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic)
+        div = trend_div(prev_bi, bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic,
+                        use_zero_axis=use_zero_axis)
         if div["is_divergence"]:
             s1_candidates.append((bi, zs_idx, div))
 
@@ -327,7 +332,8 @@ def identify_bs_points(
             else:
                 div = (
                     cons_div(
-                        a_bi_b2, fallback_down, macd_out, dt_index, mode, use_dif, use_macd_area, logic
+                        a_bi_b2, fallback_down, macd_out, dt_index, mode, use_dif, use_macd_area, logic,
+                        use_zero_axis=use_zero_axis,
                     )
                     if a_bi_b2 is not None
                     else {
@@ -379,7 +385,8 @@ def identify_bs_points(
             else:
                 div = (
                     cons_div(
-                        a_bi_s2, rebound_up, macd_out, dt_index, mode, use_dif, use_macd_area, logic
+                        a_bi_s2, rebound_up, macd_out, dt_index, mode, use_dif, use_macd_area, logic,
+                        use_zero_axis=use_zero_axis,
                     )
                     if a_bi_s2 is not None
                     else {
@@ -441,14 +448,14 @@ def identify_bs_points(
         if leave_dir == "up" and leave_bi.high > zg and back_dir == "down" and back_bi.low >= zg:
             div = _third_point_div(
                 a_bi_b3, leave_bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic,
-                divergence_fn=cons_div,
+                use_zero_axis=use_zero_axis, divergence_fn=cons_div,
             )
             bs_points.append(_make_bs_point(back_bi, "B3", "买", zi, div, mode))
 
         if leave_dir == "down" and leave_bi.low < zd and back_dir == "up" and back_bi.high <= zd:
             div = _third_point_div(
                 a_bi_b3, leave_bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic,
-                label="三卖", divergence_fn=cons_div,
+                label="三卖", use_zero_axis=use_zero_axis, divergence_fn=cons_div,
             )
             bs_points.append(_make_bs_point(back_bi, "S3", "卖", zi, div, mode))
 

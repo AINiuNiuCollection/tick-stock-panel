@@ -3,6 +3,8 @@
 两条件 AND (可配置关闭):
     1. MACD 面积: c 段面积 < a 段面积 (split/total_abs/dif_dea)
     2. DIF 极值: 上涨 c.max < a.max; 下跌 c.min > a.min
+可选第 3 条件 (use_zero_axis, 默认关闭, 第24课):
+    3. 0 轴回抽: a/c 两段之间 DIF 回拉触及 0 轴 (过滤零轴下弱势反弹的假背驰)
 DEA 已废弃 (缠师原文未要求), 恒 None。
 """
 from __future__ import annotations
@@ -117,6 +119,42 @@ def empty_divergence(label: str = "背驰") -> dict[str, Any]:
     }
 
 
+def zero_axis_pullback(
+    a_bi: Bi,
+    c_bi: Bi,
+    macd_out: list[MacdPoint],
+    dt_index: DtIndex,
+) -> bool | None:
+    """第24课 0 轴回抽判定: a/c 两段之间黄白线(DIF)要回拉过 0 轴。
+
+    底背驰(下跌): 回抽窗口内 DIF 峰值须 >= 0 (回拉到 0 轴上方);
+    顶背驰(上涨): 回抽窗口内 DIF 谷值须 <= 0 (回拉到 0 轴下方)。
+
+    回抽窗口 = a_bi.edt 之后到 c_bi.sdt 之前的 bar (即两段之间的中枢震荡区)。
+    窗口为空 (a/c 相邻, 无中间段) 时退化为 a.sdt ~ c.edt 全窗口。
+    返回 None 表示窗口内无有效 DIF 数据 (暖机未完成), 由调用方 fail-open。
+    """
+    if a_bi.direction not in ("up", "down"):
+        return None
+    a_end = dt_index.find(a_bi.edt)
+    c_start = dt_index.find(c_bi.sdt)
+    if a_end is None or c_start is None:
+        return None
+    lo, hi = a_end + 1, c_start - 1
+    if lo > hi:  # 无中间段 -> 退化为全窗口
+        a_start = dt_index.find(a_bi.sdt)
+        c_end = dt_index.find(c_bi.edt)
+        if a_start is None or c_end is None or a_start > c_end:
+            return None
+        lo, hi = a_start, c_end
+    difs = [m.dif for m in macd_out[lo : hi + 1] if m.dif is not None]
+    if not difs:
+        return None
+    if a_bi.direction == "down":
+        return max(difs) >= 0
+    return min(difs) <= 0
+
+
 def check_trend_divergence(
     a_bi: Bi,
     c_bi: Bi,
@@ -126,10 +164,12 @@ def check_trend_divergence(
     use_dif: bool,
     use_macd_area: bool,
     logic: str = "and",
+    use_zero_axis: bool = False,
 ) -> dict[str, Any]:
     """趋势背驰判定 (B1/S1)。
 
     logic: "and"=面积与DIF同时满足(默认,严格); "or"=任一满足(第27课口径)。
+    use_zero_axis: 开启后追加第24课 0 轴回抽条件 (a/c 之间 DIF 须回拉过 0 轴)。
     """
     if a_bi.direction != c_bi.direction or a_bi.direction == "unknown":
         return empty_divergence("趋势背驰")
@@ -172,7 +212,21 @@ def check_trend_divergence(
     ):
         pass_list.append("dif")
 
-    enabled = [c for c, on in (("macd_area", use_macd_area), ("dif", use_dif)) if on]
+    # 第24课 0 轴回抽: True=通过计入; False=未回抽, 条件不通过;
+    # None=回抽窗口无有效 DIF 数据, fail-open (缺数据不等于条件不通过)。
+    z_state = zero_axis_pullback(a_bi, c_bi, macd_out, dt_index) if use_zero_axis else False
+    if use_zero_axis and z_state is True:
+        pass_list.append("zero_axis")
+
+    enabled = [
+        c
+        for c, on in (
+            ("macd_area", use_macd_area),
+            ("dif", use_dif),
+            ("zero_axis", use_zero_axis and z_state is not None),
+        )
+        if on
+    ]
     # 第24课标准背驰要求两条件同时成立(and); 第27课"只要其中一个符合就可以是
     # 一个背弛的信号"对应 or。默认 and 保持严格口径, or 为可选宽松口径。
     is_div = (
@@ -205,6 +259,7 @@ def check_consolidation_divergence(
     use_dif: bool,
     use_macd_area: bool,
     logic: str = "and",
+    use_zero_axis: bool = False,
 ) -> dict[str, Any]:
     """盘整背驰判定 (B2/S2/B3/S3)。
 
@@ -248,7 +303,21 @@ def check_consolidation_divergence(
     ):
         pass_list.append("dif")
 
-    enabled = [c for c, on in (("macd_area", use_macd_area), ("dif", use_dif)) if on]
+    # 第24课 0 轴回抽 (与 check_trend_divergence 同口径):
+    # True=通过计入; False=未回抽, 条件不通过; None=无有效 DIF 数据, fail-open。
+    z_state = zero_axis_pullback(a_bi, c_bi, macd_out, dt_index) if use_zero_axis else False
+    if use_zero_axis and z_state is True:
+        pass_list.append("zero_axis")
+
+    enabled = [
+        c
+        for c, on in (
+            ("macd_area", use_macd_area),
+            ("dif", use_dif),
+            ("zero_axis", use_zero_axis and z_state is not None),
+        )
+        if on
+    ]
     is_div = (
         (len(pass_list) >= 1 and len(enabled) > 0)
         if logic == "or"

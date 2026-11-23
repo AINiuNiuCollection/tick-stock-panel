@@ -1070,3 +1070,96 @@ def test_center_unit_xianduan_builder_produces_domain_zs():
     assert "xianduan" in req2.cache_key()
     req3 = AnalyzeRequest.from_query(symbol="000001.SZ", center_unit="bogus")
     assert req3.with_defaults().center_unit == "bi"
+
+
+def _zero_axis_fixture(pullback_dif: float | None):
+    """0轴回抽测试夹具: a/c 两根同向下跌笔 + 中间回抽窗口(1/6~1/10)。
+
+    a 段 (01-01~01-05): DIF 谷 -2.0, 绿柱面积 5*5=25
+    c 段 (01-11~01-15): DIF 谷 -1.0, 绿柱面积 5*2=10
+    -> 面积与 DIF 两条件均构成背驰; 回抽窗口 DIF 由 pullback_dif 控制。
+    """
+    from app.custom.czsc.domain.models import MacdPoint
+
+    a = _bi(1, 5, "down", 12.0, 10.0)
+    c = _bi(11, 15, "down", 11.0, 9.5)
+    macd = []
+    for day in range(1, 16):
+        dt = datetime(2024, 1, day)
+        if day <= 5:
+            macd.append(MacdPoint(dt=dt, dif=-2.0, dea=None, macd=-5.0))
+        elif day >= 11:
+            macd.append(MacdPoint(dt=dt, dif=-1.0, dea=None, macd=-2.0))
+        else:
+            macd.append(MacdPoint(dt=dt, dif=pullback_dif, dea=None, macd=0.5))
+    dts = [str(datetime(2024, 1, d)) for d in range(1, 16)]
+    return a, c, macd, DtIndex(dts)
+
+
+def test_zero_axis_switch_off_keeps_divergence():
+    """开关关闭 (默认): 无 0 轴回抽 (窗口 DIF<0) 仍判背驰 — 现行为不变。"""
+    from app.custom.czsc.domain.divergence import check_trend_divergence
+
+    a, c, macd, idx = _zero_axis_fixture(pullback_dif=-0.3)
+    div = check_trend_divergence(a, c, macd, idx, "split", True, True, "and")
+    assert div["is_divergence"] is True
+    assert "zero_axis" not in div["divergence_pass"]
+    # 开关关闭时传入 use_zero_axis=False 显式一致
+    div2 = check_trend_divergence(a, c, macd, idx, "split", True, True, "and", use_zero_axis=False)
+    assert div2 == div
+
+
+def test_zero_axis_switch_on_gates_by_pullback():
+    """开关开启: 窗口 DIF 回拉 >=0 -> 背驰成立并计 zero_axis;
+    窗口 DIF 全程 <0 (零轴下弱势反弹) -> 背驰被过滤。"""
+    from app.custom.czsc.domain.divergence import check_trend_divergence
+
+    # 回抽过 0 轴: 通过
+    a, c, macd, idx = _zero_axis_fixture(pullback_dif=0.3)
+    div_pass = check_trend_divergence(a, c, macd, idx, "split", True, True, "and", use_zero_axis=True)
+    assert div_pass["is_divergence"] is True
+    assert "zero_axis" in div_pass["divergence_pass"]
+
+    # 未回抽 0 轴: 过滤
+    a2, c2, macd2, idx2 = _zero_axis_fixture(pullback_dif=-0.3)
+    div_block = check_trend_divergence(a2, c2, macd2, idx2, "split", True, True, "and", use_zero_axis=True)
+    assert div_block["is_divergence"] is False
+    assert "zero_axis" not in div_block["divergence_pass"]
+
+    # 同数据开关关闭 -> 不过滤 (对照组)
+    div_off = check_trend_divergence(a2, c2, macd2, idx2, "split", True, True, "and")
+    assert div_off["is_divergence"] is True
+
+
+def test_zero_axis_data_missing_fails_open():
+    """窗口无有效 DIF (暖机未完成): fail-open — 条件不计入, 不阻断背驰。"""
+    from app.custom.czsc.domain.divergence import check_trend_divergence
+
+    a, c, macd, idx = _zero_axis_fixture(pullback_dif=None)
+    div = check_trend_divergence(a, c, macd, idx, "split", True, True, "and", use_zero_axis=True)
+    assert div["is_divergence"] is True
+    assert "zero_axis" not in div["divergence_pass"]
+
+
+def test_zero_axis_consolidation_and_config_wiring():
+    """盘整背驰同口径 + DivergenceConfig/cache_key/from_query 全链路透传。"""
+    from app.custom.czsc.config import DivergenceConfig
+    from app.custom.czsc.domain.divergence import check_consolidation_divergence
+
+    # 盘整背驰: 未回抽被过滤, 回抽通过
+    a, c, macd, idx = _zero_axis_fixture(pullback_dif=-0.3)
+    blocked = check_consolidation_divergence(a, c, macd, idx, "split", True, True, "and", use_zero_axis=True)
+    assert blocked["is_divergence"] is False
+    a2, c2, macd2, idx2 = _zero_axis_fixture(pullback_dif=0.3)
+    passed = check_consolidation_divergence(a2, c2, macd2, idx2, "split", True, True, "and", use_zero_axis=True)
+    assert passed["is_divergence"] is True and "zero_axis" in passed["divergence_pass"]
+
+    # 配置契约: 默认关闭, cache_key 含该维度, from_query 透传
+    assert DivergenceConfig().use_zero_axis is False
+    assert DivergenceConfig().cache_key() != DivergenceConfig(use_zero_axis=True).cache_key()
+    req = AnalyzeRequest.from_query(symbol="000001.SZ", bs_use_zero_axis=True)
+    assert req.divergence.use_zero_axis is True
+    req2 = AnalyzeRequest.from_query(symbol="000001.SZ")
+    assert req2.divergence.use_zero_axis is False
+    # 缓存键隔离: 开关不同不共享缓存
+    assert req.cache_key() != req2.cache_key()

@@ -119,6 +119,10 @@ class DivergenceConfig:
     enable_interval_nest: bool = False
     # B2/S2 输出模式: structural(结构定义+置信度标注, 默认) / strict(背驰必要条件)
     bs_output_mode: str = DEFAULT_BS_OUTPUT_MODE
+    # MACD 0轴回抽过滤 (第24课: 背驰比较的两段之间黄白线要回拉过0轴):
+    # 开启后要求 a/c 两段之间 DIF 回抽触及 0 轴, 过滤零轴下弱势反弹的假背驰。
+    # 默认关闭——笔级回抽窗口常无完整 0 轴往返, 强制开启会大量压掉信号。
+    use_zero_axis: bool = False
 
     def normalized(self) -> DivergenceConfig:
         mode = self.macd_area_mode if self.macd_area_mode in MACD_AREA_MODES else DEFAULT_BS_MACD_AREA_MODE
@@ -164,6 +168,7 @@ class DivergenceConfig:
             self.zs_pullback_min_ratio,
             self.enable_interval_nest,
             self.bs_output_mode,
+            self.use_zero_axis,
         )
 
 
@@ -211,6 +216,7 @@ class AnalyzeRequest:
         bs_zs_pullback_min_ratio: float = DEFAULT_ZS_PULLBACK_MIN_RATIO,
         bs_enable_interval_nest: bool = False,
         bs_output_mode: str = DEFAULT_BS_OUTPUT_MODE,
+        bs_use_zero_axis: bool = False,
         center_unit: str = DEFAULT_CENTER_UNIT,
         force_refresh: bool = False,
     ) -> AnalyzeRequest:
@@ -235,6 +241,7 @@ class AnalyzeRequest:
                 zs_pullback_min_ratio=bs_zs_pullback_min_ratio,
                 enable_interval_nest=bs_enable_interval_nest,
                 bs_output_mode=bs_output_mode,
+                use_zero_axis=bs_use_zero_axis,
             ).normalized(),
             force_refresh=force_refresh,
             bs_use_dea=bs_use_dea,
@@ -346,7 +353,7 @@ class ScanRequest:
             per_symbol_timeout_s=max(1.0, min(300.0, float(self.per_symbol_timeout_s))),
             max_symbols=(max(1, int(self.max_symbols)) if self.max_symbols else None),
             max_bi_num=max(10, min(500, int(self.max_bi_num))),
-            min_bi_len=max(3, min(30, int(self.min_bi_len))),
+            min_bi_len=max(6, min(30, int(self.min_bi_len))),
             divergence=self.divergence.normalized(),
         )
 

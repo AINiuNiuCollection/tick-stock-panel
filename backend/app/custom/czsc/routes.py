@@ -174,7 +174,12 @@ def build_router() -> APIRouter:
         start_date: date | None = None,
         end_date: date | None = None,
         max_bi_num: int = Query(DEFAULT_MAX_BI_NUM, ge=10, le=500),
-        min_bi_len: int = Query(DEFAULT_MIN_BI_LEN, ge=3, le=30),
+        min_bi_len: int = Query(
+            DEFAULT_MIN_BI_LEN,
+            ge=6,
+            le=30,
+            description="笔最少K线数(第62课: 笔至少5根K线, 此处含端点至少6)",
+        ),
         features: str = Query("fx,bi,zs,signals,bs_points"),
         force_refresh: bool = Query(False),
         symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
@@ -187,6 +192,13 @@ def build_router() -> APIRouter:
             description="[已废弃] 缠师原文未要求 DEA, 保留参数兼容旧前端, 内部忽略",
         ),
         bs_use_macd_area: bool = Query(True, description="背驰是否启用 MACD 面积条件"),
+        bs_use_zero_axis: bool = Query(
+            False,
+            description=(
+                "背驰是否启用 MACD 0轴回抽条件(第24课): a/c 两段之间 DIF 须回拉触及 0 轴, "
+                "过滤零轴下弱势反弹的假背驰; 默认关闭"
+            ),
+        ),
         bs_divergence_logic: str = Query(
             "and", description="背驰条件组合: and=面积与DIF同时满足(严格); or=任一满足(第27课)"
         ),
@@ -244,6 +256,7 @@ def build_router() -> APIRouter:
             bs_use_dif=bs_use_dif,
             bs_use_dea=bs_use_dea,
             bs_use_macd_area=bs_use_macd_area,
+            bs_use_zero_axis=bs_use_zero_axis,
             bs_divergence_logic=bs_divergence_logic,
             bs_trend_overlap_mode=bs_trend_overlap_mode,
             bs_zs_pullback_base=bs_zs_pullback_base,
@@ -281,7 +294,12 @@ def build_router() -> APIRouter:
         start_date: date | None = None,
         end_date: date | None = None,
         max_bi_num: int = Query(DEFAULT_MAX_BI_NUM, ge=10, le=500),
-        min_bi_len: int = Query(DEFAULT_MIN_BI_LEN, ge=3, le=30),
+        min_bi_len: int = Query(
+            DEFAULT_MIN_BI_LEN,
+            ge=6,
+            le=30,
+            description="笔最少K线数(第62课: 笔至少5根K线, 此处含端点至少6)",
+        ),
         features: str = Query("fx,bi,zs,signals,bs_points"),
         force_refresh: bool = Query(False),
         symbol_name: str | None = Query(None, description="标的中文名 (前端透传, 不查库)"),
@@ -289,6 +307,9 @@ def build_router() -> APIRouter:
         bs_use_dif: bool = Query(True),
         bs_use_dea: bool = Query(False),
         bs_use_macd_area: bool = Query(True),
+        bs_use_zero_axis: bool = Query(
+            False, description="背驰是否启用 MACD 0轴回抽条件(第24课), 默认关闭"
+        ),
         bs_divergence_logic: str = Query("and", description="背驰组合: and=严格; or=第27课口径"),
         bs_trend_overlap_mode: str = Query(
             "practical",
@@ -331,6 +352,7 @@ def build_router() -> APIRouter:
             bs_use_dif=bs_use_dif,
             bs_use_dea=bs_use_dea,
             bs_use_macd_area=bs_use_macd_area,
+            bs_use_zero_axis=bs_use_zero_axis,
             bs_divergence_logic=bs_divergence_logic,
             bs_trend_overlap_mode=bs_trend_overlap_mode,
             bs_zs_pullback_base=bs_zs_pullback_base,
@@ -417,6 +439,7 @@ def build_router() -> APIRouter:
         bs_macd_area_mode: str = Query("split"),
         bs_use_dif: bool = Query(True),
         bs_use_macd_area: bool = Query(True),
+        bs_use_zero_axis: bool = Query(False, description="背驰 0轴回抽条件(第24课), 默认关闭"),
         bs_divergence_logic: str = Query("and"),
         bs_trend_overlap_mode: str = Query("practical"),
         bs_zs_pullback_base: str = Query("zg"),
@@ -441,6 +464,7 @@ def build_router() -> APIRouter:
             macd_area_mode=bs_macd_area_mode,
             use_dif=bs_use_dif,
             use_macd_area=bs_use_macd_area,
+            use_zero_axis=bs_use_zero_axis,
             divergence_logic=bs_divergence_logic,
             trend_overlap_mode=bs_trend_overlap_mode,
             zs_pullback_base=bs_zs_pullback_base,
