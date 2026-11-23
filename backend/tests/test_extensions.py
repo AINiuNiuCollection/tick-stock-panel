@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from app.extensions.contracts import (
     BACKEND_EXTENSION_API_VERSION,
+    CenterBuilder,
+    DivergencePolicy,
     NotificationFormatContext,
     NotificationFormatter,
 )
@@ -29,6 +31,22 @@ class BrokenFormatter(NotificationFormatter):
     def format_message(self, event: dict, context: NotificationFormatContext) -> str:
         del event, context
         raise RuntimeError("broken formatter")
+
+
+class DummyCenterBuilder(CenterBuilder):
+    def build(self, bis, /, **options):
+        del bis, options
+        return []
+
+
+class DummyDivergencePolicy(DivergencePolicy):
+    def check_trend_divergence(self, *args, **kwargs):
+        del args, kwargs
+        return {"is_divergence": False}
+
+    def check_consolidation_divergence(self, *args, **kwargs):
+        del args, kwargs
+        return {"is_divergence": False}
 
 
 def _registrar(extension_id: str = "company.test") -> BackendExtensionRegistrar:
@@ -97,6 +115,56 @@ def test_registry_rejects_version_mismatch_without_partial_registration() -> Non
     registry.freeze()
     assert not registry.has_customizations
     assert not registry.has_notification_formatters
+
+
+def test_registry_selects_lowest_order_center_builder_and_policy() -> None:
+    registry = BackendExtensionRegistry()
+    registrar = _registrar()
+    first = DummyCenterBuilder()
+    second = DummyCenterBuilder()
+    policy = DummyDivergencePolicy()
+    registrar.register_center_builder("company.center.second", second, order=20)
+    registrar.register_center_builder("company.center.first", first, order=10)
+    registrar.register_divergence_policy("company.policy", policy, order=0)
+    registry.register(registrar)
+    registry.freeze()
+
+    assert registry.has_center_builders
+    assert registry.has_divergence_policies
+    assert registry.center_builder() is first
+    assert registry.divergence_policy() is policy
+
+
+def test_empty_registry_returns_caller_defaults() -> None:
+    registry = BackendExtensionRegistry()
+    registry.freeze()
+    default_builder = DummyCenterBuilder()
+
+    assert registry.center_builder(default_builder) is default_builder
+    assert registry.divergence_policy() is None
+
+
+def test_registry_rejects_duplicate_center_builder_id() -> None:
+    registry = BackendExtensionRegistry()
+    first = _registrar("company.first")
+    first.register_center_builder("company.center", DummyCenterBuilder())
+    registry.register(first)
+
+    second = _registrar("company.second")
+    second.register_center_builder("company.center", DummyCenterBuilder())
+    with pytest.raises(ValueError, match="duplicate center builder id"):
+        registry.register(second)
+
+
+def test_registry_rejects_center_builder_version_mismatch() -> None:
+    registry = BackendExtensionRegistry()
+    registrar = _registrar()
+    builder = DummyCenterBuilder()
+    builder.api_version = 999
+    registrar.register_center_builder("company.center", builder)
+
+    with pytest.raises(ValueError, match="requires API"):
+        registry.register(registrar)
 
 
 def test_registry_is_frozen_after_startup() -> None:

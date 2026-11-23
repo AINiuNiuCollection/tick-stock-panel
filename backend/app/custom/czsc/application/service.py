@@ -11,6 +11,8 @@ from dataclasses import asdict
 from typing import Any
 
 from app.config import settings
+from app.extensions.contracts import CenterBuilder, DivergencePolicy
+from app.extensions.registry import get_backend_extension_registry
 
 from ..adapters import indicators
 from ..adapters.czsc_adapter import bar_date, probe_czsc, run_czsc, to_raw_bars
@@ -36,11 +38,15 @@ class AnalyzeService:
         sublevel: SublevelVerifier | None = None,
         cache: AnalysisCache | None = None,
         nest: IntervalNestVerifier | None = None,
+        center_builder: CenterBuilder | None = None,
+        divergence_policy: DivergencePolicy | None = None,
     ) -> None:
         self._chain = chain
         self._sublevel = sublevel
         self._cache = cache or AnalysisCache()
         self._nest = nest
+        self._center_builder = center_builder
+        self._divergence_policy = divergence_policy
 
     def fetch(self, symbol: str, freq: str, start, end) -> KlineResult:
         return self._chain.fetch(symbol, freq, start, end)
@@ -85,12 +91,22 @@ class AnalyzeService:
 
         bars = [b for b in bars_all if bar_date(b) >= req.start] if fetch_start < req.start else bars_all
         fxs, bis, signals = run_czsc(bars, req.max_bi_num, req.min_bi_len)
-        zs_raw = build_zs_strict(
-            bis,
-            min_pullback_depth=req.divergence.zs_pullback_min_depth,
-            min_pullback_ratio=req.divergence.zs_pullback_min_ratio,
-            pullback_base=req.divergence.zs_pullback_base,
-        )
+        if self._center_builder is None:
+            zs_raw = build_zs_strict(
+                bis,
+                min_pullback_depth=req.divergence.zs_pullback_min_depth,
+                min_pullback_ratio=req.divergence.zs_pullback_min_ratio,
+                pullback_base=req.divergence.zs_pullback_base,
+            )
+        else:
+            zs_raw = list(
+                self._center_builder.build(
+                    bis,
+                    min_pullback_depth=req.divergence.zs_pullback_min_depth,
+                    min_pullback_ratio=req.divergence.zs_pullback_min_ratio,
+                    pullback_base=req.divergence.zs_pullback_base,
+                )
+            )
 
         bars_out = [
             BarItem(
@@ -178,8 +194,19 @@ class AnalyzeService:
 
                 def nest_verifier(dt, bs_type, direction, _nest=nest, _symbol=symbol, _freq=req.freq):
                     return _nest.verify(_symbol, _freq, dt, direction)
+            policy = self._divergence_policy
             neutral = identify_bs_points(
-                bis, zs_raw, macd_points, dt_index, req.divergence, verifier, nest_verifier
+                bis,
+                zs_raw,
+                macd_points,
+                dt_index,
+                req.divergence,
+                verifier,
+                nest_verifier,
+                trend_divergence=policy.check_trend_divergence if policy else None,
+                consolidation_divergence=(
+                    policy.check_consolidation_divergence if policy else None
+                ),
             )
             bs_points = [BsPointItem(**asdict(bp)) for bp in neutral]
 
@@ -335,12 +362,15 @@ _service_lock = threading.Lock()
 
 def build_default_service() -> AnalyzeService:
     chain = build_default_chain()
+    registry = get_backend_extension_registry()
     return AnalyzeService(
         chain,
         SublevelVerifier(chain),
         # maxsize 覆盖策略面板默认 300 只扫描; 128 会互相驱逐导致重复分析
         AnalysisCache(maxsize=2048, ttl_s=600.0),
         IntervalNestVerifier(chain),
+        center_builder=registry.center_builder() if registry else None,
+        divergence_policy=registry.divergence_policy() if registry else None,
     )
 
 

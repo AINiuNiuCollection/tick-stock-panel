@@ -69,6 +69,7 @@ def _third_point_div(
     use_macd_area: bool,
     logic: str = "and",
     label: str = "三买",
+    divergence_fn: Callable[..., dict[str, Any]] = check_consolidation_divergence,
 ) -> dict[str, Any]:
     """三类买卖点的背驰【附加信息】——不参与成立判定。
 
@@ -83,7 +84,7 @@ def _third_point_div(
             "dea_peak_prev": None, "dea_peak_cur": None,
             "divergence_pass": [], "divergence_type": f"{label}(位置成立,无进入段参照)",
         }
-    div = check_consolidation_divergence(
+    div = divergence_fn(
         a_bi, leave_bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic
     )
     # 语义标注:三类点的背驰只是附加力度信息,不是成立条件
@@ -134,9 +135,14 @@ def identify_bs_points(
     divergence: DivergenceConfig,
     sublevel_verifier: SublevelVerifier | None = None,
     nest_verifier: NestVerifier | None = None,
+    trend_divergence: Callable[..., dict[str, Any]] | None = None,
+    consolidation_divergence: Callable[..., dict[str, Any]] | None = None,
 ) -> list[BsPoint]:
     if not bi_list or len(bi_list) < 3:
         return []
+
+    trend_div = trend_divergence or check_trend_divergence
+    cons_div = consolidation_divergence or check_consolidation_divergence
 
     mode = divergence.macd_area_mode
     use_dif = divergence.use_dif
@@ -223,7 +229,7 @@ def identify_bs_points(
         if bi.low >= last_zs.zd:
             continue
         zs_idx = find_bi_overlap_zs(prev_bi, zs_filtered)
-        div = check_trend_divergence(prev_bi, bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic)
+        div = trend_div(prev_bi, bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic)
         if div["is_divergence"]:
             b1_candidates.append((bi, zs_idx, div))
 
@@ -265,7 +271,7 @@ def identify_bs_points(
         if bi.high <= last_zs.zg:
             continue
         zs_idx = find_bi_overlap_zs(prev_bi, zs_filtered)
-        div = check_trend_divergence(prev_bi, bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic)
+        div = trend_div(prev_bi, bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic)
         if div["is_divergence"]:
             s1_candidates.append((bi, zs_idx, div))
 
@@ -297,7 +303,7 @@ def identify_bs_points(
             and a_bi_b2 is not None
             and fallback_down.low > b1_bi.low
         ):
-            div = check_consolidation_divergence(
+            div = cons_div(
                 a_bi_b2, fallback_down, macd_out, dt_index, mode, use_dif, use_macd_area, logic
             )
             # 定律一:二买必须由次级别一买确认(缺陷2修复:返回值必须参与决策)
@@ -329,7 +335,7 @@ def identify_bs_points(
             and a_bi_s2 is not None
             and rebound_up.high < s1_bi.high
         ):
-            div = check_consolidation_divergence(
+            div = cons_div(
                 a_bi_s2, rebound_up, macd_out, dt_index, mode, use_dif, use_macd_area, logic
             )
             # 定律一对称:二卖必须由次级别一卖确认(缺陷2修复)
@@ -372,14 +378,15 @@ def identify_bs_points(
         # 为缠论工程实现的通行口径 (与 czsc 库一致)。
         if leave_dir == "up" and leave_bi.high > zg and back_dir == "down" and back_bi.low >= zg:
             div = _third_point_div(
-                a_bi_b3, leave_bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic
+                a_bi_b3, leave_bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic,
+                divergence_fn=cons_div,
             )
             bs_points.append(_make_bs_point(back_bi, "B3", "买", zi, div, mode))
 
         if leave_dir == "down" and leave_bi.low < zd and back_dir == "up" and back_bi.high <= zd:
             div = _third_point_div(
                 a_bi_b3, leave_bi, macd_out, dt_index, mode, use_dif, use_macd_area, logic,
-                label="三卖",
+                label="三卖", divergence_fn=cons_div,
             )
             bs_points.append(_make_bs_point(back_bi, "S3", "卖", zi, div, mode))
 

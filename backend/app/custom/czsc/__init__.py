@@ -29,9 +29,14 @@ EXTENSION_API_VERSION = BACKEND_EXTENSION_API_VERSION
 
 
 def setup(registrar: BackendExtensionRegistrar) -> None:
-    """注册 czsc 路由。模块加载阶段不导入 czsc, 运行时按需 import。"""
+    """注册 czsc 路由与默认扩展实现。模块加载阶段不导入 czsc, 运行时按需 import。"""
+    from .extension_policy import StrictCenterBuilder, StrictDivergencePolicy
     from .routes import build_router
 
+    registrar.register_center_builder("tsp.czsc.strict", StrictCenterBuilder(), order=0)
+    registrar.register_divergence_policy(
+        "tsp.czsc.strict", StrictDivergencePolicy(), order=0
+    )
     registrar.include_router(build_router())
 
 

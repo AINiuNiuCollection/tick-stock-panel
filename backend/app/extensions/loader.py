@@ -10,7 +10,11 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from app.extensions.contracts import BACKEND_EXTENSION_API_VERSION, ExtensionContext
-from app.extensions.registry import BackendExtensionRegistrar, BackendExtensionRegistry
+from app.extensions.registry import (
+    BackendExtensionRegistrar,
+    BackendExtensionRegistry,
+    set_active_registry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +65,7 @@ def configure_backend_extensions(
             errors.append(BackendExtensionLoadError(module_name, str(exc)))
 
     registry.freeze()
+    set_active_registry(registry)
     return registry, tuple(errors)
 
 
