@@ -1,7 +1,7 @@
 """B1/B2 选股扫描器单元测试 — 用 mock analyzer 隔离算法, 只测编排逻辑。"""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from app.custom.czsc.application.scanner import ScanService
 from app.custom.czsc.config import (
@@ -21,12 +21,32 @@ def _bp(dt: str, kind: str, direction: str = "买", passes: list[str] | None = N
     )
 
 
-class FakeAnalyzer:
-    """按 symbol 返回预置 bs_points, 可注入异常。"""
+class _Bar:
+    """年龄计数只读 .dt。"""
+    __slots__ = ("dt",)
 
-    def __init__(self, mapping: dict[str, list[BsPointItem]], errors: dict[str, str] | None = None) -> None:
+    def __init__(self, dt: datetime) -> None:
+        self.dt = dt
+
+
+def _daily_bars(end: date, days: int = 45) -> list[_Bar]:
+    """[end-days, end] 逐日 K 线 (年龄按根数计, 供 _extract_hits 真实路径)。"""
+    end_dt = end if isinstance(end, datetime) else datetime(end.year, end.month, end.day)
+    return [_Bar(end_dt - timedelta(days=i)) for i in range(days, -1, -1)]
+
+
+class FakeAnalyzer:
+    """按 symbol 返回预置 bs_points, 可注入异常; bars 默认逐日生成可覆盖。"""
+
+    def __init__(
+        self,
+        mapping: dict[str, list[BsPointItem]],
+        errors: dict[str, str] | None = None,
+        bars: list[_Bar] | None = None,
+    ) -> None:
         self.mapping = mapping
         self.errors = errors or {}
+        self.bars = bars
         self.calls: list[str] = []
 
     def analyze(self, req) -> dict:
@@ -34,10 +54,13 @@ class FakeAnalyzer:
         if req.symbol in self.errors:
             raise RuntimeError(self.errors[req.symbol])
         zs = [ZsItem(zs_range=[8.0, 9.0], start_dt="2026-01-01", end_dt="2026-02-01")]
+        end = getattr(req, "end", None) or date(2026, 11, 20)
+        bars = self.bars if self.bars is not None else _daily_bars(end)
         return {
             "symbol": req.symbol, "symbol_name": None, "freq": req.freq,
             "bs_points": list(self.mapping.get(req.symbol, [])),
             "zs_list": zs,
+            "bars": bars,
         }
 
 
@@ -107,6 +130,58 @@ def test_scan_max_signal_age_filters_stale():
     # 0 = 不限
     result_all = svc.scan(_req(symbols=("000001.SZ",), max_signal_age=0))
     assert result_all.total == 2
+
+
+def test_scan_signal_age_counts_weekly_bars():
+    """周线: 年龄按周K线根数 — 信号在 10-30 那根周K, 之后 11-06/11-13/11-20 共 3 根。"""
+    fridays = [
+        datetime(2026, 10, 30, 15, 0), datetime(2026, 11, 6, 15, 0),
+        datetime(2026, 11, 13, 15, 0), datetime(2026, 11, 20, 15, 0),
+    ]
+    fake = FakeAnalyzer(
+        {"000001.SZ": [_bp("2026-10-30 15:00:00", "B1")]},
+        bars=[_Bar(d) for d in fridays],
+    )
+    svc = ScanService(analyzer=fake)
+    r = svc.scan(_req(symbols=("000001.SZ",), freq="周线", max_signal_age=3))
+    assert r.total == 1
+    assert r.hits[0].signal_age_days == 3
+    # 阈值 2 根周K → 3 根已超龄, 过滤
+    r2 = svc.scan(_req(symbols=("000001.SZ",), freq="周线", max_signal_age=2))
+    assert r2.total == 0
+
+
+def test_scan_signal_age_skips_non_trading_days():
+    """日线: 信号 11-13(周五), 交易日 11-16..11-20 → 年龄 5 根 (周末 2 个自然日不计)。"""
+    trading = [datetime(2026, 11, d, 15, 0) for d in (12, 13, 16, 17, 18, 19, 20)]
+    fake = FakeAnalyzer(
+        {"000001.SZ": [_bp("2026-11-13 15:00:00", "B1")]},
+        bars=[_Bar(d) for d in trading],
+    )
+    svc = ScanService(analyzer=fake)
+    r = svc.scan(_req(symbols=("000001.SZ",), max_signal_age=5))
+    assert r.total == 1
+    assert r.hits[0].signal_age_days == 5
+    r2 = svc.scan(_req(symbols=("000001.SZ",), max_signal_age=4))
+    assert r2.total == 0
+
+
+def test_scan_signal_age_falls_back_to_calendar_days_without_bars():
+    """防御: analyze 结果无 bars 时回退自然日口径 (2026-11-23 之前的旧行为)。"""
+    as_of = date(2026, 11, 20)
+
+    class NoBarsAnalyzer:
+        def analyze(self, req) -> dict:
+            return {
+                "symbol": req.symbol, "symbol_name": None, "freq": req.freq,
+                "bs_points": [_bp((as_of - timedelta(days=2)).isoformat(), "B1")],
+                "zs_list": [], "bars": None,
+            }
+
+    svc = ScanService(analyzer=NoBarsAnalyzer())
+    r = svc.scan(_req(symbols=("000001.SZ",), max_signal_age=2))
+    assert r.total == 1
+    assert r.hits[0].signal_age_days == 2
 
 
 def test_scan_min_divergence_hits():
