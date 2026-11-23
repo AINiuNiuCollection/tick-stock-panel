@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -25,6 +26,14 @@ from ..czsc_adapter import _direction, to_raw_bars
 from .chain import KlineSourceChain
 
 logger = logging.getLogger(__name__)
+
+# 源不可用熔断: 次级别取数连续失败 (取数异常 / 全源空帧) 达阈值后,
+# 冷却期内 verify 直接返回 None, 不再触链。
+# 背景: 全市场策略扫描时每个 B2/S2 候选都触发一次次级别取数, 若分钟源
+# 整体不可用 (如代理环境 baostock 原生 socket 恒失败 + 东财被中间盒子
+# 返回空 body), 每个候选都重复 "登录失败 + 3 次重试" 会刷屏日志并拖慢扫描。
+_SOURCE_FAIL_THRESHOLD = 3
+_SOURCE_COOLDOWN_S = 300.0
 
 # 次级别下钻映射 (第72课级别阶梯: 分析级别 → 用于验证的次级别)
 SUB_FREQ_MAP: dict[str, str] = {
@@ -113,6 +122,11 @@ class SublevelVerifier:
         False = 次级别有数据但结构不通过 (位置前提不满足 / 力度不衰竭);
         None  = 无法验证 (无更低级别配置 / 取数失败 / 数据不足 / czsc 未装)。
     旧布尔口径的调用方应把 None 按"未验证"放行, 不得当作 False。
+
+    源不可用熔断: 连续 _SOURCE_FAIL_THRESHOLD 次取数失败 (异常/空帧) 后,
+    _SOURCE_COOLDOWN_S 冷却期内所有 verify 直接返回 None 不触链;
+    冷却结束后下一次 verify 作为探测, 仍失败则重新进入冷却 (每窗口最多
+    一次外呼)。任一非源失败结果 (成功判定 / 数据不足等) 归零失败计数。
     """
 
     def __init__(
@@ -124,6 +138,8 @@ class SublevelVerifier:
         self._lookback = lookback_days
         self._memo: dict[tuple[str, str, date], bool | None] = {}
         self._lock = threading.Lock()
+        self._fail_streak = 0
+        self._cooldown_until = 0.0
 
     def verify(self, symbol: str, freq: str, edt: Any) -> bool | None:
         sub_freq = sub_freq_of(freq)
@@ -137,16 +153,37 @@ class SublevelVerifier:
         with self._lock:
             if key in self._memo:
                 return self._memo[key]
-        result = self._verify(symbol, sub_freq, edt, edt_date)
+            if time.monotonic() < self._cooldown_until:
+                return None
+        result, source_failed = self._verify(symbol, sub_freq, edt, edt_date)
         with self._lock:
+            if source_failed:
+                self._fail_streak += 1
+                if (
+                    self._fail_streak >= _SOURCE_FAIL_THRESHOLD
+                    and time.monotonic() >= self._cooldown_until
+                ):
+                    self._cooldown_until = time.monotonic() + _SOURCE_COOLDOWN_S
+                    logger.warning(
+                        "sublevel kline source failed %d consecutive fetches; "
+                        "pausing sublevel verification %.0fs "
+                        "(verify returns None=未验证 during cooldown)",
+                        self._fail_streak, _SOURCE_COOLDOWN_S,
+                    )
+            else:
+                self._fail_streak = 0
             self._memo[key] = result
         return result
 
-    def _verify(self, symbol: str, sub_freq: str, edt: Any, edt_date: date) -> bool | None:
+    def _verify(
+        self, symbol: str, sub_freq: str, edt: Any, edt_date: date
+    ) -> tuple[bool | None, bool]:
+        """返回 (判定结果, 是否源级失败)。源级失败 = 取数异常或全源空帧,
+        用于熔断计数; 其余 None (数据不足/转换失败/czsc 未装) 不计。"""
         try:
             from czsc import CZSC
         except ImportError:
-            return None
+            return None, False
 
         # 窗口: 候选时刻之前的次级别走势 (不含候选之后, 否则最后一笔
         # 会是候选之后的新笔, 候选笔本身被错过)。
@@ -156,27 +193,27 @@ class SublevelVerifier:
         try:
             result = self._chain.fetch(symbol, sub_freq, sub_start, sub_end)
         except Exception:
-            return None
+            return None, True
         if result.frame.is_empty():
-            return None
+            return None, True
 
         try:
             bars = to_raw_bars(result.frame, sub_freq)
         except Exception:
-            return None
+            return None, False
         if cand_dt is not None:
             bars = [b for b in bars if b.dt <= cand_dt]
         if not bars or len(bars) < 10:
-            return None
+            return None, False
 
         try:
             c = CZSC(bars, max_bi_num=1000, min_bi_len=5)
         except Exception:
-            return None
+            return None, False
 
         bi_list = c.bi_list
         if len(bi_list) < 3:
-            return None
+            return None, False
 
         # 候选笔 = 截断后窗口最后一笔 (结束于候选时刻附近);
         # 参照段 = 同方向、终点为窗口极值的笔 (进入次级别一买/一卖的急跌/急涨段)。
@@ -191,13 +228,13 @@ class SublevelVerifier:
                 None,
             )
             if ref is None or ref is cand:
-                return False
+                return False, False
             # 二买位置前提: 回调低点不破次级别一买低点
             if float(cand.low) <= extreme:
-                return False
+                return False, False
             area_cur = _bi_area(cand, bars, hists, "down")
             area_ref = _bi_area(ref, bars, hists, "down")
-            return area_ref > 0 and area_cur < area_ref
+            return area_ref > 0 and area_cur < area_ref, False
         if d == "up":
             extreme = max(float(b.high) for b in bi_list)
             ref = next(
@@ -206,11 +243,11 @@ class SublevelVerifier:
                 None,
             )
             if ref is None or ref is cand:
-                return False
+                return False, False
             # 二卖位置前提: 回抽高点不破次级别一卖高点
             if float(cand.high) >= extreme:
-                return False
+                return False, False
             area_cur = _bi_area(cand, bars, hists, "up")
             area_ref = _bi_area(ref, bars, hists, "up")
-            return area_ref > 0 and area_cur < area_ref
-        return False
+            return area_ref > 0 and area_cur < area_ref, False
+        return False, False

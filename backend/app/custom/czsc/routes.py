@@ -428,7 +428,7 @@ def build_router() -> APIRouter:
         as_of: date | None = None,  # 扫描截止日, 默认今日 (裸 None 避开 B008, FastAPI 同样识别为可选 query)
         lookback_days: int = Query(DEFAULT_SCAN_LOOKBACK_DAYS, ge=60, le=2000),
         signal_types: str = Query("B1,B2", description="目标信号, 逗号分隔"),
-        max_signal_age: int = Query(DEFAULT_SCAN_MAX_SIGNAL_AGE, ge=0, description="信号最大年龄(自然日), 0=不限"),
+        max_signal_age: int = Query(DEFAULT_SCAN_MAX_SIGNAL_AGE, ge=0, description="信号最大年龄(本级别K线根数: 周线按周K线/日线按交易日, 不计周末节假日), 0=不限"),
         min_divergence_hits: int = Query(0, ge=0, le=2, description="至少命中几个背驰条件"),
         order_by: str = Query("dt_desc", description="dt_desc / divergence_desc"),
         limit: int = Query(DEFAULT_SCAN_LIMIT, ge=1, le=500),

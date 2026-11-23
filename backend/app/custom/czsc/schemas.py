@@ -231,12 +231,19 @@ class ScanHit(BaseModel):
     direction: str = "买"
     dt: str                         # 信号时间 (bs_point.dt)
     price: float                    # 信号价
-    signal_age_days: int = 0        # 距 as_of 的自然日数
+    signal_age_days: int = 0        # 信号年龄 = 本级别K线根数 (周线按周K线/日线按交易日; 字段名沿用保 API 兼容)
     divergence_type: str | None = None
     divergence_pass: list[str] = Field(default_factory=list)
     definition_mode: str = "n/a"    # practical / strict
     zs_range: list[float] | None = None  # 关联中枢 [ZD, ZG]
     level: str = "日线"
+    # 次级别背驰点日期 (区间套下钻 sub_div_end, 缠师第27课; 需求2 2026-11-23)。
+    # None = 次级别数据不可用或区间套未确认 — 前端显示 "—"。
+    sub_dt: str | None = None
+    # 次级别源级失败标记 (取数异常/全源空帧/熔断冷却, 2026-11-23 G):
+    # True = 源不可用导致区间套无法验证 — 策略侧保留 B1 信号并向前端报警告,
+    # 区别于 False = 有数据但未确认 (维持 fail-closed 丢弃)。
+    sub_source_unavailable: bool = False
 
 
 class ScanResult(BaseModel):

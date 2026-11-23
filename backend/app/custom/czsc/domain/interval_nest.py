@@ -29,6 +29,8 @@ class NestResult:
     sub_ratio: 次级别背驰力度比 (area_cur / area_a, <1 为背驰)
     bi_count: 次级别分解得到的笔数(数据充分性指标)
     note: 人类可读结论 / 降级原因
+    source_unavailable: 源级失败标记 (取数异常/全源空帧/熔断冷却, 2026-11-23) —
+        区别于"有数据但未确认": 调用方据此保留信号并向前端报错, 而非静默丢弃
     """
     confirmed: bool
     level: str
@@ -37,6 +39,7 @@ class NestResult:
     sub_ratio: float | None = None
     bi_count: int = 0
     note: str = ""
+    source_unavailable: bool = False
 
 
 def _macd_area(bi: Bi, macd: list[MacdPoint], direction: str) -> tuple[float | None, list[float]]:

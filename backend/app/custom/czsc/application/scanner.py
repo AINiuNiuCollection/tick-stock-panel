@@ -83,6 +83,38 @@ def _to_date(value: str | datetime | date | None) -> date | None:
         return None
 
 
+def _to_datetime(value: object) -> datetime | None:
+    """把 bar.dt / bs_point.dt (str/date/datetime) 归一到 datetime。"""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("T", " ")[:19])
+    except ValueError:
+        return None
+
+
+def _bar_age(bars: list[Any], signal_dt: object, as_of: date) -> int:
+    """信号年龄 = 信号之后的本级别K线根数 (2026-11-23 需求):
+    周线按周K线数、日线按交易日数 — 周末/节假日无K线不计 ("只计算交易日")。
+    bars 不可得时回退自然日口径 (防御: 正常链路 analyze 恒返回 bars)。"""
+    sig = _to_datetime(signal_dt)
+    if sig is None:
+        return 0
+    if not bars:
+        return (as_of - sig.date()).days
+    end = datetime(as_of.year, as_of.month, as_of.day, 23, 59, 59)
+    count = 0
+    for b in bars:
+        bdt = _to_datetime(getattr(b, "dt", None))
+        if bdt is not None and sig < bdt <= end:
+            count += 1
+    return count
+
+
 def _name_of(symbol: str, result: dict[str, Any]) -> str | None:
     value = result.get("symbol_name")
     return str(value) if value else None
@@ -152,6 +184,7 @@ class ScanService:
         as_of: date,
     ) -> list[ScanHit]:
         hits: list[ScanHit] = []
+        bars = result.get("bars") or []
         for bp in result.get("bs_points") or []:
             if getattr(bp, "type", None) not in req.signal_types:
                 continue
@@ -160,7 +193,9 @@ class ScanService:
             dt = _to_date(getattr(bp, "dt", None))
             if dt is None or dt > as_of:
                 continue
-            age = (as_of - dt).days
+            # 信号年龄按本级别K线根数计 (周线=周K线, 日线=交易日;
+            # 周末/节假日无K线不计) — 2026-11-23 起, 原自然日口径作废
+            age = _bar_age(bars, getattr(bp, "dt", None), as_of)
             if req.max_signal_age and age > req.max_signal_age:
                 continue
             passes = list(getattr(bp, "divergence_pass", []) or [])
@@ -193,6 +228,38 @@ class ScanService:
                 )
             )
         return hits
+
+    # ---------- 次级别日期标注 (需求2, 2026-11-23; G 2026-11-23 加源不可用标记) ----------
+    def _annotate_sub_dt(self, hits: list[ScanHit]) -> int:
+        """命中截断后逐只区间套下钻, 标注次级别背驰点日期 (NestResult.sub_div_end)。
+
+        放在截断后执行: 取数次数封顶于 limit, 不随扫描池规模放大;
+        次级别源不可用时由 IntervalNestVerifier 熔断兜底 (每窗口一次探测)。
+        单点异常静默跳过 — 次级别日期是展示增强, 不影响命中本身。
+
+        G: 源级失败 (取数异常/空帧/冷却) 时置 hit.sub_source_unavailable=True
+        并返回失败计数 — 调用方据此保留 B1 信号并向 warnings 追加提示;
+        "有数据但未确认" 不置标记, 维持 fail-closed 丢弃。
+        """
+        nest = getattr(self.analyzer, "nest_verifier", None)
+        if nest is None or not hits:
+            return 0
+        unavailable = 0
+        for h in hits:
+            direction = "down" if h.direction == "买" else "up"
+            try:
+                nr = nest.verify(h.symbol, h.freq, h.dt, direction)
+            except Exception as exc:
+                logger.debug("nest annotate failed for %s: %s", h.symbol, exc)
+                continue
+            if nr is None:
+                continue
+            if nr.source_unavailable:
+                h.sub_source_unavailable = True
+                unavailable += 1
+            elif nr.confirmed and nr.sub_div_end is not None:
+                h.sub_dt = str(nr.sub_div_end)[:10]
+        return unavailable
 
     # ---------- 单股分析 ----------
     def _scan_one(
@@ -266,6 +333,14 @@ class ScanService:
         else:
             hits.sort(key=lambda h: h.dt, reverse=True)
         hits = hits[: req.limit]
+        # 需求2: 最终命中逐只标注次级别背驰点日期 (区间套下钻, 有熔断兜底)
+        # G: 源不可用的命中置 sub_source_unavailable, 策略侧保留 B1 并告警
+        sub_unavailable = self._annotate_sub_dt(hits)
+        if sub_unavailable > 0:
+            warnings = warnings + [
+                f"次级别(30分钟)数据源不可用, {sub_unavailable} 个命中的区间套确认被跳过 — "
+                "源恢复前这些 B1 信号未经次级别背驰验证, 请谨慎参考"
+            ]
 
         mark_scan_done()
         return ScanResult(

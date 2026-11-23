@@ -49,6 +49,11 @@ class AnalyzeService:
         self._center_builder = center_builder
         self._divergence_policy = divergence_policy
 
+    @property
+    def nest_verifier(self) -> IntervalNestVerifier | None:
+        """区间套验证器 — ScanService 命中标注次级别日期用 (需求2, 2026-11-23)。"""
+        return self._nest
+
     def fetch(self, symbol: str, freq: str, start, end) -> KlineResult:
         return self._chain.fetch(symbol, freq, start, end)
 
