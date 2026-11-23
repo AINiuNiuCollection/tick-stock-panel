@@ -526,6 +526,39 @@ curl http://localhost:3018/api/czsc/capabilities
 |---|---|---|
 | `CZSC_SERVE_VERIFY_SSL` | 未设（=false） | 东财兜底源 SSL 校验开关；企业代理自签名证书环境保持默认；生产环境设为 `true` 强制校验 |
 
+### 买卖点判定口径（`/api/czsc/analyze` 参数）
+
+买卖点识别引擎按缠师原文口径实现，全部判定参数可经 query 传入（`/analyze`、`/analyze/stream`、`/scan` 同名同默认）：
+
+#### 买卖点定义与输出模式
+
+| 买卖点 | 定义（缠师课文） | 成立条件 |
+|---|---|---|
+| B1/S1 | 趋势背驰（第24/27课） | 同向趋势（≥2 个不重叠中枢）+ 背驰判定通过 |
+| B2/S2 | 次级别回调不破 B1/S1 极值（第17课结构定义） | 结构条件为唯一门槛；盘整背驰/次级别验证仅作置信度标注 |
+| B3/S3 | 回试不破 ZG / 回抽不破 ZD（第20课定理） | 只看位置；背驰为附加力度信息，不参与成立判定 |
+
+- **`bs_output_mode`**（默认 `structural`）：B2/S2 输出模式。`structural` = 第17课纯结构定义（默认，无背驰的 B2/S2 以 `divergence_type` 标注「结构定义;无盘整背驰」后照常输出）；`strict` = 旧口径（盘整背驰为必要条件 + 次级别验证 fail-closed）。
+- **`sublevel_verified`**（响应字段，三态）：`true` = 30 分钟次级别验证通过；`false` = 有数据但不通过；`null` = 未验证（无更低级别数据 / 取数异常 / 样本不足）。「数据不可得 ≠ 结构不通过」。
+- **`bs_enable_interval_nest`**（默认 `false`）：区间套下钻（第27课），仅下钻一层（日线 → 30 分钟），不做多层递归。
+
+#### 背驰判定参数（第15/24/27/37课）
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `bs_macd_area_mode` | `split` | MACD 面积口径：`split`=分方向（下跌取绿柱/上涨取红柱，第24课）；`total_abs`=全绝对值；`dif_dea`=DIF-DEA 差绝对值 |
+| `bs_use_macd_area` | `true` | 启用「c 段面积 < a 段面积」条件 |
+| `bs_use_dif` | `true` | 启用「DIF 极值衰减」条件（上涨 c.max<a.max；下跌 c.min>a.min） |
+| `bs_use_zero_axis` | `false` | 第24课 0 轴回抽条件：a/c 两段之间 DIF 须回拉触及 0 轴，过滤零轴下弱势反弹的假背驰。窗口无有效 DIF 时 fail-open 不阻断。默认关闭（笔级回抽窗口常无完整 0 轴往返） |
+| `bs_divergence_logic` | `and` | 条件组合：`and`=面积与 DIF 同时满足（第24课标准背驰）；`or`=任一满足（第27课「只要其中一个符合」） |
+| `bs_trend_overlap_mode` | `practical` | 趋势中枢不重叠判据（第18课趋势成立前提）：`practical`=[ZD,ZG] 核心区间（第20课中枢区间原文）；`strict`=[DD,GG] 波动区间（更保守，一/二类点更少） |
+| `bs_zs_pullback_base` / `bs_zs_pullback_min_ratio` / `bs_zs_pullback_min_depth` | `zg` / `0.02` / `0.0` | 中枢延伸的回抽最小进入深度（噪声过滤，两者取大）；`zg`=以中枢上沿为基准 |
+| `min_bi_len` | `7`（下限 `6`） | 笔最少 K 线数；下限 6 对齐第62课「笔至少 5 根 K 线」（含端点） |
+
+#### 中枢构造单元
+
+- **`center_unit`**（默认 `bi`）：`bi` = 笔级中枢；`xianduan` = 先由笔合成线段（第65/67/71/77/78课特征序列法），再构造线段级中枢（第83课：笔作最小构件稳定性差）。线段级中枢的 `zs_list.level` 标为 `2`，回抽深度阈值在线段级不适用。
+
 ### 关键文件
 
 | 位置 | 作用 |
