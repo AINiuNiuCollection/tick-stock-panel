@@ -190,6 +190,8 @@ def _strategy_detail(
         "tags": s.meta.get("tags", []),
         "source": s.source,
         "research_only": s.meta.get("research_only", False),
+        # 需求1: 仅手动执行 — 详情与列表同口径透出, 前端设置弹窗据此显示「保存并执行」
+        "manual_run_only": s.meta.get("manual_run_only", False),
         "execution_backend": s.execution_backend,
         "asset_types": s.meta.get("asset_types", ["stock"]),
         "timeframes": s.meta.get("timeframes", ["1d"]),
