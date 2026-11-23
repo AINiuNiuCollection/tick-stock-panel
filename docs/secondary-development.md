@@ -225,6 +225,8 @@ def setup(registrar: BackendExtensionRegistrar) -> None:
 
 同一个 `setup` 可以通过 `registrar.include_router(router)` 注册独立 FastAPI 路由。核心路由冲突、重复 ID 或契约版本不匹配时，该扩展整体不注册，不留下半注册状态。
 
+`BackendExtensionRegistrar` 还提供 `register_center_builder` 与 `register_divergence_policy`；同一类实现按 `order` 升序取第一个，未注册任何实现时调用方继续使用当前严格算法作为默认。
+
 核心数据层初始化完成后，可选的 `startup(context: ExtensionContext)` 会收到数据目录和只读仓库协议。启动钩子失败只记录错误，不阻止主程序启动。
 
 完整后端模板位于 [`backend/app/custom/_template.py.example`](../backend/app/custom/_template.py.example)。
