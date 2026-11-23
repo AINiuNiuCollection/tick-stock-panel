@@ -125,6 +125,16 @@ class PrimaryKlineSource:
                     asset_type="stock",
                     freq=provider_freq,
                 )
+                if raw is None or raw.is_empty():
+                    logger.warning(
+                        "custom minute provider %s returned empty for %s %s (%s ~ %s)",
+                        pname,
+                        symbol,
+                        provider_freq,
+                        start_dt,
+                        end_dt,
+                    )
+                    raw = pl.DataFrame()
             except Exception as exc:
                 logger.warning(
                     "custom minute provider %s fetch failed for %s: %s",

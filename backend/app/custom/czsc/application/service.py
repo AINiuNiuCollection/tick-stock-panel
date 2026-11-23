@@ -68,7 +68,7 @@ class AnalyzeService:
             raise AnalyzerError(
                 "NO_DATA",
                 f"no kline data for {req.symbol} {req.freq} ({fetch_start} ~ {req.end}); "
-                f"primary and eastmoney fallback both empty",
+                f"configured minute provider, TickFlow, and eastmoney fallback all empty",
             )
         return self._analyze_frame(req, result.frame, fetch_start, result.source)
 

@@ -27,11 +27,11 @@ from __future__ import annotations
 
 import logging
 import os
-import socket as _socket
 import threading
+import time
 from collections.abc import Callable, Iterator
 from datetime import date, datetime
-from typing import Any
+from typing import ClassVar
 
 import polars as pl
 
@@ -191,7 +191,7 @@ class _BaostockConfig:
 
     name = "baostock"
     display_name = "Baostock 证券宝"
-    datasets = {"daily": {}, "minute": {}, "adj_factor": {}}
+    datasets: ClassVar[dict[str, dict]] = {"daily": {}, "minute": {}, "adj_factor": {}}
     path = None
     builtin = True
 
@@ -204,20 +204,40 @@ class _BaostockConfig:
 # (引用归零) 才 logout。单次批量扫描全程只产生一对登录/登出日志。
 _bs_session_lock = threading.Lock()
 _bs_session_refs = 0
+# 黑名单冷却: baostock 对频繁 login 返回 10001011, 至少 5 分钟内不应再尝试,
+# 否则会持续刷新封禁时长 (官方按自然年累计次数 x 6 小时冻结)。
+_LOGIN_BLACKLIST_COOLDOWN_S = 300.0
+_login_blocked_until = 0.0
+_last_login_error = ""
 
 
 def _session_acquire() -> tuple[bool, str]:
     """进入一段 baostock 查询区, 返回 (是否成功, 错误)。
 
     引用从 0→1 时真正 login; 已有会话则直接复用 (不重复 login)。
-    login 失败时不计数, 后续调用会重试。
+    login 失败时不计数; 黑名单期间直接返回缓存错误, 不再发起 login。
     """
-    global _bs_session_refs
+    global _bs_session_refs, _login_blocked_until, _last_login_error
     with _bs_session_lock:
         if _bs_session_refs == 0:
+            now = time.monotonic()
+            if now < _login_blocked_until:
+                return False, _last_login_error
             ok, msg = _do_login()
             if not ok:
+                _last_login_error = msg
+                if "10001011" in msg or "黑名单" in msg:
+                    _login_blocked_until = now + _LOGIN_BLACKLIST_COOLDOWN_S
+                    logger.warning(
+                        "baostock login blacklisted, cooling down %.0fs: %s",
+                        _LOGIN_BLACKLIST_COOLDOWN_S,
+                        msg,
+                    )
+                else:
+                    logger.warning("baostock login failed: %s", msg)
                 return False, msg
+            _login_blocked_until = 0.0
+            _last_login_error = ""
         _bs_session_refs += 1
     return True, ""
 
@@ -232,7 +252,7 @@ def _session_release() -> None:
             try:
                 import baostock as bs
                 bs.logout()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
 
@@ -250,8 +270,9 @@ def _do_login() -> tuple[bool, str]:
     _maybe_install_proxy_from_env()
 
     lg = bs.login()
-    if getattr(lg, "error_code", "0") != "0":
-        return False, f"login failed: {getattr(lg, 'error_msg', 'unknown')}"
+    code = getattr(lg, "error_code", "0")
+    if code != "0":
+        return False, f"[{code}] {getattr(lg, 'error_msg', 'unknown')}"
     return True, getattr(lg, "user_id", "")
 
 
@@ -299,9 +320,9 @@ class BaostockProvider:
         start_str = start_d.strftime("%Y-%m-%d") if start_d else "1990-12-19"
         end_str = end_d.strftime("%Y-%m-%d") if end_d else datetime.now().strftime("%Y-%m-%d")
 
-        ok, _ = _session_acquire()
+        ok, msg = _session_acquire()
         if not ok:
-            logger.warning("baostock login failed, skip daily fetch")
+            logger.warning("baostock login failed, skip daily fetch: %s", msg)
             return pl.DataFrame()
 
         try:
@@ -355,8 +376,9 @@ class BaostockProvider:
         start_str = start_d.strftime("%Y-%m-%d") if start_d else "1990-12-19"
         end_str = end_d.strftime("%Y-%m-%d") if end_d else datetime.now().strftime("%Y-%m-%d")
 
-        ok, _ = _session_acquire()
+        ok, msg = _session_acquire()
         if not ok:
+            logger.warning("baostock login failed, skip daily iteration: %s", msg)
             return
 
         try:
@@ -419,9 +441,9 @@ class BaostockProvider:
         start_str = start_dt.strftime("%Y-%m-%d") if start_dt else "2015-01-01"
         end_str = end_dt.strftime("%Y-%m-%d") if end_dt else datetime.now().strftime("%Y-%m-%d")
 
-        ok, _ = _session_acquire()
+        ok, msg = _session_acquire()
         if not ok:
-            logger.warning("baostock login failed, skip minute fetch")
+            logger.warning("baostock login failed, skip minute fetch: %s", msg)
             return pl.DataFrame()
 
         try:
@@ -483,9 +505,9 @@ class BaostockProvider:
         start_str = start_d.strftime("%Y-%m-%d") if start_d else "1990-12-19"
         end_str = end_d.strftime("%Y-%m-%d") if end_d else datetime.now().strftime("%Y-%m-%d")
 
-        ok, _ = _session_acquire()
+        ok, msg = _session_acquire()
         if not ok:
-            logger.warning("baostock login failed, skip adj_factor fetch")
+            logger.warning("baostock login failed, skip adj_factor fetch: %s", msg)
             return pl.DataFrame()
 
         try:
@@ -501,7 +523,7 @@ class BaostockProvider:
                         start_date=start_str,
                         end_date=end_str,
                     )
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     logger.warning("baostock query_adjust_factor failed for %s: %s", symbol, e)
                     continue
 
@@ -574,7 +596,7 @@ class BaostockProvider:
                 frequency=frequency,
                 adjustflag=adjustflag,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("baostock query_history_k_data_plus failed for %s: %s", bs_code, e)
             return None
 
