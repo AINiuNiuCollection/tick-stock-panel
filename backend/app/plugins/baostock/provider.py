@@ -167,18 +167,45 @@ def _install_proxy_tunnel(proxy_host: str, proxy_port: int) -> None:
 
 
 def _maybe_install_proxy_from_env() -> None:
-    """从 BAOSTOCK_PROXY=host:port 读取并安装代理隧道。空值跳过。"""
+    """读取代理并安装 CONNECT 隧道 (2026-11-23 根因修复)。
+
+    优先级:
+      1. BAOSTOCK_PROXY=host:port — 显式指定, 最优先
+      2. BAOSTOCK_PROXY=off/0/false — 显式禁用 (强制原生直连, 排障用)
+      3. 未设置时自动从系统代理推导 (urllib.request.getproxies, Windows 下
+         含注册表 IE 代理) — 企业网络 socket 直连被防火墙拦截, 不走代理
+         baostock 恒失败 (实测 [10002007] 网络接收错误 / 连接超时);
+         经代理 HTTP CONNECT 隧道实测可正常登录并取数。
+
+    解析失败/无系统代理时保持原生直连 (家庭网络等无代理场景不受影响)。
+    """
     proxy = os.environ.get("BAOSTOCK_PROXY", "").strip()
-    if not proxy:
+    if proxy.lower() in ("off", "0", "false", "none"):
         return
+    if not proxy:
+        # 自动探测: 系统代理的 http 项 (形如 http://host:port)
+        try:
+            import urllib.request
+            sys_proxy = urllib.request.getproxies().get("http", "").strip()
+        except Exception:
+            sys_proxy = ""
+        if not sys_proxy:
+            return
+        proxy = sys_proxy
+        logger.info("BAOSTOCK_PROXY not set; using system proxy for baostock tunnel")
+    # 归一 http://host:port / host:port 两种形态
+    if "://" in proxy:
+        proxy = proxy.split("://", 1)[1]
+    if "@" in proxy:  # 带认证的 proxy URL (http://user:pass@host:port) — 剥离认证段
+        proxy = proxy.rsplit("@", 1)[1]
     if ":" not in proxy:
-        logger.warning("BAOSTOCK_PROXY malformed (expect host:port): %s", proxy)
+        logger.warning("baostock proxy malformed (expect host:port): %s", proxy)
         return
     host, _, port_s = proxy.rpartition(":")
     try:
         port = int(port_s)
     except ValueError:
-        logger.warning("BAOSTOCK_PROXY port not int: %s", proxy)
+        logger.warning("baostock proxy port not int: %s", proxy)
         return
     _install_proxy_tunnel(host, port)
 

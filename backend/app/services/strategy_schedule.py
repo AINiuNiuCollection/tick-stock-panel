@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.strategy.engine import release_strategy_run, try_acquire_strategy_run
 
 logger = logging.getLogger(__name__)
 
@@ -168,18 +169,25 @@ def restore_scheduled_jobs(scheduler: Any) -> int:
 def run_scheduled_strategy(strategy_id: str) -> dict[str, Any]:
     """定时触发的单策略执行 — 复用 run_preset 同款链路并写入盘后缓存。
 
+    并发互斥 (需求C, 2026-11-23): 同策略已在运行 (手动 run_preset / 批量
+    run_all / 另一定时触发) 时跳过本次 — engine.run 维护进程级运行计数,
+    这里原子检查并预登记, 避免 context 构建期间被手动运行插队。
+    跳过不算失败, 不回写 last_run。
     单策略异常只回写 last_run.error, 不向外抛 (APScheduler 会记 job 失败)。
     """
     state = _get_app_state()
     if state is None:
         logger.warning("strategy schedule %s skipped: app state unavailable", strategy_id)
         return {"ok": False, "error": "app state unavailable"}
+    engine = getattr(state, "strategy_engine", None)
+    if not engine or not engine.has(strategy_id):
+        record_run(strategy_id, ok=False, error="strategy not found")
+        return {"ok": False, "error": "strategy not found"}
+    if not try_acquire_strategy_run(strategy_id):
+        logger.info("scheduled strategy %s skipped: already running", strategy_id)
+        return {"ok": False, "skipped": True, "error": "already running"}
     try:
         repo = state.repo
-        engine = getattr(state, "strategy_engine", None)
-        if not engine or not engine.has(strategy_id):
-            record_run(strategy_id, ok=False, error="strategy not found")
-            return {"ok": False, "error": "strategy not found"}
 
         from app.api.screener import ScreenerService
         from app.services import strategy_cache, strategy_config
@@ -223,3 +231,5 @@ def run_scheduled_strategy(strategy_id: str) -> dict[str, Any]:
         logger.warning("scheduled strategy %s failed: %s", strategy_id, exc, exc_info=True)
         record_run(strategy_id, ok=False, error=str(exc))
         return {"ok": False, "error": str(exc)}
+    finally:
+        release_strategy_run(strategy_id)

@@ -397,6 +397,8 @@ export interface ScreenerStrategy {
   source?: string
   /** 支持的周期, 如 ['1d'] / ['1m'] (分钟策略) */
   timeframes?: string[]
+  /** 需求1: 仅手动执行 — 重型策略只在"分析"按钮/定时任务时运行, 前端自动触发路径全部跳过 */
+  manual_run_only?: boolean
 }
 
 export interface StrategyLoadError {
@@ -410,6 +412,10 @@ export interface ScreenerResult {
   rows: any[]
   total: number
   elapsed_ms: number
+  /** filter_history 策略扫描统计: basic_filtered = 基础条件过滤后的股票数 */
+  scan_stats?: { basic_filtered?: number } | null
+  /** 策略级警告 (G): 如次级别(30分钟)源不可用时 B1 未经区间套确认即保留的提示 */
+  warnings?: string[]
 }
 
 export interface ScreenerResultSummary {
@@ -807,6 +813,8 @@ export interface StrategyDetail {
   tags: string[]
   source: 'builtin' | 'custom' | 'ai' | 'composite'
   research_only?: boolean
+  /** 需求1: 仅手动执行 — 重型策略只在"分析"按钮/定时任务时运行, 前端自动触发路径全部跳过 */
+  manual_run_only?: boolean
   execution_backend: 'polars_expr' | 'matrix_native' | 'python_history_legacy' | 'composite' | 'minute_filter'
   asset_types: string[]
   timeframes: string[]

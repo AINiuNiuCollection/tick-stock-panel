@@ -25,6 +25,9 @@ export function boardTag(symbol: string): { label: string; color: string } | nul
 // ===== RSI 指标带颜色 =====
 
 // 缠论 B1/B2 信号标签 — "B1@2026-11-12@12.34" → 带色标签; 无信号显示 —
+// 需求2 (2026-11-23): 第4段=次级别背驰点日期 (区间套下钻) —
+// "B1@2026-11-12@12.34@2026-11-13" → 标签内显示 "B1 本11-12·次11-13";
+// 旧3段格式 (无次级别日期) 保持原样展示。
 export function CzscSignalCell({ value }: { value: any }) {
   const text = typeof value === 'string' ? value.trim() : ''
   if (!text) return <span className="text-muted">—</span>
@@ -32,19 +35,22 @@ export function CzscSignalCell({ value }: { value: any }) {
     <span className="flex flex-wrap gap-1">
       {text.split(',').map(part => {
         const seg = part.trim()
-        const [type, dt, price] = seg.split('@')
+        const [type, dt, price, sub] = seg.split('@')
         const isB1 = type === 'B1'
         return (
           <span
             key={seg}
-            title={`${type} 信号日 ${dt ?? ''}${price ? ` 信号价 ${price}` : ''}`}
+            title={`${type} 信号日 ${dt ?? ''}${price ? ` 信号价 ${price}` : ''}${sub ? ` · 次级别日期 ${sub}` : ''}`}
             className={`inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium border ${
               isB1
                 ? 'text-danger bg-danger/10 border-danger/30'
                 : 'text-warning bg-warning/10 border-warning/30'
             }`}
           >
-            {type}{dt ? ` ${dt.slice(5)}` : ''}{price ? ` ${price}` : ''}
+            {type}
+            {dt ? (sub ? ` 本${dt.slice(5)}` : ` ${dt.slice(5)}`) : ''}
+            {sub ? `·次${sub.slice(5)}` : ''}
+            {!sub && price ? ` ${price}` : ''}
           </span>
         )
       })}

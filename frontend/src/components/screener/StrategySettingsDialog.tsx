@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Settings2, RotateCcw, Save, ChevronDown, Filter, Star, TrendingUp, Sparkles, Download, Layers, Plus, Trash2, Clock } from 'lucide-react'
+import { X, Settings2, RotateCcw, Save, ChevronDown, Filter, Star, TrendingUp, Sparkles, Download, Layers, Plus, Trash2, Clock, Play } from 'lucide-react'
 import { api, type StrategyDetail, type StrategyParamDef, type CompositeChildInfo, type ScoringDirection } from '@/lib/api'
 import { toPercentages, normalizeWeights } from '@/lib/weights'
 import { BUILTIN_COLUMNS } from '@/lib/watchlist-columns'
@@ -29,7 +29,9 @@ Object.assign(FIELD_LABEL, {
 interface Props {
   strategyId: string | null
   onClose: () => void
-  onSaved?: (displayLimit: number | null) => void
+  onSaved?: (displayLimit: number | null, runNow?: boolean) => void
+  /** manual_run_only 策略「保存并执行」: 保存成功后强制按新参数单跑 (绕过缓存摘要) */
+  onRunNow?: () => void
   onAiModify?: () => void
   onDeleted?: () => void
 }
@@ -184,7 +186,7 @@ function ParamField({ def, value, onChange }: {
   )
 }
 
-export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModify, onDeleted }: Props) {
+export function StrategySettingsDialog({ strategyId, onClose, onSaved, onRunNow, onAiModify, onDeleted }: Props) {
   const [detail, setDetail] = useState<StrategyDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -223,6 +225,8 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
   const [schedEnabled, setSchedEnabled] = useState(false)
   const [schedTime, setSchedTime] = useState('16:00')
   const [schedLastRun, setSchedLastRun] = useState<{ date: string; ok: boolean; total?: number; error?: string; at?: string } | null>(null)
+  // 「保存并执行」: 保存成功后由 handleSave 末尾消费, 触发 onRunNow 强制单跑
+  const runAfterSaveRef = useRef(false)
 
   // 辅助：更新 basicFilter 某个 key
   const setBF = useCallback((key: string, value: any) => {
@@ -333,7 +337,11 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
         const [hh, mm] = schedTime.split(':').map(v => parseInt(v, 10) || 0)
         await api.screenerPutSchedule(strategyId, schedEnabled, hh, mm)
       } catch {}
-      onSaved?.(displayLimit)
+      // 「保存并执行」: 保存成功后强制按新参数单跑 (manual_run_only 策略主动执行入口)
+      const runNow = runAfterSaveRef.current
+      runAfterSaveRef.current = false
+      onSaved?.(displayLimit, runNow)
+      if (runNow) onRunNow?.()
       onClose()
     } finally {
       setSaving(false)
@@ -562,7 +570,8 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
                 })()
                 : (
                 <div className="grid grid-cols-3 gap-5 items-start">
-                  {/* 列1：选股条件 */}
+                  {/* 列1：基础参数 + 每日定时筛选 (定时从第3列下移 — 列1下方留白较多) */}
+                  <div className="space-y-3">
                     <Section icon={Filter} title="基础参数" accent="text-sky-400">
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-[10px] text-muted">启用基础参数过滤</span>
@@ -598,6 +607,56 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
                       </div>
                     </div>
                   </Section>
+
+                    {/* 每日定时筛选: 仅日线策略 (从第3列下移至基础参数下方) */}
+                    {detail?.timeframes?.includes('1d') && (
+                      <Section
+                        icon={Clock}
+                        title="每日定时筛选"
+                        accent="text-accent"
+                        defaultOpen={true}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] text-secondary">工作日自动执行选股</span>
+                          <button
+                            type="button"
+                            onClick={() => setSchedEnabled(v => !v)}
+                            className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors duration-200 cursor-pointer ${
+                              schedEnabled ? 'bg-accent' : 'bg-elevated'
+                            }`}
+                            aria-pressed={schedEnabled}
+                          >
+                            <span className={`inline-block h-3 w-3 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                              schedEnabled ? 'translate-x-[14px]' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                        </div>
+                        {schedEnabled && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] text-secondary">执行时间</span>
+                            <input
+                              type="time"
+                              value={schedTime}
+                              onChange={e => setSchedTime(e.target.value)}
+                              className="h-6 px-1.5 rounded bg-base border border-border text-[11px] font-mono text-foreground focus:outline-none focus:border-accent/50"
+                            />
+                            <span className="text-[10px] text-muted">趋势类策略按天执行一次即可, 结果按天展示</span>
+                          </div>
+                        )}
+                        {schedLastRun && (
+                          <div className="text-[10px] leading-4 text-muted/80 border-t border-border/10 pt-1.5">
+                            最近定时执行: {schedLastRun.date} {schedLastRun.at}
+                            {schedLastRun.ok
+                              ? <> · 命中 <span className="text-accent">{schedLastRun.total ?? 0}</span> 只</>
+                              : <> · <span className="text-danger">失败: {schedLastRun.error ?? '未知'}</span></>}
+                          </div>
+                        )}
+                        <div className="text-[10px] leading-4 text-muted/70">
+                          保存后生效; 结果写入盘后缓存, 与手动执行同一展示路径。
+                        </div>
+                      </Section>
+                    )}
+                  </div>
 
                   {/* 列2：策略参数 */}
                   <div className="space-y-3">
@@ -725,56 +784,6 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
                     <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.04] px-3 py-2 text-[10px] leading-4 text-muted">
                       出入场触发器保存后对<b className="text-secondary">回测和监控</b>生效;选股扫描仍按策略本身的筛选规则,不受此影响。
                     </div>
-
-                    {/* 每日定时筛选: 仅日线策略 */}
-                    {detail?.timeframes?.includes('1d') && (
-                      <Section
-                        icon={Clock}
-                        title="每日定时筛选"
-                        accent="text-accent"
-                        defaultOpen={false}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-[11px] text-secondary">工作日自动执行选股</span>
-                          <button
-                            type="button"
-                            onClick={() => setSchedEnabled(v => !v)}
-                            className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors duration-200 cursor-pointer ${
-                              schedEnabled ? 'bg-accent' : 'bg-elevated'
-                            }`}
-                            aria-pressed={schedEnabled}
-                          >
-                            <span className={`inline-block h-3 w-3 rounded-full bg-white shadow-sm transition-transform duration-200 ${
-                              schedEnabled ? 'translate-x-[14px]' : 'translate-x-0.5'
-                            }`} />
-                          </button>
-                        </div>
-                        {schedEnabled && (
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[11px] text-secondary">执行时间</span>
-                            <input
-                              type="time"
-                              value={schedTime}
-                              onChange={e => setSchedTime(e.target.value)}
-                              className="h-6 px-1.5 rounded bg-base border border-border text-[11px] font-mono text-foreground focus:outline-none focus:border-accent/50"
-                            />
-                            <span className="text-[10px] text-muted">趋势类策略按天执行一次即可, 结果按天展示</span>
-                          </div>
-                        )}
-                        {schedLastRun && (
-                          <div className="text-[10px] leading-4 text-muted/80 border-t border-border/10 pt-1.5">
-                            最近定时执行: {schedLastRun.date} {schedLastRun.at}
-                            {schedLastRun.ok
-                              ? <> · 命中 <span className="text-accent">{schedLastRun.total ?? 0}</span> 只</>
-                              : <> · <span className="text-danger">失败: {schedLastRun.error ?? '未知'}</span></>}
-                          </div>
-                        )}
-                        <div className="text-[10px] leading-4 text-muted/70">
-                          保存后生效; 结果写入盘后缓存, 与手动执行同一展示路径。
-                        </div>
-                      </Section>
-                    )}
-
                   </div>
                 </div>
                 )}
@@ -797,6 +806,13 @@ export function StrategySettingsDialog({ strategyId, onClose, onSaved, onAiModif
               )}
             </div>
             <div className="flex items-center gap-2">
+              {onRunNow && detail?.manual_run_only === true && (
+                <button onClick={() => { runAfterSaveRef.current = true; handleSave() }} disabled={saving}
+                  title="保存参数并立即按新参数执行扫描 (该策略不参与自动批量扫描)"
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-teal-500/30 bg-teal-500/10 text-teal-400 text-xs font-semibold hover:bg-teal-500/20 transition-colors cursor-pointer disabled:opacity-50">
+                  <Play className="h-3.5 w-3.5" />{saving ? '执行中…' : '保存并执行'}
+                </button>
+              )}
               {onAiModify && (detail?.source === 'ai' || detail?.source === 'custom') && (
                 <button onClick={onAiModify}
                   className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-amber-400/30 bg-amber-400/8 text-amber-400 text-xs font-medium hover:bg-amber-400/15 transition-colors cursor-pointer">

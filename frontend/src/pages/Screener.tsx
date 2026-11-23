@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { ScanSearch, Clock, TrendingUp, Star, Filter, Layers, Network, Sparkles, RefreshCw, Settings2, Store, RotateCcw, X } from 'lucide-react'
+import { ScanSearch, Clock, TrendingUp, Star, Filter, Layers, Network, Sparkles, RefreshCw, Settings2, Store, RotateCcw, X, AlertTriangle } from 'lucide-react'
 import { api, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
 import { fetchMinuteBatchIncremental } from '@/lib/minuteBatchIncremental'
 import { DEFAULT_STRATEGY_NOTIFY_EVENTS } from '@/lib/strategyMonitorEvents'
@@ -242,6 +242,13 @@ export function Screener() {
     [visiblePool, strategyMap],
   )
 
+  // 需求1 (2026-11-23): manual_run_only 策略(如缠论B1/B2, 全市场扫描工作量大)
+  // 仅在点击「分析」按钮或定时任务时执行 — 所有自动批量触发路径将其剔除。
+  const autoDailyIds = useMemo(
+    () => dailyPoolIds.filter(id => strategyMap.get(id)?.manual_run_only !== true),
+    [dailyPoolIds, strategyMap],
+  )
+
   // 策略列表加载后,自动清除池中失效的自定义策略(如本地开发残留的、
   // 当前后端已不存在的策略 ID),避免"策略池"对话框持续显示失效项。
   // 关键: 仅当本次拉取成功且返回非空列表时才 prune。
@@ -268,7 +275,7 @@ export function Screener() {
     mutationFn: ({ date, strategyIds }: { date?: string; strategyIds?: string[] } = {}) =>
       api.screenerRunAll(
         date,
-        strategyIds ?? dailyPoolIds,
+        strategyIds ?? autoDailyIds,
         assetType,
       ),
     onSuccess: (data) => {
@@ -289,9 +296,11 @@ export function Screener() {
     },
   })
 
+  // 缓存覆盖检查同样排除 manual_run_only 策略 — 其命中数由定时任务缓存提供,
+  // 不因自动 runAll 未跑它而显示"缓存缺失"。
   const missingStrategyIds = useMemo(
-    () => dailyPoolIds.filter(id => summaryQuery.data?.results[id]?.as_of !== asOf),
-    [dailyPoolIds, summaryQuery.data, asOf],
+    () => autoDailyIds.filter(id => summaryQuery.data?.results[id]?.as_of !== asOf),
+    [autoDailyIds, summaryQuery.data, asOf],
   )
   const cacheCoversPool = dailyPoolIds.length > 0 && missingStrategyIds.length === 0
 
@@ -570,7 +579,7 @@ export function Screener() {
   const showScanProgress =
     run.isPending && sp?.active === true && (sp.total ?? 0) > 0
 
-  const handleRun = (s: ScreenerStrategy) => {
+  const handleRun = (s: ScreenerStrategy, force = false) => {
     handleStrategySwitch(s.id)
     setActiveStrategy(s.id)
     setShowAll(false)
@@ -583,7 +592,8 @@ export function Screener() {
       return
     }
     // 摘要命中时由 singleCachedQuery 按需加载明细；缺失时才单独计算。
-    if (summaryQuery.data?.results[s.id]?.as_of === asOf || runAll.isPending) return
+    // force=true (设置弹窗「保存并执行」): 绕过缓存摘要, 按新参数强制重跑。
+    if (!force && (summaryQuery.data?.results[s.id]?.as_of === asOf || runAll.isPending)) return
     run.mutate({ id: s.id, date: asOf, timeframe: tf })
   }
 
@@ -633,7 +643,8 @@ export function Screener() {
     mutationFn: api.strategyReload,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['screener-strategies'] })
-      if (asOf) requestRunAll({ date: asOf })
+      // 需求1: 重跑仅覆盖自动策略, manual_run_only 策略仍限定「分析」按钮/定时任务
+      if (asOf) requestRunAll({ date: asOf, strategyIds: autoDailyIds })
     },
   })
 
@@ -885,6 +896,18 @@ export function Screener() {
             </div>
           )}
 
+          {/* G: 策略级警告 — 如次级别(30分钟)源不可用时 B1 未经区间套确认即保留 */}
+          {!run.isError && !showAll && (result?.warnings?.length ?? 0) > 0 && (
+            <div className="flex items-start gap-2 text-sm text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-btn px-3 py-2">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                {result!.warnings!.map((w, i) => (
+                  <p key={i}>{w}</p>
+                ))}
+              </div>
+            </div>
+          )}
+
           {(showAll ? allRows.length > 0 : !!result) && (
             <motion.div
               key={showAll ? `all-${asOf}` : `${result!.as_of}-${result!.strategy}`}
@@ -985,6 +1008,13 @@ export function Screener() {
                     <div className="flex items-center gap-2 text-xs text-muted">
                       <Clock className="h-3 w-3" />
                       <span className="num">{result.elapsed_ms.toFixed(1)} ms</span>
+                    </div>
+                  )}
+                  {/* 需求A: filter_history 策略先按基础条件(价格/市值/板块/ST)过滤, 展示符合数量与命中数 */}
+                  {!showAll && result?.scan_stats?.basic_filtered != null && (
+                    <div className="flex items-center gap-1.5 text-xs text-muted">
+                      <Filter className="h-3 w-3" />
+                      <span>基础条件 <span className="num">{result.scan_stats.basic_filtered}</span> 只 · 命中 <span className="num">{result.total}</span> 只</span>
                     </div>
                   )}
                   {/* 分时截断提示: 超数据源批量上限时在工具栏内联显示, 可关闭 */}
@@ -1113,9 +1143,20 @@ export function Screener() {
       <StrategySettingsDialog
         strategyId={settingsStrategyId}
         onClose={() => setSettingsStrategyId(null)}
-        onSaved={(limit) => {
+        // manual_run_only 策略「保存并执行」: 强制按新参数单跑 (绕过缓存摘要)
+        onRunNow={() => {
+          if (!settingsStrategyId) return
+          const s = strategyMap.get(settingsStrategyId)
+          if (s) handleRun(s, true)
+        }}
+        onSaved={(limit, runNow) => {
           if (settingsStrategyId) {
             setStrategyLimits(prev => ({ ...prev, [settingsStrategyId]: limit }))
+            // 需求1: manual_run_only 策略保存参数后不自动重跑 — 「保存并执行」按钮/定时任务执行
+            if (strategyMap.get(settingsStrategyId)?.manual_run_only === true) {
+              if (!runNow) toast('参数已保存 — 该策略不自动执行，可点「保存并执行」或等定时任务', 'success')
+              return
+            }
             // 按策略自身周期重跑: 日线用当前 asOf, 分钟实时单跑交后端取最新分区
             const tf = strategyMap.get(settingsStrategyId)?.timeframes?.includes('1m') ? '1m' as const : '1d' as const
             run.mutate({ id: settingsStrategyId, date: tf === '1m' ? '' : asOf, timeframe: tf })
@@ -1159,7 +1200,9 @@ export function Screener() {
             if (assetType === 'stock') {
               const prev = new Set(pool)
               const addedDaily = newPool.filter(
-                id => !prev.has(id) && !(strategyMap.get(id)?.timeframes?.includes('1m') ?? false),
+                id => !prev.has(id)
+                  && !(strategyMap.get(id)?.timeframes?.includes('1m') ?? false)
+                  && strategyMap.get(id)?.manual_run_only !== true,
               )
               if (addedDaily.length > 0) requestRunAll({ date: asOf || undefined, strategyIds: addedDaily })
             }
@@ -1184,9 +1227,10 @@ export function Screener() {
             throw new Error(`策略 ${id} 已保存但未加载，请检查策略代码`)
           }
           addToPool(id)
-          // 新建策略为日线时立即扫描, 免去手动点刷新 (分钟策略仍手动单跑)
+          // 新建策略为日线时立即扫描, 免去手动点刷新 (分钟策略仍手动单跑;
+          // manual_run_only 策略仅「分析」按钮/定时任务执行, 不自动扫描)
           const preset = data.presets.find(s => s.id === id)
-          if (assetType === 'stock' && preset && !preset.timeframes?.includes('1m')) {
+          if (assetType === 'stock' && preset && !preset.timeframes?.includes('1m') && preset.manual_run_only !== true) {
             requestRunAll({ date: asOf || undefined, strategyIds: [id] })
           }
         }}
@@ -1198,9 +1242,9 @@ export function Screener() {
         onSavedId={async id => {
           const data = await qc.fetchQuery({ queryKey: QK.screenerStrategies('all'), queryFn: () => api.screenerStrategies(), staleTime: 0 })
           addToPool(id)
-          // 新建叠加策略为日线时立即扫描, 免去手动点刷新 (分钟策略仍手动单跑)
+          // 新建叠加策略为日线时立即扫描 (manual_run_only 策略不自动扫描)
           const preset = data.presets.find(s => s.id === id)
-          if (assetType === 'stock' && preset && !preset.timeframes?.includes('1m')) {
+          if (assetType === 'stock' && preset && !preset.timeframes?.includes('1m') && preset.manual_run_only !== true) {
             requestRunAll({ date: asOf || undefined, strategyIds: [id] })
           }
         }}

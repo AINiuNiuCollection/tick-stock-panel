@@ -34,6 +34,36 @@ from app.strategy.scoring import (
 
 logger = logging.getLogger(__name__)
 
+# 进程级策略运行计数 — 需求C (2026-11-23): 定时任务触发时若同策略已在运行
+# (手动 run_preset / 批量 run_all / 另一定时触发) 则跳过本次, 避免共用
+# strategy_cache 的并发写入互相覆盖。run() 是唯一登记点, 全部执行路径收敛于此。
+_running_lock = threading.Lock()
+_running_counts: dict[str, int] = {}
+
+
+def is_strategy_running(strategy_id: str) -> bool:
+    with _running_lock:
+        return _running_counts.get(strategy_id, 0) > 0
+
+
+def try_acquire_strategy_run(strategy_id: str) -> bool:
+    """原子检查并登记: 已有运行时返回 False (定时任务据此跳过本次)。"""
+    with _running_lock:
+        if _running_counts.get(strategy_id, 0) > 0:
+            return False
+        _running_counts[strategy_id] = 1
+        return True
+
+
+def release_strategy_run(strategy_id: str) -> None:
+    with _running_lock:
+        n = _running_counts.get(strategy_id, 0) - 1
+        if n > 0:
+            _running_counts[strategy_id] = n
+        else:
+            _running_counts.pop(strategy_id, None)
+
+
 # 引擎级默认基础过滤 — 策略未定义 BASIC_FILTER 时兜底
 DEFAULT_BASIC_FILTER: dict = {
     "price_min": 3,
@@ -224,6 +254,12 @@ class StrategyResult:
     scores: dict[str, float] = field(default_factory=dict)
     entry_signal_hits: list[dict] = field(default_factory=list)
     exit_signal_hits: list[dict] = field(default_factory=list)
+    # filter_history 策略的扫描统计 (需求A): basic_filtered = as_of 横截面经
+    # 基础过滤后的只数, 即"符合基本要求的股票数", 供前端结果统计行展示。
+    scan_stats: dict[str, int] | None = None
+    # 策略级警告 (G, 2026-11-23): filter_history 可返回 (df, warnings) 元组,
+    # 引擎解包后经 /run 响应透出前端 (如次级别源不可用时 B1 保留提示)。
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -886,6 +922,27 @@ class StrategyEngine:
         params: dict | None = None,
         overrides: dict | None = None,
     ) -> StrategyResult:
+        """执行入口: 登记进程级运行计数 (定时任务据此跳过同策略并发) 后转 _run_impl。
+
+        签名与行为与旧 run 完全一致, 所有调用方 (run_preset/run_all/定时任务/回放) 无感。
+        """
+        with _running_lock:
+            _running_counts[strategy_id] = _running_counts.get(strategy_id, 0) + 1
+        try:
+            return self._run_impl(
+                strategy_id, context, pool=pool, params=params, overrides=overrides,
+            )
+        finally:
+            release_strategy_run(strategy_id)
+
+    def _run_impl(
+        self,
+        strategy_id: str,
+        context: StrategyDataContext,
+        pool: list[str] | None = None,
+        params: dict | None = None,
+        overrides: dict | None = None,
+    ) -> StrategyResult:
         """执行策略: 基础过滤 → 策略过滤 → 评分排序
 
         Args:
@@ -936,6 +993,15 @@ class StrategyEngine:
             scoring,
         )
 
+        # 基础过滤: 策略默认 basic_filter 兜底, 用户 override 优先覆盖。
+        # 这样策略文件里写的 exclude_st/price_min 等默认值即使前端没保存也能生效。
+        # (提前到 filter_history 之前合并: 历史策略需要先按它收窄扫描股票池)
+        bf = dict(s.basic_filter) if s.basic_filter else {}
+        if overrides and overrides.get("basic_filter"):
+            bf.update(overrides["basic_filter"])
+        bf_enabled = bool(bf) and bf.get("enabled", True)
+        scan_stats: dict[str, int] | None = None
+
         signal_df = current if current is not None else history
         if signal_df is None:
             signal_df = pl.DataFrame()
@@ -944,6 +1010,9 @@ class StrategyEngine:
         if pool and not signal_df.is_empty():
             signal_df = signal_df.filter(pl.col("symbol").is_in(pool))
         exit_signal_hits = self._collect_signal_hits(signal_df, exit_signals)
+        # G (2026-11-23): filter_history 可返回 (df, warnings) 元组上报策略级
+        # 警告; 纯 df 返回向后兼容。警告透传到 StrategyResult.warnings。
+        strategy_warnings: list[str] = []
 
         # 普通策略只读目标日期；历史策略读取调用方注入的历史窗口。
         if s.execution_backend == "minute_filter":
@@ -1010,7 +1079,23 @@ class StrategyEngine:
                     "盘中信号仅可用于分钟策略(timeframes=['1m']), 日线策略不支持: "
                     + ", ".join(sorted(missing_csgi))
                 )
+            # 需求A(2026-11-23): filter_history 策略先按 as_of 横截面做基础过滤,
+            # 把扫描股票池收窄到符合基础条件(价格/市值/成交额/板块/ST)的标的,
+            # 再进策略逐股计算。只按 symbol 收窄 — 存活标的保留全部历史行,
+            # 基础条件只依赖 as_of 横截面值, 与旧的"输出后修剪"口径等价,
+            # 但避免策略(如缠论逐股扫描)在全市场上白跑。
+            if bf_enabled and "date" in df.columns and "symbol" in df.columns:
+                cross = df.filter(pl.col("date") == as_of)
+                cross = self._apply_basic_filter(cross, bf)
+                scan_stats = {"basic_filtered": int(cross.height)}
+                if cross.is_empty():
+                    df = df.head(0)
+                else:
+                    keep = cross["symbol"].cast(pl.Utf8).unique()
+                    df = df.filter(pl.col("symbol").cast(pl.Utf8).is_in(keep))
             df = s.filter_history_fn(df, params)
+            if isinstance(df, tuple):
+                df, strategy_warnings = df
             if "date" in df.columns:
                 df = df.filter(pl.col("date") == as_of)
         else:
@@ -1023,16 +1108,14 @@ class StrategyEngine:
                 as_of=as_of,
                 strategy_id=strategy_id,
                 exit_signal_hits=exit_signal_hits,
+                scan_stats=scan_stats,
+                warnings=strategy_warnings,
             )
 
-        # 基础过滤: 策略默认 basic_filter 兜底, 用户 override 优先覆盖。
-        # 这样策略文件里写的 exclude_st/price_min 等默认值即使前端没保存也能生效。
-        bf = dict(s.basic_filter) if s.basic_filter else {}
-        if overrides and overrides.get("basic_filter"):
-            bf.update(overrides["basic_filter"])
-
         # Stage 1: 基础过滤（enabled 默认开启; 显式 enabled=false 才跳过）
-        if bf and bf.get("enabled", True):
+        # bf 合并已在 filter_history 之前完成 (见上); 对 filter_history 策略
+        # 是幂等二次修剪, 对 filter_fn/普通策略仍是唯一的基础过滤。
+        if bf_enabled:
             df = self._apply_basic_filter(df, bf)
 
         # Pool 过滤
@@ -1085,6 +1168,8 @@ class StrategyEngine:
             scores=scores,
             entry_signal_hits=entry_signal_hits,
             exit_signal_hits=exit_signal_hits,
+            scan_stats=scan_stats,
+            warnings=strategy_warnings,
         )
 
     @staticmethod
