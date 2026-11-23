@@ -2,7 +2,7 @@
 
 按分析级别自动下钻次级别 (级别不可错配):
     日线 → 30分钟; 60分钟 → 15分钟; 30分钟 → 5分钟; 15分钟 → 5分钟。
-    5分钟/周线/月线无更低级别配置 → 降级放行 (等同无验证器)。
+    5分钟/周线/月线无更低级别配置 → 返回 None (未验证, 调用方放行并标注)。
 结果按 (symbol, freq, edt_date) 记忆化, 避免同一请求内重复取数。
 
 历史缺陷 (三处, 均导致 B2/S2 被 fail-closed 全部拦截):
@@ -108,6 +108,13 @@ def _bi_area(bi: Any, bars: list[Any], hists: list[float], sign: str) -> float:
 
 
 class SublevelVerifier:
+    """verify 三态返回 (2026-11-23 结构化输出改造):
+        True  = 次级别有数据且结构通过 (次级别一买/一卖确认);
+        False = 次级别有数据但结构不通过 (位置前提不满足 / 力度不衰竭);
+        None  = 无法验证 (无更低级别配置 / 取数失败 / 数据不足 / czsc 未装)。
+    旧布尔口径的调用方应把 None 按"未验证"放行, 不得当作 False。
+    """
+
     def __init__(
         self,
         chain: KlineSourceChain,
@@ -115,17 +122,17 @@ class SublevelVerifier:
     ) -> None:
         self._chain = chain
         self._lookback = lookback_days
-        self._memo: dict[tuple[str, str, date], bool] = {}
+        self._memo: dict[tuple[str, str, date], bool | None] = {}
         self._lock = threading.Lock()
 
-    def verify(self, symbol: str, freq: str, edt: Any) -> bool:
+    def verify(self, symbol: str, freq: str, edt: Any) -> bool | None:
         sub_freq = sub_freq_of(freq)
         if sub_freq is None:
-            # 无更低级别配置 (5分钟/周线/月线) → 降级放行, 与无验证器语义一致
-            return True
+            # 无更低级别配置 (5分钟/周线/月线) → 未验证, 调用方按 None 放行
+            return None
         edt_date = _as_date(edt)
         if edt_date is None:
-            return False
+            return None
         key = (symbol, freq, edt_date)
         with self._lock:
             if key in self._memo:
@@ -135,11 +142,11 @@ class SublevelVerifier:
             self._memo[key] = result
         return result
 
-    def _verify(self, symbol: str, sub_freq: str, edt: Any, edt_date: date) -> bool:
+    def _verify(self, symbol: str, sub_freq: str, edt: Any, edt_date: date) -> bool | None:
         try:
             from czsc import CZSC
         except ImportError:
-            return False
+            return None
 
         # 窗口: 候选时刻之前的次级别走势 (不含候选之后, 否则最后一笔
         # 会是候选之后的新笔, 候选笔本身被错过)。
@@ -149,27 +156,27 @@ class SublevelVerifier:
         try:
             result = self._chain.fetch(symbol, sub_freq, sub_start, sub_end)
         except Exception:
-            return False
+            return None
         if result.frame.is_empty():
-            return False
+            return None
 
         try:
             bars = to_raw_bars(result.frame, sub_freq)
         except Exception:
-            return False
+            return None
         if cand_dt is not None:
             bars = [b for b in bars if b.dt <= cand_dt]
         if not bars or len(bars) < 10:
-            return False
+            return None
 
         try:
             c = CZSC(bars, max_bi_num=1000, min_bi_len=5)
         except Exception:
-            return False
+            return None
 
         bi_list = c.bi_list
         if len(bi_list) < 3:
-            return False
+            return None
 
         # 候选笔 = 截断后窗口最后一笔 (结束于候选时刻附近);
         # 参照段 = 同方向、终点为窗口极值的笔 (进入次级别一买/一卖的急跌/急涨段)。

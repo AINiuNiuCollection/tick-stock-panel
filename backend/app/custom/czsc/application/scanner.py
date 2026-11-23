@@ -299,6 +299,7 @@ class ScanService:
                 "trend_overlap_mode": req.divergence.trend_overlap_mode,
                 "zs_pullback_base": req.divergence.zs_pullback_base,
                 "zs_pullback_min_ratio": req.divergence.zs_pullback_min_ratio,
+                "bs_output_mode": req.divergence.bs_output_mode,
             },
         }
 

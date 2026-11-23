@@ -25,6 +25,7 @@ from ..domain.bs_points import identify_bs_points
 from ..domain.models import DtIndex
 from ..domain.zs import build_zs_strict
 from ..errors import AnalyzerError
+from ..extension_policy import XianduanCenterBuilder
 from ..schemas import BarItem, BiItem, BsPointItem, FxItem, MacdItem, ZsItem
 from .cache import AnalysisCache
 
@@ -91,7 +92,11 @@ class AnalyzeService:
 
         bars = [b for b in bars_all if bar_date(b) >= req.start] if fetch_start < req.start else bars_all
         fxs, bis, signals = run_czsc(bars, req.max_bi_num, req.min_bi_len)
-        if self._center_builder is None:
+        # 中枢构造单元 (方案B/R3): bi=笔级(默认, 现行为); xianduan=先合成线段
+        # (第65/67/71/77/78课)再构造线段级中枢 (第18/20课公式, 第83课稳定性)。
+        if req.center_unit == "xianduan":
+            zs_raw = list(XianduanCenterBuilder().build(bis))
+        elif self._center_builder is None:
             zs_raw = build_zs_strict(
                 bis,
                 min_pullback_depth=req.divergence.zs_pullback_min_depth,
@@ -159,7 +164,7 @@ class AnalyzeService:
                     zg=zs.zg,
                     gg=zs.gg,
                     dd=zs.dd,
-                    level=1,
+                    level=2 if req.center_unit == "xianduan" else 1,
                     start_dt=str(zs.sdt),
                     end_dt=str(zs.edt),
                     valid=zs.valid,
@@ -183,7 +188,8 @@ class AnalyzeService:
             if self._sublevel is not None:
                 _sub, _freq, _sym = self._sublevel, req.freq, req.symbol
                 # 按分析级别下钻次级别 (日线→30分钟, 30分钟→5分钟...);
-                # 无更低级别配置时 verify 内部降级放行, 与无验证器语义一致。
+                # verify 三态返回: True/False=有数据判定结果, None=未验证
+                # (无更低级别/数据不可得), 由 identify_bs_points 按输出模式解读。
                 verifier = lambda edt: _sub.verify(_sym, _freq, edt)  # noqa: E731
             dt_index = DtIndex.from_bars(bars_out)
             # 区间套下钻: 有 nest 验证器且请求开启时, 对买卖点做次级别背驰标注。

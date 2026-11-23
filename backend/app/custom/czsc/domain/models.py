@@ -103,6 +103,10 @@ class BsPoint:
     nest_level: str | None = None
     nest_ratio: float | None = None
     nest_note: str | None = None
+    # 定律一 (第17课): 二买/二卖是否被次级别一买/一卖确认。
+    # True=次级别结构通过; False=有数据但结构不通过; None=未验证
+    # (无更低级别/数据不可得/无验证器)。B1/S1/B3/S3 恒 None。
+    sublevel_verified: bool | None = None
 
 
 class DtIndex:

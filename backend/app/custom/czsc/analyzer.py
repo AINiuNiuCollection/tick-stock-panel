@@ -14,6 +14,8 @@ from .adapters.czsc_adapter import probe_czsc
 from .application.service import get_default_service, set_default_service
 from .config import (
     DEFAULT_BS_MACD_AREA_MODE,
+    DEFAULT_BS_OUTPUT_MODE,
+    DEFAULT_CENTER_UNIT,
     DEFAULT_BS_ONLY_VALID_ZS,
     DEFAULT_BS_USE_DIF,
     DEFAULT_BS_USE_MACD_AREA,
@@ -87,6 +89,8 @@ def _request_from_kwargs(kwargs: dict[str, Any]) -> AnalyzeRequest:
         bs_divergence_logic=kwargs.pop("bs_divergence_logic", DEFAULT_DIVERGENCE_LOGIC),
         bs_trend_overlap_mode=kwargs.pop("bs_trend_overlap_mode", DEFAULT_TREND_OVERLAP_MODE),
         bs_enable_interval_nest=kwargs.pop("bs_enable_interval_nest", False),
+        bs_output_mode=kwargs.pop("bs_output_mode", DEFAULT_BS_OUTPUT_MODE),
+        center_unit=kwargs.pop("center_unit", DEFAULT_CENTER_UNIT),
     )
     if kwargs:
         raise TypeError(f"unexpected arguments: {sorted(kwargs)}")

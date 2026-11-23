@@ -2,8 +2,11 @@
 
     B1: 下跌趋势 a+A+b+B+c, c 创新低且 c 段 MACD 面积 < a 段 → 趋势背驰。
     S1: 上涨趋势对称。
-    B2: B1 后第一次回调低点不破 B1 低点, 且 a/c 段盘整背驰, 且次级别一买确认(定律一)。
-    S2: S1 后第一次反弹高点不破 S1 高点, 且 a/c 段盘整背驰, 且次级别一卖确认。
+    B2: B1 后第一次回调低点不破 B1 低点 (第17课纯结构定义)。
+        strict 模式附加: a/c 段盘整背驰 + 次级别一买确认(定律一)均为必要条件。
+        structural 模式: 结构条件为唯一门槛, 盘整背驰与次级别验证转为置信度标注
+        (divergence_type / sublevel_verified)。
+    S2: S1 后第一次反弹高点不破 S1 高点, 模式语义同 B2 对称。
     B3: 向上离开中枢后回试低点 > ZG (第20课:只凭位置, 背驰非前提)。
     S3: 向下离开中枢后回抽高点 < ZD (第20课:只凭位置, 背驰非前提)。
 
@@ -40,23 +43,35 @@ SublevelVerifier = Callable[[datetime], bool | None]
 NestVerifier = Callable[[str, str, str], NestResult | None]
 
 
-def _accept_by_sublevel(verifier: SublevelVerifier | None, dt: datetime | str) -> bool:
-    """二买/二卖是否被次级别验证接受——缠师第17课买卖点定律一。
+def _probe_by_sublevel(verifier: SublevelVerifier | None, dt: datetime | str) -> bool | None:
+    """探测定律一(第17课)的次级别验证结果 — 三态。
 
-    规则:
-        - 无 verifier(无次级别数据的降级路径)→ 放行,保持向后兼容。
-        - verifier 存在 → 必须返回 True 才放行;False 或异常一律 fail-closed 拒绝。
+        True  = 次级别有数据且结构通过 (次级别一买/一卖确认);
+        False = 次级别有数据但结构不通过;
+        None  = 未验证 (无 verifier / 无更低级别 / 取数失败等数据不可得)。
 
-    缺陷2修复:旧代码调用 verifier 却丢弃返回值(with suppress),导致二买
-    无条件输出。本函数让"次级别一买确认"真正成为二买的必要条件。
+    旧实现把异常 fail-closed 为 False; 结构化输出改造后, "数据不可得 ≠ 次级别
+    结构不通过", 未验证不构成拒绝理由, 转为标注 (R1 边界加固)。
     """
     if verifier is None:
-        return True
+        return None
     try:
-        return verifier(dt) is True  # type: ignore[arg-type]
-    except Exception as exc:  # fail-closed: 无法验证即不给出二买
+        state = verifier(dt)  # type: ignore[arg-type]
+    except Exception as exc:
         logger.debug("sublevel verification failed at %s: %s", dt, exc)
-        return False
+        return None
+    return True if state is True else (False if state is False else None)
+
+
+def _accept_by_sublevel(state: bool | None, output_mode: str) -> bool:
+    """strict 模式下次级别验证是否接受——False 一律拒绝(改动前行为保留)。
+
+    strict: 只有 False 拒绝 (fail-closed); None/True 放行。
+    structural: 次级别验证不再拦截 (仅作为 sublevel_verified 标注)。
+    """
+    if output_mode != "strict":
+        return True
+    return state is not False
 
 
 def _third_point_div(
@@ -103,6 +118,7 @@ def _make_bs_point(
     div: dict[str, Any],
     macd_area_mode: str,
     definition_mode: str = "n/a",
+    sublevel_verified: bool | None = None,
 ) -> BsPoint:
     """构造买卖点。definition_mode 标注判定口径 (strict/practical/n/a),
     避免把工程近似(practical 的 [ZD,ZG] 重叠)冒充缠师原文严格口径([DD,GG])。
@@ -124,6 +140,7 @@ def _make_bs_point(
         divergence_type=div["divergence_type"],
         divergence_pass=div["divergence_pass"],
         macd_area_mode=macd_area_mode,
+        sublevel_verified=sublevel_verified,
     )
 
 
@@ -149,6 +166,9 @@ def identify_bs_points(
     use_macd_area = divergence.use_macd_area
     logic = divergence.divergence_logic
     overlap_mode = divergence.trend_overlap_mode
+    # B2/S2 输出模式 (R1/方案A): strict=旧口径(背驰+次级别均为必要条件);
+    # structural=第17课纯结构定义, 背驰与次级别验证降为置信度标注。
+    output_mode = divergence.bs_output_mode
     n = len(bi_list)
 
     zs_filtered: list[tuple[int, Zs]] = [
@@ -300,17 +320,37 @@ def identify_bs_points(
         if (
             rebound_up is not None
             and fallback_down is not None
-            and a_bi_b2 is not None
             and fallback_down.low > b1_bi.low
         ):
-            div = cons_div(
-                a_bi_b2, fallback_down, macd_out, dt_index, mode, use_dif, use_macd_area, logic
-            )
-            # 定律一:二买必须由次级别一买确认(缺陷2修复:返回值必须参与决策)
-            if div["is_divergence"] and _accept_by_sublevel(sublevel_verifier, fallback_down.edt):
-                bs_points.append(
-                    _make_bs_point(fallback_down, "B2", "买", zs_idx_b1, div, mode, overlap_mode)
+            if output_mode == "strict" and a_bi_b2 is None:
+                pass  # strict 模式需 a 段做盘整背驰比较, 无参照则不成立
+            else:
+                div = (
+                    cons_div(
+                        a_bi_b2, fallback_down, macd_out, dt_index, mode, use_dif, use_macd_area, logic
+                    )
+                    if a_bi_b2 is not None
+                    else {
+                        "macd_area_prev": None, "macd_area_cur": None,
+                        "dif_peak_prev": None, "dif_peak_cur": None,
+                        "dea_peak_prev": None, "dea_peak_cur": None,
+                        "is_divergence": False, "divergence_pass": [],
+                        "divergence_type": "B2(结构定义;无进入段参照)",
+                    }
                 )
+                sub_state = _probe_by_sublevel(sublevel_verifier, fallback_down.edt)
+                if (
+                    (output_mode == "strict" and div["is_divergence"])
+                    or output_mode != "strict"
+                ) and _accept_by_sublevel(sub_state, output_mode):
+                    if output_mode != "strict" and not div["is_divergence"]:
+                        div = {**div, "divergence_type": "B2(结构定义;无盘整背驰)"}
+                    bs_points.append(
+                        _make_bs_point(
+                            fallback_down, "B2", "买", zs_idx_b1, div, mode, overlap_mode,
+                            sublevel_verified=sub_state,
+                        )
+                    )
 
     if s1_bi_idx is not None and s1_bi_idx + 2 < n:
         s1_bi = bi_list[s1_bi_idx]
@@ -332,15 +372,37 @@ def identify_bs_points(
         if (
             fallback_down is not None
             and rebound_up is not None
-            and a_bi_s2 is not None
             and rebound_up.high < s1_bi.high
         ):
-            div = cons_div(
-                a_bi_s2, rebound_up, macd_out, dt_index, mode, use_dif, use_macd_area, logic
-            )
-            # 定律一对称:二卖必须由次级别一卖确认(缺陷2修复)
-            if div["is_divergence"] and _accept_by_sublevel(sublevel_verifier, rebound_up.edt):
-                bs_points.append(_make_bs_point(rebound_up, "S2", "卖", zs_idx_s1, div, mode, overlap_mode))
+            if output_mode == "strict" and a_bi_s2 is None:
+                pass  # strict 模式需 a 段做盘整背驰比较, 无参照则不成立
+            else:
+                div = (
+                    cons_div(
+                        a_bi_s2, rebound_up, macd_out, dt_index, mode, use_dif, use_macd_area, logic
+                    )
+                    if a_bi_s2 is not None
+                    else {
+                        "macd_area_prev": None, "macd_area_cur": None,
+                        "dif_peak_prev": None, "dif_peak_cur": None,
+                        "dea_peak_prev": None, "dea_peak_cur": None,
+                        "is_divergence": False, "divergence_pass": [],
+                        "divergence_type": "S2(结构定义;无进入段参照)",
+                    }
+                )
+                sub_state = _probe_by_sublevel(sublevel_verifier, rebound_up.edt)
+                if (
+                    (output_mode == "strict" and div["is_divergence"])
+                    or output_mode != "strict"
+                ) and _accept_by_sublevel(sub_state, output_mode):
+                    if output_mode != "strict" and not div["is_divergence"]:
+                        div = {**div, "divergence_type": "S2(结构定义;无盘整背驰)"}
+                    bs_points.append(
+                        _make_bs_point(
+                            rebound_up, "S2", "卖", zs_idx_s1, div, mode, overlap_mode,
+                            sublevel_verified=sub_state,
+                        )
+                    )
 
     # ===== B3/S3 — 盘整背驰 =====
     for zi, zs in zs_filtered:

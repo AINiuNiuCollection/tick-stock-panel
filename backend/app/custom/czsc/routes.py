@@ -30,6 +30,8 @@ from .analyzer import (
     get_default_service,
 )
 from .config import (
+    DEFAULT_BS_OUTPUT_MODE,
+    DEFAULT_CENTER_UNIT,
     DEFAULT_SCAN_FREQ,
     DEFAULT_SCAN_LIMIT,
     DEFAULT_SCAN_LOOKBACK_DAYS,
@@ -208,6 +210,19 @@ def build_router() -> APIRouter:
         bs_enable_interval_nest: bool = Query(
             False, description="区间套下钻: 对买卖点做30分钟次级别背驰确认(第27课)"
         ),
+        bs_output_mode: str = Query(
+            DEFAULT_BS_OUTPUT_MODE,
+            description=(
+                "B2/S2 输出模式: structural=第17课结构定义, 背驰/次级别降为置信度标注(默认); "
+                "strict=盘整背驰+次级别确认为必要条件(旧口径)"
+            ),
+        ),
+        center_unit: str = Query(
+            DEFAULT_CENTER_UNIT,
+            description=(
+                "中枢构造单元: bi=笔级中枢(默认); xianduan=笔合成线段后再构造线段级中枢(第83课)"
+            ),
+        ),
         ma_periods: str | None = Query(
             None, description="逗号分隔的 SMA 周期, 如 '5,20,250'; 后端取数自动扩展暖机"
         ),
@@ -235,6 +250,8 @@ def build_router() -> APIRouter:
             bs_zs_pullback_min_depth=bs_zs_pullback_min_depth,
             bs_zs_pullback_min_ratio=bs_zs_pullback_min_ratio,
             bs_enable_interval_nest=bs_enable_interval_nest,
+            bs_output_mode=bs_output_mode,
+            center_unit=center_unit,
             force_refresh=force_refresh,
         )
         try:
@@ -287,6 +304,14 @@ def build_router() -> APIRouter:
             0.02, ge=0.0, le=1.0, description="回抽最小进入深度比例, 默认0.02(2%)"
         ),
         bs_enable_interval_nest: bool = Query(False, description="区间套下钻到30分钟次级别"),
+        bs_output_mode: str = Query(
+            DEFAULT_BS_OUTPUT_MODE,
+            description="B2/S2 输出模式: structural=结构定义+置信度标注(默认); strict=旧口径(背驰必要)",
+        ),
+        center_unit: str = Query(
+            DEFAULT_CENTER_UNIT,
+            description="中枢构造单元: bi(默认)/xianduan, 与 /analyze 同口径",
+        ),
         ma_periods: str | None = Query(
             None, description="逗号分隔的 SMA 周期, 如 '5,20,250'"
         ),
@@ -312,6 +337,8 @@ def build_router() -> APIRouter:
             bs_zs_pullback_min_depth=bs_zs_pullback_min_depth,
             bs_zs_pullback_min_ratio=bs_zs_pullback_min_ratio,
             bs_enable_interval_nest=bs_enable_interval_nest,
+            bs_output_mode=bs_output_mode,
+            center_unit=center_unit,
             force_refresh=force_refresh,
         )
 
@@ -395,6 +422,10 @@ def build_router() -> APIRouter:
         bs_zs_pullback_base: str = Query("zg"),
         bs_zs_pullback_min_depth: float = Query(0.0, ge=0.0),
         bs_zs_pullback_min_ratio: float = Query(0.02, ge=0.0, le=1.0),
+        bs_output_mode: str = Query(
+            DEFAULT_BS_OUTPUT_MODE,
+            description="B2/S2 输出模式: structural(默认)/strict, 与 /analyze 同口径",
+        ),
     ) -> Response:
         """B1/B2 信号选股 — 与单股 /analyze 完全同口径。"""
         has_czsc, _ = _probe_czsc()
@@ -415,6 +446,7 @@ def build_router() -> APIRouter:
             zs_pullback_base=bs_zs_pullback_base,
             zs_pullback_min_depth=bs_zs_pullback_min_depth,
             zs_pullback_min_ratio=bs_zs_pullback_min_ratio,
+            bs_output_mode=bs_output_mode,
         )
         req = ScanRequest(
             pool=pool,

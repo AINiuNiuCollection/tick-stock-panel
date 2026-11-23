@@ -33,6 +33,12 @@ DEFAULT_BS_USE_MACD_AREA = True
 #   "or"  = 任一满足即可 (第27课: "只要其中一个符合就可以是一个背弛的信号")
 DIVERGENCE_LOGIC_MODES = ("and", "or")
 DEFAULT_DIVERGENCE_LOGIC = "and"
+# B2/S2 输出模式 (第17课 B2 纯结构定义 vs 第27课盘整背驰"多数"):
+#   "structural" = 结构条件(回调不破B1低点)为唯一门槛; 盘整背驰/次级别验证
+#                  转为置信度标注 (divergence_type / sublevel_verified)。默认。
+#   "strict"     = 旧口径: 盘整背驰为必要条件 + 次级别 fail-closed (改动前行为)。
+BS_OUTPUT_MODES = ("structural", "strict")
+DEFAULT_BS_OUTPUT_MODE = "structural"
 # 趋势中枢不重叠判据的口径:
 #   "strict"    = 波动区间[DD,GG]不重叠 (缠师第20课严格口径; 笔级近似下趋势稀少)
 #   "practical" = 核心区间[ZD,ZG]不重叠 (笔级合理近似; 允许波动区间共享价格带)
@@ -41,6 +47,11 @@ TREND_OVERLAP_MODES = ("strict", "practical")
 # strict([DD,GG] 波动区间) 比原文更保守, 影线扫过即判重叠, 一/二类点大量消失。
 DEFAULT_TREND_OVERLAP_MODE = "practical"
 DEFAULT_BS_ONLY_VALID_ZS = True
+# 中枢构造单元 (第83课: 笔作最小构件稳定性差, 线段级更稳):
+#   "bi"       = 笔级中枢 (默认, 现行为)
+#   "xianduan" = 先由笔合成线段 (第65/67/71/77/78课特征序列法), 再构造线段级中枢
+CENTER_UNITS = ("bi", "xianduan")
+DEFAULT_CENTER_UNIT = "bi"
 DEFAULT_TREND_MAX_STEPS = 3
 # 回抽确认的最小进入深度 (定理二/三的噪声过滤):
 #   回抽笔必须进入 [ZD,ZG] 至少该深度, 才算"重新回到中枢", 中枢才延伸;
@@ -106,6 +117,8 @@ class DivergenceConfig:
     # 区间套下钻(第27课): 是否对买卖点做次级别背驰确认标注。
     # 默认关闭——次级别取数有成本, 且数据不可用时只会降级为 None。
     enable_interval_nest: bool = False
+    # B2/S2 输出模式: structural(结构定义+置信度标注, 默认) / strict(背驰必要条件)
+    bs_output_mode: str = DEFAULT_BS_OUTPUT_MODE
 
     def normalized(self) -> DivergenceConfig:
         mode = self.macd_area_mode if self.macd_area_mode in MACD_AREA_MODES else DEFAULT_BS_MACD_AREA_MODE
@@ -119,11 +132,13 @@ class DivergenceConfig:
         depth = max(0.0, float(self.zs_pullback_min_depth))
         ratio = min(1.0, max(0.0, float(self.zs_pullback_min_ratio)))
         base = self.zs_pullback_base if self.zs_pullback_base in ZS_PULLBACK_BASES else DEFAULT_ZS_PULLBACK_BASE
+        out_mode = self.bs_output_mode if self.bs_output_mode in BS_OUTPUT_MODES else DEFAULT_BS_OUTPUT_MODE
         if (
             mode == self.macd_area_mode and steps == self.trend_max_steps
             and lookback == self.sublevel_lookback_days and logic == self.divergence_logic
             and overlap == self.trend_overlap_mode and base == self.zs_pullback_base
             and depth == self.zs_pullback_min_depth and ratio == self.zs_pullback_min_ratio
+            and out_mode == self.bs_output_mode
         ):
             return self
         return replace(
@@ -131,6 +146,7 @@ class DivergenceConfig:
             sublevel_lookback_days=lookback, divergence_logic=logic,
             trend_overlap_mode=overlap, zs_pullback_base=base,
             zs_pullback_min_depth=depth, zs_pullback_min_ratio=ratio,
+            bs_output_mode=out_mode,
         )
 
     def cache_key(self) -> tuple[object, ...]:
@@ -147,6 +163,7 @@ class DivergenceConfig:
             self.zs_pullback_min_depth,
             self.zs_pullback_min_ratio,
             self.enable_interval_nest,
+            self.bs_output_mode,
         )
 
 
@@ -167,6 +184,8 @@ class AnalyzeRequest:
     force_refresh: bool = False
     # 已废弃: 缠师原文未要求 DEA, 仅保留接收以兼容旧前端, 不参与计算
     bs_use_dea: bool = False
+    # 中枢构造单元: "bi"(默认)/"xianduan" (见 CENTER_UNITS)
+    center_unit: str = DEFAULT_CENTER_UNIT
 
     @classmethod
     def from_query(
@@ -191,6 +210,8 @@ class AnalyzeRequest:
         bs_zs_pullback_min_depth: float = DEFAULT_ZS_PULLBACK_MIN_DEPTH,
         bs_zs_pullback_min_ratio: float = DEFAULT_ZS_PULLBACK_MIN_RATIO,
         bs_enable_interval_nest: bool = False,
+        bs_output_mode: str = DEFAULT_BS_OUTPUT_MODE,
+        center_unit: str = DEFAULT_CENTER_UNIT,
         force_refresh: bool = False,
     ) -> AnalyzeRequest:
         return cls(
@@ -213,15 +234,18 @@ class AnalyzeRequest:
                 zs_pullback_min_depth=bs_zs_pullback_min_depth,
                 zs_pullback_min_ratio=bs_zs_pullback_min_ratio,
                 enable_interval_nest=bs_enable_interval_nest,
+                bs_output_mode=bs_output_mode,
             ).normalized(),
             force_refresh=force_refresh,
             bs_use_dea=bs_use_dea,
+            center_unit=center_unit,
         )
 
     def with_defaults(self) -> AnalyzeRequest:
         """补齐日期默认值并归一化配置 (幂等)。"""
         end = self.end or date.today()
         start = self.start or (end - timedelta(days=365 + WARMUP_DAYS))
+        unit = self.center_unit if self.center_unit in CENTER_UNITS else DEFAULT_CENTER_UNIT
         return replace(
             self,
             start=start,
@@ -229,6 +253,7 @@ class AnalyzeRequest:
             features=normalize_features(self.features),
             ma_periods=normalize_ma_periods(self.ma_periods),
             divergence=self.divergence.normalized(),
+            center_unit=unit,
         )
 
     def fetch_start(self) -> date:
@@ -252,6 +277,7 @@ class AnalyzeRequest:
             self.symbol_name or "",
             self.ma_periods,
             self.divergence.cache_key(),
+            self.center_unit,
         )
 
 

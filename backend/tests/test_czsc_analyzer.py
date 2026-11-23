@@ -599,21 +599,34 @@ def test_practical_overlap_mode_uses_core_range():
     assert count_independent_zs(start, end, "down", zsf2, "practical") == 1
 
 
-def test_sublevel_verifier_result_is_required_for_b2():
-    """定律一:二买必须由次级别一买确认。验证器返回 False 时 B2/S2 不得输出。"""
-    from app.custom.czsc.domain.bs_points import _accept_by_sublevel
+def test_sublevel_verification_tri_state_and_gates():
+    """定律一三态化 (方案A): _probe 三态 + strict/structural 双模式门控。
+
+    - True/False = 有数据的结构判定结果; None = 未验证 (无验证器/异常/无更低级别)。
+    - strict: False 拒绝 (旧口径 fail-closed 语义保留)。
+    - structural: 次级别验证仅作标注, 不拦截。
+    """
+    from app.custom.czsc.domain.bs_points import _accept_by_sublevel, _probe_by_sublevel
 
     dt = datetime(2024, 1, 10)
-    # 无验证器 → 默认放行(兼容无次级别数据的降级路径)
-    assert _accept_by_sublevel(None, dt) is True
-    # 验证器存在且返回 False → 拒绝
-    assert _accept_by_sublevel(lambda _dt: False, dt) is False
-    # 验证器返回 True → 放行
-    assert _accept_by_sublevel(lambda _dt: True, dt) is True
-    # 验证器异常 → fail-closed 拒绝
+    # 探测三态: 无验证器 → None (未验证)
+    assert _probe_by_sublevel(None, dt) is None
+    # 返回 False → False (有数据结构不通过)
+    assert _probe_by_sublevel(lambda _dt: False, dt) is False
+    # 返回 True → True
+    assert _probe_by_sublevel(lambda _dt: True, dt) is True
+    # 验证器异常 → None (数据不可得 ≠ 结构不通过, 转为未验证标注)
     def boom(_dt):
         raise RuntimeError("no data")
-    assert _accept_by_sublevel(boom, dt) is False
+    assert _probe_by_sublevel(boom, dt) is None
+
+    # strict 门控: False 拒绝, None/True 放行
+    assert _accept_by_sublevel(False, "strict") is False
+    assert _accept_by_sublevel(None, "strict") is True
+    assert _accept_by_sublevel(True, "strict") is True
+    # structural 门控: 不再拦截, 仅标注
+    assert _accept_by_sublevel(False, "structural") is True
+    assert _accept_by_sublevel(None, "structural") is True
 
 
 def test_third_buy_requires_only_position_not_divergence():
@@ -986,3 +999,74 @@ def test_level_zs_fewer_than_bi_zs():
     assert len(lv_zss) <= len(bi_zss)
     for z in lv_zss:
         assert z.valid and z.zd < z.zg and z.level == 2
+
+
+# ===== 方案A/B 接入主链路回归 (2026-11-23 架构优化) =====
+
+def test_bs_output_mode_structural_outputs_b2_without_divergence():
+    """方案A: structural 模式下 B2 只凭结构定义成立 (第17课), 无盘整背驰也输出,
+    divergence_type 标注'结构定义'; strict 模式仍要求背驰 (旧口径)。"""
+    from app.custom.czsc.config import DivergenceConfig
+    from app.custom.czsc.domain.bs_points import identify_bs_points
+    from app.custom.czsc.domain.models import DtIndex, MacdPoint
+
+    # 两中枢下跌趋势 + a/c 背驰 → B1; B1 后反弹+回调不破 B1 低点 → B2 结构成立
+    b0 = _bi(1, 3, "down", 12.50, 11.00)
+    b1 = _bi(3, 5, "up", 12.00, 11.00)
+    b2 = _bi(5, 7, "down", 12.00, 11.00)
+    b3 = _bi(7, 9, "up", 11.05, 11.00)
+    b4 = _bi(9, 11, "down", 11.05, 9.00)
+    b5 = _bi(11, 13, "up", 9.60, 8.40)
+    b6 = _bi(13, 15, "down", 9.60, 8.60)
+    b7 = _bi(15, 17, "up", 9.20, 8.60)
+    b8 = _bi(17, 19, "down", 9.20, 7.00)    # c 段创新低
+    b9 = _bi(19, 21, "up", 8.50, 7.30)      # B1 后反弹
+    b10 = _bi(21, 23, "down", 8.20, 7.50)   # 回调不破 B1 低点 7.00
+    bis = [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10]
+
+    macd: list[MacdPoint] = []  # 无 MACD → 盘整背驰不成立 (a/c 面积均无)
+    dti = DtIndex.from_bars([])
+
+    structural = DivergenceConfig(bs_output_mode="structural")
+    strict = DivergenceConfig(bs_output_mode="strict").normalized()
+    assert structural.bs_output_mode == "structural"
+    pts_structural = identify_bs_points(bis, [], macd, dti, structural, None)
+    b2s = [p for p in pts_structural if p.type == "B2"]
+    # structural: 结构定义成立即输出, 无背驰也有 B2, 且带结构定义标注
+    assert all("结构定义" in (p.divergence_type or "") for p in b2s), pts_structural
+    # strict: 无 MACD → 盘整背驰不成立 → B2 不得输出
+    pts_strict = identify_bs_points(bis, [], macd, dti, strict, None)
+    assert [p for p in pts_strict if p.type == "B2"] == [], pts_strict
+    # 未验证 (无 verifier) → sublevel_verified 恒 None
+    assert all(p.sublevel_verified is None for p in pts_structural)
+
+
+def test_center_unit_xianduan_builder_produces_domain_zs():
+    """方案B: XianduanCenterBuilder 从笔序列产出 domain.Zs 快照,
+    字段与 identify_bs_points 全部读取点兼容; AnalyzeRequest.center_unit 归一化。"""
+    from datetime import date
+
+    from app.custom.czsc.adapters.czsc_adapter import run_czsc, to_raw_bars
+    from app.custom.czsc.config import AnalyzeRequest
+    from app.custom.czsc.extension_policy import XianduanCenterBuilder
+    from app.custom.czsc.domain.models import Zs
+
+    df = _build_df(500)
+    bars = to_raw_bars(df, "日线")
+    _, bis, _ = run_czsc(bars, 100, 7)
+
+    zss = list(XianduanCenterBuilder().build(bis))
+    assert all(isinstance(z, Zs) for z in zss)
+    for z in zss:
+        assert z.zd < z.zg and z.valid
+        assert z.bis == ()
+        _ = z.direction  # property 可读 (bis 为空 → "unknown", 不抛错)
+
+    # 请求契约: 默认 bi, 白名单归一化
+    req = AnalyzeRequest(symbol="000001.SZ", start=date(2024, 1, 1), end=date(2024, 12, 31))
+    assert req.with_defaults().center_unit == "bi"
+    req2 = AnalyzeRequest.from_query(symbol="000001.SZ", center_unit="xianduan")
+    assert req2.with_defaults().center_unit == "xianduan"
+    assert "xianduan" in req2.cache_key()
+    req3 = AnalyzeRequest.from_query(symbol="000001.SZ", center_unit="bogus")
+    assert req3.with_defaults().center_unit == "bi"
