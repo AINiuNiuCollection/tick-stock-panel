@@ -47,6 +47,11 @@ export function friendlyStreamError(message: string | undefined | null): string 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 /** 同步计算型接口 (回测/筛选等) 的放宽超时: 合法耗时可能远超轮询类接口。 */
 const COMPUTE_REQUEST_TIMEOUT_MS = 300_000
+/** 缠论全市场逐股扫描: 初始等待窗口。扫描开始后由 /api/czsc/scan/progress 动态续期,
+ *  只要队列仍在下降就不触发超时; 长时间无进展才中止等待。 */
+const CZSC_SCAN_STALL_TIMEOUT_MS = 300_000
+const CZSC_SCAN_PER_SYMBOL_BUDGET_MS = 2_000
+const CZSC_SCAN_MAX_DYNAMIC_TIMEOUT_MS = 15 * 60_000
 /** 扩展数据拉取类长请求: 跟随后端配置的单次超时 (timeoutSeconds, 默认 30s) + 10s 解析/写盘缓冲。
  *  浏览器端 fetch 默认 30s abort 会先于后端超时触发, 大响应接口 (如全量集合竞价
  *  /day, 后端超时 120s) 必须把这层同步放宽。 */
@@ -101,6 +106,72 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
     throw new ApiError(msg, res.status)
   }
   return res.json() as Promise<T>
+}
+
+/**
+ * 运行策略时按缠论扫描进度动态续期。
+ * 仅当扫描队列仍在前进 (done 增加 / total 变化) 时重置等待计时器;
+ * 非缠论策略没有进度, 仍按原 300s 等待。
+ */
+async function runScreenerPresetWithProgress(
+  strategy_id: string,
+  pool: string[] | undefined,
+  asOf: string | undefined,
+  extColumns: string | undefined,
+  assetType: 'stock' | 'etf' | 'index',
+  timeframe: '1d' | '1m',
+): Promise<ScreenerResult> {
+  const ctl = new AbortController()
+  let timer: number | undefined
+  let lastDone = -1
+  let lastTotal = -1
+  let sawProgress = false
+
+  const arm = (ms: number) => {
+    if (timer !== undefined) window.clearTimeout(timer)
+    timer = window.setTimeout(() => ctl.abort(), ms)
+  }
+  arm(COMPUTE_REQUEST_TIMEOUT_MS)
+
+  const poll = window.setInterval(() => {
+    void czscScanProgress()
+      .then((p) => {
+        if (!p.active) return
+        sawProgress = true
+        if (p.done === lastDone && p.total === lastTotal) return
+        lastDone = p.done
+        lastTotal = p.total
+        const remaining = Math.max(0, p.total - p.done)
+        // 队列越少续期越短; 下限保证单股取数/次级别确认有足够余量。
+        const nextMs = Math.max(
+          CZSC_SCAN_STALL_TIMEOUT_MS,
+          Math.min(CZSC_SCAN_MAX_DYNAMIC_TIMEOUT_MS, remaining * CZSC_SCAN_PER_SYMBOL_BUDGET_MS),
+        )
+        arm(nextMs)
+      })
+      .catch(() => { /* 进度是辅助信号, 失败不打断主请求 */ })
+  }, 1_000)
+
+  try {
+    return await request<ScreenerResult>('/api/screener/run_preset', {
+      method: 'POST',
+      quiet: true,
+      signal: ctl.signal,
+      body: JSON.stringify({ strategy_id, pool, as_of: asOf ?? null, ext_columns: extColumns || null, asset_type: assetType, timeframe }),
+    })
+  } catch (err) {
+    if (ctl.signal.aborted) {
+      const msg = sawProgress
+        ? '缠论扫描长时间无进展, 已停止等待; 请重试或缩小股票池'
+        : `请求超时（${Math.round(COMPUTE_REQUEST_TIMEOUT_MS / 1000)}s）· /api/screener/run_preset`
+      toast(msg, 'error')
+      throw new ApiError(msg, 0)
+    }
+    throw err
+  } finally {
+    window.clearInterval(poll)
+    if (timer !== undefined) window.clearTimeout(timer)
+  }
 }
 
 // ===== Capabilities =====
@@ -2710,11 +2781,7 @@ export const api = {
     return { presets: data.strategies, load_errors: data.load_errors }
   },
   screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' | 'index' = 'stock', timeframe: '1d' | '1m' = '1d') =>
-    request<ScreenerResult>('/api/screener/run_preset', {
-      method: 'POST',
-      timeoutMs: COMPUTE_REQUEST_TIMEOUT_MS,
-      body: JSON.stringify({ strategy_id, pool, as_of: asOf ?? null, ext_columns: extColumns || null, asset_type: assetType, timeframe }),
-    }),
+    runScreenerPresetWithProgress(strategy_id, pool, asOf, extColumns, assetType, timeframe),
   screenerRunCustom: (conditions: string[], orderBy?: string, limit = 30, pool?: string[], extColumns?: string, assetType: 'stock' | 'etf' | 'index' = 'stock') =>
     request<ScreenerResult>('/api/screener/run', {
       method: 'POST',
