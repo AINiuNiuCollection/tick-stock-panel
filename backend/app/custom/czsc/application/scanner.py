@@ -199,7 +199,16 @@ class ScanService:
             if req.max_signal_age and age > req.max_signal_age:
                 continue
             passes = list(getattr(bp, "divergence_pass", []) or [])
-            if len(passes) < req.min_divergence_hits:
+            # min_divergence_hits 语义修复 (2026-11-24 审计 P1-1): structural
+            # 输出模式下 B2/B3 的盘整背驰只是置信度标注 (divergence_pass 可为
+            # 空), 该过滤对它们是隐性绞杀 (全市场 80 个 B2 被杀 30 个);
+            # strict 模式盘整背驰是必要条件, 维持过滤。B1/S1 趋势背驰在两种
+            # 模式下都是必要条件, 恒参与过滤。
+            structural_annotation_only = (
+                req.divergence.bs_output_mode != "strict"
+                and str(bp.type) in ("B2", "B3", "S2", "S3")
+            )
+            if not structural_annotation_only and len(passes) < req.min_divergence_hits:
                 continue
             zs_range = None
             zs_list = result.get("zs_list") or []
@@ -291,6 +300,10 @@ class ScanService:
         as_of = req.as_of or date.today()
         start = as_of - timedelta(days=req.lookback_days)
         pairs, warnings = self.resolve_symbols(req)
+        # P2-1 (2026-11-24 审计): normalized() 的参数修正提示 (白名单外
+        # signal_types 被忽略等) 并入结果告警 — 两条返回路径共用此 warnings
+        if req.normalization_warnings:
+            warnings = [*req.normalization_warnings, *warnings]
 
         errors_check = req.validate_for_execution(len(pairs))
         if errors_check:

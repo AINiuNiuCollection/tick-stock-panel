@@ -1,6 +1,7 @@
 """B1/B2 选股扫描器单元测试 — 用 mock analyzer 隔离算法, 只测编排逻辑。"""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -187,6 +188,8 @@ def test_scan_signal_age_falls_back_to_calendar_days_without_bars():
 
 
 def test_scan_min_divergence_hits():
+    """P1-1 (2026-11-24) 语义: B1 恒参与过滤; structural 模式下 B2 的盘整背驰
+    只是置信度标注 (divergence_pass 可为空), 不参与过滤; strict 模式维持过滤。"""
     as_of = date(2026, 11, 20)
     recent = (as_of - timedelta(days=1)).isoformat()
     fake = FakeAnalyzer({
@@ -196,7 +199,17 @@ def test_scan_min_divergence_hits():
         ],
     })
     svc = ScanService(analyzer=fake)
-    assert svc.scan(_req(symbols=("000001.SZ",), min_divergence_hits=2)).total == 1
+    # structural (默认): B2 仅 1 命中仍保留 — 过滤只作用于 B1
+    assert svc.scan(_req(symbols=("000001.SZ",), min_divergence_hits=2)).total == 2
+    # strict: B2 盘整背驰是必要条件, 1 命中 < 2 被过滤
+    strict_req = replace(
+        _req(symbols=("000001.SZ",), min_divergence_hits=2),
+        divergence=replace(
+            _req(symbols=("000001.SZ",), min_divergence_hits=2).divergence,
+            bs_output_mode="strict",
+        ),
+    )
+    assert svc.scan(strict_req).total == 1
     assert svc.scan(_req(symbols=("000001.SZ",), min_divergence_hits=1)).total == 2
 
 

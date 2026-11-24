@@ -84,6 +84,10 @@ def test_filter_history_returns_only_hit_symbols(monkeypatch):
     captured = {}
 
     class FakeScanService:
+        # 策略现以 ScanService(analyzer=build_scan_analyzer()) 构造 (P1-2)
+        def __init__(self, analyzer=None):
+            pass
+
         def scan(self, req):
             captured["freq"] = req.freq
             captured["symbols"] = req.symbols
@@ -127,6 +131,10 @@ def test_b1_without_sub_dt_dropped_by_default(monkeypatch):
         warnings = ()
 
     class FakeScanService:
+        # 策略现以 ScanService(analyzer=build_scan_analyzer()) 构造 (P1-2)
+        def __init__(self, analyzer=None):
+            pass
+
         def scan(self, req):
             return FakeResult()
 
@@ -157,6 +165,10 @@ def test_b1_sub_confirm_disabled_keeps_unconfirmed_b1(monkeypatch):
         warnings = ()
 
     class FakeScanService:
+        # 策略现以 ScanService(analyzer=build_scan_analyzer()) 构造 (P1-2)
+        def __init__(self, analyzer=None):
+            pass
+
         def scan(self, req):
             return FakeResult()
 
@@ -176,6 +188,10 @@ def test_filter_history_empty_hits_returns_empty(monkeypatch):
         warnings = ()
 
     class FakeScanService:
+        # 策略现以 ScanService(analyzer=build_scan_analyzer()) 构造 (P1-2)
+        def __init__(self, analyzer=None):
+            pass
+
         def scan(self, req):
             return FakeResult()
 
@@ -195,6 +211,10 @@ def test_filter_history_caps_candidates_by_amount(monkeypatch):
         warnings = ()
 
     class FakeScanService:
+        # 策略现以 ScanService(analyzer=build_scan_analyzer()) 构造 (P1-2)
+        def __init__(self, analyzer=None):
+            pass
+
         def scan(self, req):
             captured["symbols"] = req.symbols
             return FakeResult()
@@ -238,6 +258,10 @@ def test_b1_source_unavailable_retained_with_warning(monkeypatch):
     )
 
     class FakeScanService:
+        # 策略现以 ScanService(analyzer=build_scan_analyzer()) 构造 (P1-2)
+        def __init__(self, analyzer=None):
+            pass
+
         def scan(self, req):
             return FakeResult()
 

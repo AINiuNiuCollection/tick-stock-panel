@@ -3823,20 +3823,6 @@
    "definition_mode": "n/a"
   },
   {
-   "dt": "2026-06-05 00:00:00",
-   "type": "S1",
-   "direction": "卖",
-   "price": 22.38,
-   "definition_mode": "practical"
-  },
-  {
-   "dt": "2026-07-02 00:00:00",
-   "type": "S2",
-   "direction": "卖",
-   "price": 19.53,
-   "definition_mode": "practical"
-  },
-  {
    "dt": "2026-07-02 00:00:00",
    "type": "S3",
    "direction": "卖",

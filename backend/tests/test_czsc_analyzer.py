@@ -718,28 +718,30 @@ def _b1_scenario(c_low: float):
     """搭一个"两个不重叠下跌中枢 + a/c 段 MACD 背驰"的一买场景。
 
     结构 (笔级):
+        A 段 = b_pre (趋势链第一中枢 ZS_A 之前的进入段, 2026-11-24 Fix A
+               后 A 段必须存在于链头中枢之前, 链头即序列起点时候选降级)
         ZS_A 核心 [11.00, 12.00]   b0/b1/b2
         ZS_B 核心 [ 9.00,  9.60]   b4/b5/b6
-        a 段 = b2 (趋势起点, 低点 11.00)
         c 段 = b8 (低点由 c_low 控制)
 
     a/c 段 MACD 面积与 DIF 均已构造为"c 弱于 a", 即背驰两条件都满足。
-    唯一的变量是 c 段低点相对 ZS_B 的 ZD(=9.00) 的位置 —— 用来单独检验
-    "一买必须跌出最后一个中枢"这道位置条件。
+    c 段低点相对趋势内全部前低(最低 8.60, b6)与 ZS_B 的 ZD(=9.00) 的位置
+    由 c_low 控制 —— 检验创新低 + 跌出最后中枢两道条件。
     """
     from app.custom.czsc.domain.models import MacdPoint
     from app.custom.czsc.domain.zs import make_zs
 
-    b0 = _bi(1, 3, "down", 12.50, 11.00)
-    b1 = _bi(3, 5, "up", 12.00, 11.00)
-    b2 = _bi(5, 7, "down", 12.00, 11.00)     # a 段
-    b3 = _bi(7, 9, "up", 11.05, 11.00)
-    b4 = _bi(9, 11, "down", 11.05, 9.00)
-    b5 = _bi(11, 13, "up", 9.60, 8.40)
-    b6 = _bi(13, 15, "down", 9.60, 8.60)
-    b7 = _bi(15, 17, "up", 9.20, 8.60)
-    b8 = _bi(17, 19, "down", 9.20, c_low)    # c 段
-    bis = [b0, b1, b2, b3, b4, b5, b6, b7, b8]
+    b_pre = _bi(1, 2, "down", 14.00, 12.50)   # A 段 (链头中枢之前)
+    b0 = _bi(2, 4, "down", 12.50, 11.00)
+    b1 = _bi(4, 6, "up", 12.00, 11.00)
+    b2 = _bi(6, 8, "down", 12.00, 11.00)
+    b3 = _bi(8, 10, "up", 11.05, 11.00)
+    b4 = _bi(10, 12, "down", 11.05, 9.00)
+    b5 = _bi(12, 14, "up", 9.60, 8.40)
+    b6 = _bi(14, 16, "down", 9.60, 8.60)
+    b7 = _bi(16, 18, "up", 9.20, 8.60)
+    b8 = _bi(18, 20, "down", 9.20, c_low)     # c 段
+    bis = [b_pre, b0, b1, b2, b3, b4, b5, b6, b7, b8]
 
     zs_a = make_zs([b0, b1, b2])
     zs_b = make_zs([b4, b5, b6])
@@ -747,14 +749,14 @@ def _b1_scenario(c_low: float):
     assert (zs_a.zd, zs_a.zg) == (11.00, 12.00)
     assert (zs_b.zd, zs_b.zg) == (9.00, 9.60)
 
-    dts = [f"2024-01-{d:02d}" for d in range(1, 20)]
+    dts = [f"2024-01-{d:02d}" for d in range(1, 21)]
     macd: list[MacdPoint] = []
     for i, dt in enumerate(dts):
-        if i <= 3:
-            macd.append(MacdPoint(dt=dt, dif=-0.3, dea=None, macd=-1.0))
-        elif i <= 6:      # a 段: 面积大 / DIF 深
+        if i <= 1:        # A 段(b_pre): 面积大 / DIF 深
             macd.append(MacdPoint(dt=dt, dif=-1.0, dea=None, macd=-3.0))
-        elif i <= 15:     # 中枢内部: 无绿柱, 供 _has_macd_area 走回退分支
+        elif i <= 7:      # 链头中枢区域
+            macd.append(MacdPoint(dt=dt, dif=-0.3, dea=None, macd=-1.0))
+        elif i <= 16:     # 中枢内部: 无绿柱
             macd.append(MacdPoint(dt=dt, dif=0.2, dea=None, macd=1.0))
         else:             # c 段: 面积小 / DIF 浅
             macd.append(MacdPoint(dt=dt, dif=-0.2, dea=None, macd=-0.5))

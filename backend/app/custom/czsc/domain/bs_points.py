@@ -183,8 +183,10 @@ def identify_bs_points(
 
         A 段是"进入趋势第一个中枢的那一段", 它的终点就在链头中枢的起点处。
         笔按时间有序, 从 cur_idx-1 往回走, 第一根 edt<=sdt 且方向相符的笔
-        就是最近的一根。找不到(链头即序列起点)时由调用方退而取链头中枢
-        的最后一根同向笔。
+        就是最近的一根。找不到(链头即序列起点/数据窗口截断)时返回 None —
+        调用方据此把候选降级不计入, 不再回退取中枢内部笔充当弱参照
+        (2026-11-23 审计 P0-1: 回退使创新低校验平凡真、背驰参照过弱,
+        601606 27.03<43.31 假阳性, 11-20 恐慌日全市场 41 只同日假 B1)。
         """
         for j in range(cur_idx - 1, -1, -1):
             cand = bi_list[j]
@@ -230,23 +232,25 @@ def identify_bs_points(
         chain = recent_trend_chain(zs_completed, "down", overlap_mode, bi.sdt)
         if len(chain) < 2:
             continue
-        # A 段 = 趋势链第一中枢之前的最后一个同向段(链头即序列起点时, 退而取
-        # 第一根中枢笔, 笔级近似下无法更早)
+        # A 段 = 趋势链第一中枢之前的最后一个同向段。缺失(数据窗口截断/
+        # 链头即序列起点)时无法锚定背驰参照与创新低基准 — 候选降级不计入,
+        # 不回退取中枢内部笔 (2026-11-23 审计 P0-1)。
         prev_bi = _bi_before(chain[0].sdt, "down", i)
         if prev_bi is None:
-            prev_bi = _bi_before(chain[0].edt, "down", i)
-        if prev_bi is None:
             continue
-        if bi.low >= prev_bi.low:
+        # 创新低校验 (第24课): c 段须低于趋势内**全部**前低 — a 段低点、
+        # b 段低点、各中枢内部回调笔低点。旧口径只比 a 段低点, b 段更深时
+        # c.low<a.low 平凡通过, 不构成"创趋势新低" (审计 P0-2)。
+        prev_idx = bi_list.index(prev_bi)
+        trend_prior_low = min(
+            b.low for b in bi_list[prev_idx:i] if b.direction == "down"
+        )
+        if bi.low >= trend_prior_low:
             continue
         if mode == "split" and not _has_macd_area(prev_bi):
-            k = bi_list.index(prev_bi) - 2
-            while k >= 0:
-                cand = bi_list[k]
-                if cand.direction == "down" and _has_macd_area(cand):
-                    prev_bi = cand
-                    break
-                k -= 2
+            # A 段暖机空白(无同向柱面积)时背驰参照不可比 — 候选降级不计入,
+            # 不往回任意取更远笔充当参照(旧回退放松判定, 审计 P0-1)。
+            continue
         # 一买位置条件: c 段必须跌出趋势的最后一个中枢 (c.low < 最后中枢 ZD)
         last_zs = chain[-1]
         if bi.low >= last_zs.zd:
@@ -277,19 +281,18 @@ def identify_bs_points(
             continue
         prev_bi = _bi_before(chain[0].sdt, "up", i)
         if prev_bi is None:
-            prev_bi = _bi_before(chain[0].edt, "up", i)
-        if prev_bi is None:
+            # A 段缺失时候选降级不计入 — 同 B1 分支 (2026-11-23 审计 P0-1)
             continue
-        if bi.high <= prev_bi.high:
+        # 创新高校验 (第24课): c 段须高于趋势内全部前高 (审计 P0-2, 对称 B1)
+        prev_idx = bi_list.index(prev_bi)
+        trend_prior_high = max(
+            b.high for b in bi_list[prev_idx:i] if b.direction == "up"
+        )
+        if bi.high <= trend_prior_high:
             continue
         if mode == "split" and not _has_macd_area(prev_bi):
-            k = bi_list.index(prev_bi) - 2
-            while k >= 0:
-                cand = bi_list[k]
-                if cand.direction == "up" and _has_macd_area(cand):
-                    prev_bi = cand
-                    break
-                k -= 2
+            # A 段暖机空白时背驰参照不可比 — 候选降级不计入 (同 B1 分支)
+            continue
         # 一卖位置条件: c 段必须涨出趋势的最后一个中枢 (c.high > 最后中枢 ZG)
         last_zs = chain[-1]
         if bi.high <= last_zs.zg:

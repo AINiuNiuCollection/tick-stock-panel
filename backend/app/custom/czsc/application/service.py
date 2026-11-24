@@ -394,6 +394,28 @@ def get_default_service() -> AnalyzeService:
     return _default_service
 
 
+def build_scan_analyzer() -> AnalyzeService:
+    """构造**扫描专用**分析器 — sublevel=None, 其余同 build_default_service。
+
+    P1-2 (2026-11-24 审计): _analyze_frame 会把 self._sublevel 接进
+    identify_bs_points 逐候选外呼 30 分钟数据, 全市场扫描时被限流拖垮
+    (70+ 分钟不完成)。策略 B1/B2 选股只依赖本级别结构判定, 次级别信息
+    由 ScanService._annotate_sub_dt 在命中截断后经 nest_verifier 补标注
+    (取数次数封顶于 limit), 故扫描路径不需要引擎内 sublevel 外呼。
+    保留 nest/缓存/registry 注入, 单股分析页 get_default_service 不受影响。
+    """
+    chain = build_default_chain()
+    registry = get_backend_extension_registry()
+    return AnalyzeService(
+        chain,
+        None,
+        AnalysisCache(maxsize=2048, ttl_s=600.0),
+        IntervalNestVerifier(chain),
+        center_builder=registry.center_builder() if registry else None,
+        divergence_policy=registry.divergence_policy() if registry else None,
+    )
+
+
 def set_default_service(service: AnalyzeService | None) -> None:
     """测试用: 注入替身服务。"""
     global _default_service

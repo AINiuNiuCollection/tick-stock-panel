@@ -327,14 +327,22 @@ class ScanRequest:
     min_bi_len: int = DEFAULT_MIN_BI_LEN
     divergence: DivergenceConfig = field(default_factory=DivergenceConfig)
     force_refresh: bool = False
+    # normalized() 的参数修正提示 (白名单外 signal_types 被忽略等);
+    # 每次基于当前 signal_types 重算, 幂等不累积
+    normalization_warnings: tuple[str, ...] = ()
 
     def normalized(self) -> ScanRequest:
         """白名单过滤 + 范围钳制; 分钟级别限制显式 symbols 数量。"""
         pool = self.pool if self.pool in SCAN_POOL_WHITELIST else DEFAULT_SCAN_POOL
-        signals = tuple(
-            s.strip().upper() for s in self.signal_types
-            if s.strip().upper() in SCAN_SIGNAL_WHITELIST
-        ) or SCAN_SIGNAL_WHITELIST
+        raw_signals = tuple(s.strip().upper() for s in self.signal_types if s.strip())
+        signals = tuple(s for s in raw_signals if s in SCAN_SIGNAL_WHITELIST) or SCAN_SIGNAL_WHITELIST
+        # P2-1 (2026-11-24 审计): 白名单外类型此前被静默丢弃, 调用方无从知晓
+        # 过滤范围被收窄 (探针曾把 "B3: 0" 误判为引擎缺陷)。改为显式告警。
+        dropped = tuple(s for s in raw_signals if s not in SCAN_SIGNAL_WHITELIST)
+        norm_warnings = (
+            (f"signal_types 含白名单外类型已忽略: {', '.join(dropped)} (支持: {','.join(SCAN_SIGNAL_WHITELIST)})",)
+            if dropped else ()
+        )
         order = self.order_by if self.order_by in SCAN_ORDER_MODES else "dt_desc"
         symbols = tuple(dict.fromkeys(s.strip() for s in self.symbols if s and s.strip()))
         if self.freq in MINUTE_FREQS and len(symbols) > MINUTE_SCAN_MAX_SYMBOLS:
@@ -355,6 +363,7 @@ class ScanRequest:
             max_bi_num=max(10, min(500, int(self.max_bi_num))),
             min_bi_len=max(6, min(30, int(self.min_bi_len))),
             divergence=self.divergence.normalized(),
+            normalization_warnings=norm_warnings,
         )
 
     def validate_for_execution(self, pool_size: int) -> list[str]:

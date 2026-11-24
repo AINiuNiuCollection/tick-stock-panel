@@ -1013,6 +1013,11 @@ class StrategyEngine:
         # G (2026-11-23): filter_history 可返回 (df, warnings) 元组上报策略级
         # 警告; 纯 df 返回向后兼容。警告透传到 StrategyResult.warnings。
         strategy_warnings: list[str] = []
+        # P2-2 (2026-11-24 审计): 基础过滤引用列缺失时 _apply_basic_filter 会
+        # 静默跳过对应条件 (用户过滤从未生效却无提示)。此处一次性检测两条
+        # 过滤路径共用的 signal_df, 缺列则显式告警。
+        if bf_enabled and not signal_df.is_empty():
+            strategy_warnings.extend(self._basic_filter_missing_columns(signal_df, bf))
 
         # 普通策略只读目标日期；历史策略读取调用方注入的历史窗口。
         if s.execution_backend == "minute_filter":
@@ -1709,6 +1714,30 @@ class StrategyEngine:
         if exprs:
             return pl.all_horizontal(exprs)
         return None
+
+    @staticmethod
+    def _basic_filter_missing_columns(df: pl.DataFrame, bf: dict) -> list[str]:
+        """检测基础过滤引用列缺失 (P2-2, 2026-11-24 审计)。
+
+        _basic_filter_expr 对缺列条件静默跳过 — 用户的市值/换手/ST 过滤
+        从未生效却无任何提示 (零 B2 排查中 enriched 横截面缺
+        total_shares/float_shares/name 三列)。返回可读告警列表供
+        StrategyResult.warnings 透出; 列齐全时返回空。
+        """
+        missing: list[str] = []
+        cols = df.columns
+        if (bf.get("market_cap_min") is not None or bf.get("market_cap_max") is not None) \
+                and "total_shares" not in cols:
+            missing.append("总市值过滤未生效: 数据缺 total_shares 列")
+        if (bf.get("float_cap_min") is not None or bf.get("float_cap_max") is not None) \
+                and "float_shares" not in cols:
+            missing.append("流通市值过滤未生效: 数据缺 float_shares 列")
+        if (bf.get("turnover_min") is not None or bf.get("turnover_max") is not None) \
+                and "turnover_rate" not in cols:
+            missing.append("换手率过滤未生效: 数据缺 turnover_rate 列")
+        if bf.get("exclude_st") and "name" not in cols:
+            missing.append("ST过滤未生效: 数据缺 name 列")
+        return missing
 
     @staticmethod
     def _apply_basic_filter(df: pl.DataFrame, bf: dict) -> pl.DataFrame:

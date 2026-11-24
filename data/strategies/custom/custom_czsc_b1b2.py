@@ -31,6 +31,7 @@ B2 不受影响。当日 30 分钟 K 线缺失不算源失败 (取数窗口含�
 import polars as pl
 
 from app.custom.czsc.application.scanner import ScanService
+from app.custom.czsc.application.service import build_scan_analyzer
 from app.custom.czsc.config import DivergenceConfig, ScanRequest
 
 META = {
@@ -207,7 +208,10 @@ def filter_history(df: pl.DataFrame, params: dict):
         divergence=divergence,
     ).normalized()
 
-    result = ScanService().scan(req)
+    # 扫描专用分析器 (P1-2): sublevel=None 去掉引擎内逐候选次级别外呼
+    # (全市场扫描被 30 分钟源限流拖垮); nest 保留 — 命中后由扫描层
+    # _annotate_sub_dt 补次级别日期, bs_b1_sub_confirm 链路不受影响。
+    result = ScanService(analyzer=build_scan_analyzer()).scan(req)
     # B1 次级别背驰确认 (2026-11-23, 默认开启): B1 必须区间套下钻确认
     # (次级别同向背驰, 即信号带第4段次级别日期) 才算命中 — sub_dt 为空
     # = 未确认 → 丢弃 (fail-closed)。G (2026-11-23): 源级失败
