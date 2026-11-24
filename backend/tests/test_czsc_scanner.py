@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from app.custom.czsc.application.scanner import ScanService
+import pytest
+
+from app.custom.czsc.application.scanner import ScanService, get_scan_progress
 from app.custom.czsc.config import (
     DEFAULT_SCAN_POOL,
     SCAN_SIGNAL_WHITELIST,
@@ -261,3 +263,32 @@ def test_scan_params_summary_contains_divergence():
     result = svc.scan(_req())
     assert result.params["divergence"]["macd_area_mode"] == "split"
     assert result.params["signal_types"] == ["B1", "B2"]
+
+
+def test_scan_publishes_total_before_first_symbol_and_marks_done():
+    """前端依赖 0/total 立即出现来估算等待窗口。"""
+    seen: list[dict] = []
+
+    class ProbeAnalyzer(FakeAnalyzer):
+        def analyze(self, req) -> dict:
+            seen.append(get_scan_progress())
+            return super().analyze(req)
+
+    svc = ScanService(analyzer=ProbeAnalyzer({}))
+    svc.scan(_req())
+    assert seen[0]["active"] is True
+    assert seen[0]["done"] == 0
+    assert seen[0]["total"] == 2
+    assert get_scan_progress()["active"] is False
+
+
+def test_scan_clears_progress_on_unexpected_error(monkeypatch):
+    svc = ScanService(analyzer=FakeAnalyzer({}))
+
+    def boom(_hits):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(svc, "_annotate_sub_dt", boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        svc.scan(_req())
+    assert get_scan_progress()["active"] is False

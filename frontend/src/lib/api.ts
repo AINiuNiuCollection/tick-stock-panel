@@ -49,7 +49,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const COMPUTE_REQUEST_TIMEOUT_MS = 300_000
 /** 缠论全市场逐股扫描: 初始等待窗口。扫描开始后由 /api/czsc/scan/progress 动态续期,
  *  只要队列仍在下降就不触发超时; 长时间无进展才中止等待。 */
-const CZSC_SCAN_STALL_TIMEOUT_MS = 180_000
+const CZSC_SCAN_STALL_TIMEOUT_MS = 300_000
 const CZSC_SCAN_PER_SYMBOL_BUDGET_MS = 2_000
 const CZSC_SCAN_MAX_DYNAMIC_TIMEOUT_MS = 15 * 60_000
 /** 扩展数据拉取类长请求: 跟随后端配置的单次超时 (timeoutSeconds, 默认 30s) + 10s 解析/写盘缓冲。
