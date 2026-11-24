@@ -306,56 +306,62 @@ class ScanService:
         errors: dict[str, str] = {}
         hits: list[ScanHit] = []
         total = len(pairs)
-        with ThreadPoolExecutor(max_workers=req.max_workers, thread_name_prefix="czsc-scan") as pool:
-            futures = {
-                pool.submit(self._scan_one, sym, name, req, start, as_of): sym
-                for sym, name in pairs
-            }
-            done = 0
-            for future in as_completed(futures):
-                sym = futures[future]
-                try:
-                    got, err = future.result(timeout=req.per_symbol_timeout_s + 5)
-                except Exception as exc:
-                    got, err = [], f"{type(exc).__name__}: {exc}"
-                hits.extend(got)
-                if err:
-                    errors[sym] = err
-                done += 1
-                # 全局注册表始终更新 (策略面板同步链路靠它 + /scan/progress 轮询)
-                set_scan_progress(done, total, sym)
-                if progress:
-                    progress(done, total, sym)
+        done = 0
+        # 立即发布 total: 前端可据此估算等待窗口, 不必等第一只股票完成。
+        set_scan_progress(0, total)
+        try:
+            with ThreadPoolExecutor(max_workers=req.max_workers, thread_name_prefix="czsc-scan") as pool:
+                futures = {
+                    pool.submit(self._scan_one, sym, name, req, start, as_of): sym
+                    for sym, name in pairs
+                }
+                for future in as_completed(futures):
+                    sym = futures[future]
+                    try:
+                        got, err = future.result(timeout=req.per_symbol_timeout_s + 5)
+                    except Exception as exc:
+                        got, err = [], f"{type(exc).__name__}: {exc}"
+                    hits.extend(got)
+                    if err:
+                        errors[sym] = err
+                    done += 1
+                    # 全局注册表始终更新 (策略面板同步链路靠它 + /scan/progress 轮询)
+                    set_scan_progress(done, total, sym)
+                    if progress:
+                        progress(done, total, sym)
 
-        # 排序
-        if req.order_by == "divergence_desc":
-            hits.sort(key=lambda h: (-len(h.divergence_pass), h.dt), reverse=False)
-        else:
-            hits.sort(key=lambda h: h.dt, reverse=True)
-        hits = hits[: req.limit]
-        # 需求2: 最终命中逐只标注次级别背驰点日期 (区间套下钻, 有熔断兜底)
-        # G: 源不可用的命中置 sub_source_unavailable, 策略侧保留 B1 并告警
-        sub_unavailable = self._annotate_sub_dt(hits)
-        if sub_unavailable > 0:
-            warnings = warnings + [
-                f"次级别(30分钟)数据源不可用, {sub_unavailable} 个命中的区间套确认被跳过 — "
-                "源恢复前这些 B1 信号未经次级别背驰验证, 请谨慎参考"
-            ]
+            # 排序
+            if req.order_by == "divergence_desc":
+                hits.sort(key=lambda h: (-len(h.divergence_pass), h.dt), reverse=False)
+            else:
+                hits.sort(key=lambda h: h.dt, reverse=True)
+            hits = hits[: req.limit]
+            # 需求2: 最终命中逐只标注次级别背驰点日期 (区间套下钻, 有熔断兜底)
+            # G: 源不可用的命中置 sub_source_unavailable, 策略侧保留 B1 并告警
+            sub_unavailable = self._annotate_sub_dt(hits)
+            if sub_unavailable > 0:
+                warnings = [
+                    *warnings,
+                    f"次级别(30分钟)数据源不可用, {sub_unavailable} 个命中的区间套确认被跳过 — "
+                    "源恢复前这些 B1 信号未经次级别背驰验证, 请谨慎参考",
+                ]
 
-        mark_scan_done()
-        return ScanResult(
-            pool=req.pool,
-            freq=req.freq,
-            as_of=as_of.isoformat(),
-            hits=hits,
-            total=len(hits),
-            total_scanned=done,
-            total_symbols=total,
-            elapsed_ms=(time.perf_counter() - started) * 1000,
-            errors=errors,
-            warnings=warnings,
-            params=self._params_summary(req),
-        )
+            result = ScanResult(
+                pool=req.pool,
+                freq=req.freq,
+                as_of=as_of.isoformat(),
+                hits=hits,
+                total=len(hits),
+                total_scanned=done,
+                total_symbols=total,
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                errors=errors,
+                warnings=warnings,
+                params=self._params_summary(req),
+            )
+        finally:
+            mark_scan_done()
+        return result
 
     @staticmethod
     def _params_summary(req: ScanRequest) -> dict[str, Any]:
