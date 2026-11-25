@@ -33,6 +33,13 @@ def _history(symbols: list[str], as_of: date = date(2026, 11, 20)) -> pl.DataFra
     return pl.DataFrame(rows)
 
 
+def _no_preflight(monkeypatch, mod):
+    """绕过前置校验 (2026-11-25): 扫描桥接测试用小型构造帧 (<500 只),
+    会被 _preflight 的市场量级检查拦截 — 这些测试验证的是扫描/信号语义,
+    前置校验行为由 test_preflight_blocks_* 单独覆盖。"""
+    monkeypatch.setattr(mod, "_preflight", lambda *args, **kwargs: [])
+
+
 def test_strategy_passes_ast_safety():
     """策略文件必须通过 AST 安全校验 (含 app.custom.czsc 白名单子模块)。"""
     AIStrategyGenerator._validate_safety(STRATEGY_PATH.read_text(encoding="utf-8"))
@@ -62,6 +69,7 @@ def test_strategy_registered_with_correct_backend():
 def test_filter_history_returns_only_hit_symbols(monkeypatch):
     """mock ScanService.scan: 只有 B1 命中, 断言 filter_history 只返回该 symbol 当日行。"""
     mod = _load_strategy_module()
+    _no_preflight(monkeypatch, mod)
 
     class FakeHit:
         def __init__(self, symbol, sub_dt=None, type_="B1", sub_source_unavailable=False):
@@ -116,6 +124,7 @@ def test_filter_history_returns_only_hit_symbols(monkeypatch):
 def test_b1_without_sub_dt_dropped_by_default(monkeypatch):
     """B1 次级别确认默认开启 (2026-11-23): 无 sub_dt 的 B1 丢弃; B2 与带确认的 B1 保留。"""
     mod = _load_strategy_module()
+    _no_preflight(monkeypatch, mod)
 
     class FakeHit:
         def __init__(self, type_, sub_dt=None, sub_source_unavailable=False):
@@ -150,6 +159,7 @@ def test_b1_without_sub_dt_dropped_by_default(monkeypatch):
 def test_b1_sub_confirm_disabled_keeps_unconfirmed_b1(monkeypatch):
     """关闭开关 (bs_b1_sub_confirm=False): 未确认 B1 也保留。"""
     mod = _load_strategy_module()
+    _no_preflight(monkeypatch, mod)
 
     class FakeHit:
         def __init__(self, type_, sub_dt=None, sub_source_unavailable=False):
@@ -204,6 +214,7 @@ def test_filter_history_empty_hits_returns_empty(monkeypatch):
 def test_filter_history_caps_candidates_by_amount(monkeypatch):
     """max_symbols 截断: 只把成交额最大的 N 只交给 czsc 扫描。"""
     mod = _load_strategy_module()
+    _no_preflight(monkeypatch, mod)
     captured = {}
 
     class FakeResult:
@@ -235,6 +246,7 @@ def test_b1_source_unavailable_retained_with_warning(monkeypatch):
     """G (2026-11-23): 次级别源不可用的 B1 保留 (不丢弃) 并返回警告;
     扫描层 warnings 也随元组透传。"""
     mod = _load_strategy_module()
+    _no_preflight(monkeypatch, mod)
 
     class FakeHit:
         def __init__(self, type_, sub_dt=None, sub_source_unavailable=False):
@@ -276,3 +288,41 @@ def test_b1_source_unavailable_retained_with_warning(monkeypatch):
     # 扫描层警告透传 + 源不可用保留计数警告
     assert scan_warning in warnings
     assert any("未经区间套确认即保留" in w for w in warnings)
+
+
+def test_preflight_blocks_tiny_market_frame():
+    """前置校验 (2026-11-25): 小型帧 (<500 只) 被市场量级检查拦截,
+    返回 (空df, 原因列表) — 不进扫描。"""
+    mod = _load_strategy_module()
+    df = _history(["600000.SH", "000001.SZ", "002027.SZ"])
+    out = mod.filter_history(df, {"bs_b1_sub_confirm": False})
+    assert isinstance(out, tuple)
+    df_out, reasons = out
+    assert df_out.is_empty()
+    assert any("数据严重缺失" in r for r in reasons)
+
+
+def test_preflight_blocks_incomplete_cross_section():
+    """前置校验 (2026-11-25): as_of 横截面行数 < 上一交易日 95% 时拦截
+    (封「同步中途半成品分区」场景)。"""
+    from datetime import timedelta
+
+    mod = _load_strategy_module()
+    prev_day = date(2026, 11, 19)
+    as_of = date(2026, 11, 20)
+    # 上一交易日 500 只 → 本日 95% 阈值 = 475; 残缺横截面 400 只 (80%)
+    rows = []
+    for d, n in ((prev_day, mod._MIN_MARKET_ROWS), (as_of, 400)):
+        for i in range(n):
+            rows.append({
+                "symbol": f"S{i:04d}.SZ", "date": d, "open": 10.0, "high": 10.5,
+                "low": 9.5, "close": 10.0, "volume": 1e8, "amount": 5e8,
+                "change_pct": 0.0, "name": f"S{i}", "total_shares": 1e10,
+                "float_shares": 8e9,
+            })
+    df = pl.DataFrame(rows)
+    out = mod.filter_history(df, {"bs_b1_sub_confirm": False})
+    assert isinstance(out, tuple)
+    df_out, reasons = out
+    assert df_out.is_empty()
+    assert any("未同步完整" in r for r in reasons)

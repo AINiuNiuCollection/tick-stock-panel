@@ -200,6 +200,9 @@ def run_scheduled_strategy(strategy_id: str) -> dict[str, Any]:
         if not as_of:
             record_run(strategy_id, ok=False, error="无可用数据日期")
             return {"ok": False, "error": "无可用数据日期"}
+        # 方案B (2026-11-25): 日线语义统一 17:00 截止钳制, 见 ScreenerService.clamp_as_of
+        # (定时任务 03:01 执行时 latest_date 通常已是上一交易日, 此处为口径统一兜底)
+        as_of = svc.clamp_as_of(as_of)
 
         overrides = strategy_config.load_override(data_dir, strategy_id)
         params = dict(overrides.get("params") or {})

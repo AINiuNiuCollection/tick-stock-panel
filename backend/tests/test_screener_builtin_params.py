@@ -18,6 +18,11 @@ class _CapturingScreenerService:
     def latest_date(self):
         return date(2026, 7, 15)
 
+    def clamp_as_of(self, as_of):
+        # 方案B (2026-11-25): run_preset 接线会调用 17:00 钳制; 替身原样返回
+        # (钳制行为由 test_clamp_as_of.py 单测覆盖)
+        return as_of
+
     def build_strategy_context(
         self,
         engine,

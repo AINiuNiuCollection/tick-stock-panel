@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -528,6 +528,32 @@ class ScreenerService:
         except Exception:  # noqa: BLE001
             return None
         return None
+
+    def clamp_as_of(self, as_of: date) -> date:
+        """17:00 截止规则的调用方侧钳制 (方案B, 2026-11-25)。
+
+        as_of 为今天且当前时间 <17:00 时, 钳制到今天之前最近的 enriched 分区
+        日期。盘中当日分区是未定稿的即时横截面 (换手率等全天维度字段未定稿,
+        且可能在增量同步中途形成残缺横截面), 不能作为筛选口径 — 引擎预收窄
+        (基础过滤) 与策略内部 17:00 规则会各自钳到上一交易日, 调用方不钳制
+        会导致三处 as_of 不一致 (预收窄按盘中值筛漏票 → 前置校验误拦)。
+        盘后 (≥17:00) / as_of 非今日 / 今日之前无分区时原样返回。
+        与策略内 17:00 规则 (custom_czsc_b1b2) 互为双保险。
+        """
+        today = date.today()
+        if as_of < today or datetime.now().time() >= dtime(17, 0):
+            return as_of
+        root = self.repo.store.data_dir / self._enriched_dirname
+        best: date | None = None
+        if root.exists():
+            for partition in root.glob("date=*"):
+                try:
+                    value = date.fromisoformat(partition.name.removeprefix("date="))
+                except ValueError:
+                    continue
+                if value < today and (best is None or value > best):
+                    best = value
+        return best if best is not None else as_of
 
     def coverage_warnings(self, as_of: date, *, required_bars: int | None = None) -> list[str]:
         """数据充足性提示 (#303): enriched 覆盖不足时返回用户可读警告, 充足返回 []。

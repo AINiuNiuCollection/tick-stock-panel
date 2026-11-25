@@ -313,6 +313,11 @@ def run_preset(req: PresetRequest, request: Request):
     as_of = req.as_of or svc.latest_date()
     if not as_of:
         raise HTTPException(status_code=400, detail="无可用数据日期")
+    if req.timeframe != "1m":
+        # 方案B (2026-11-25): 日线语义统一 17:00 截止钳制 — 盘中执行时
+        # as_of 钳到上一交易日, 使引擎预收窄/策略内部钳制/缓存键口径一致
+        # (分钟策略用盘中即时数据, 不钳制)。
+        as_of = svc.clamp_as_of(as_of)
 
     # 加载用户保存的策略配置
     data_dir = request.app.state.repo.store.data_dir

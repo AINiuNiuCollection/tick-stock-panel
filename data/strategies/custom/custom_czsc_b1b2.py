@@ -21,13 +21,23 @@ B1 次级别确认 (2026-11-23): bs_b1_sub_confirm 默认开启 — B1 必须区
 并随结果返回警告 — 不静默丢弃; "有数据但未确认" 仍丢弃 (fail-closed)。
 B2 不受影响。当日 30 分钟 K 线缺失不算源失败 (取数窗口含历史, 帧非空即正常)。
 
+前置校验 (2026-11-25, 用户裁定): 执行前检测 — as_of 横截面完整性(≥上一交易日
+95%)、关键列 null 率(<10%)、市场量级(≥500只)、本地日K可用、次级别分钟源探测
+可用(B1 需区间套确认时)。任一不通过 → 不执行, UI 提示先做数据同步/检查数据源。
+
 信号年龄 (2026-11-23): max_signal_age 单位为本级别K线根数 — 周线按周K线、
 日线按交易日; 周末/节假日无K线不计 ("只计算交易日的时间")。0=不限。
 
 执行时机 (需求1, 2026-11-23): 全市场逐股缠论分析工作量大 — 仅在用户点击
 "分析"按钮或定时任务到达时执行; 前端所有自动触发路径对带 META.manual_run_only
 标记的策略跳过 (设置保存后重跑/进页面自动补跑/策略池新增/新建策略/重新运行按钮)。
+
+as_of 截止 (2026-11-25): 执行时间 17:00 前不取当日数据 (当日分区可能在增量
+同步中途形成残缺横截面), 以上一交易日为 as_of; 17:00 后才取当日。非交易日
+自然落到最近一个交易日。
 """
+from datetime import datetime, time as dtime, timedelta
+
 import polars as pl
 
 from app.custom.czsc.application.scanner import ScanService
@@ -156,22 +166,137 @@ RULES = """
 6. 信号含本级别与次级别触发日期(区间套下钻); 执行时机仅"分析"按钮/定时任务
 7. B1 默认需次级别背驰确认(bs_b1_sub_confirm, 区间套); 有数据但未确认时 B1 丢弃,
    次级别源不可用时 B1 保留并返回警告 (G, 2026-11-23)
+8. 执行17:00前不取当日数据(以上一交易日为as_of), 17:00后才取当日; 非交易日取最近一个交易日
+9. 执行前做前置校验(横截面完整性/关键列null/市场量级/本地日K/次级别源探测), 不通过则中止并UI提示
 """
+
+# 前置校验阈值 (2026-11-25, 用户裁定)
+_MIN_COMPLETE_RATIO = 0.95    # as_of 行数 ≥ 上一交易日行数的 95%
+_MAX_NULL_RATIO = 0.10        # 关键列 null 率 < 10%
+_MIN_MARKET_ROWS = 500        # 市场量级下限
+_PROBE_SYMBOL = "000001.SZ"   # 数据源探测用的活跃标的
+
+
+def _preflight(
+    df: pl.DataFrame,
+    latest: pl.DataFrame,
+    as_of,
+    freq: str,
+    signal_types: tuple,
+    params: dict,
+) -> list:
+    """执行前置校验 — 返回不通过原因列表 (空列表 = 全部通过, 允许执行)。
+
+    任一项不通过即中止执行 (不进扫描/不发次级别外呼), 原因作为警告经
+    (df, warnings) 协议透出 UI。fail-fast: 廉价检查(行数/列)失败时不再
+    做网络探测。
+    """
+    reasons: list = []
+    n_now = latest.height
+
+    # 1. 市场量级 sanity (极端残缺直接拦截)
+    if n_now < _MIN_MARKET_ROWS:
+        reasons.append(
+            f"执行前置校验未通过: 数据严重缺失({n_now}<{_MIN_MARKET_ROWS}只) — 请先执行数据同步"
+        )
+    # 2. as_of 横截面完整性 vs 上一交易日 (封"同步中途的半成品分区"场景)
+    prev_dates = df.filter(pl.col("date") < as_of)["date"]
+    if prev_dates.len():
+        prev_day = prev_dates.max()
+        n_prev = df.filter(pl.col("date") == prev_day).height
+        if n_prev and n_now < n_prev * _MIN_COMPLETE_RATIO:
+            reasons.append(
+                f"执行前置校验未通过: 当日数据疑似未同步完整"
+                f"({n_now}/{n_prev}只, 完整性{int(n_now / n_prev * 100)}%<95%) — 请先执行数据同步"
+            )
+    # 3. 关键列质量 (Fix C 同口径: 大面积 null 拦截)
+    for col in ("close", "amount", "turnover_rate"):
+        if col in latest.columns:
+            null_ratio = latest[col].null_count() / max(1, n_now)
+            if null_ratio >= _MAX_NULL_RATIO:
+                reasons.append(
+                    f"执行前置校验未通过: 过滤引用列 {col} 缺失率过高"
+                    f"({null_ratio:.0%}>={int(_MAX_NULL_RATIO * 100)}%) — 请先执行数据同步"
+                )
+    # fail-fast: 廉价检查已失败时不再发网络探测
+    if reasons:
+        return reasons
+
+    # 4. 本地日K可用性 (扫描主源; 缺失会全量退化到网络源, 大盘扫描必然超时)
+    try:
+        from app.custom.czsc.adapters.kline.local_daily import LocalDailyKlineSource
+
+        frame = LocalDailyKlineSource().fetch(
+            _PROBE_SYMBOL, "日线", as_of - timedelta(days=10), as_of
+        )
+        if frame is None or frame.is_empty():
+            reasons.append(
+                "执行前置校验未通过: 本地日K数据未就绪 — 请先执行数据同步"
+            )
+    except Exception:
+        reasons.append("执行前置校验未通过: 本地日K读取异常 — 请先执行数据同步")
+    if reasons:
+        return reasons
+
+    # 5. 次级别(分钟)数据源可用性探测 — 仅 B1 需区间套确认时检查;
+    #    探测标的是长期活跃股, 取近 15 日窗口, 空帧/异常均视为源不可用。
+    if "B1" in signal_types and params.get("bs_b1_sub_confirm", True):
+        probe_freq = freq if freq in ("5分钟", "15分钟", "30分钟", "60分钟") else "30分钟"
+        ok = False
+        try:
+            from app.custom.czsc.adapters.kline.chain import build_default_chain
+
+            res = build_default_chain().fetch(
+                _PROBE_SYMBOL, probe_freq, as_of - timedelta(days=15), as_of
+            )
+            ok = res is not None and not res.frame.is_empty()
+        except Exception:
+            ok = False
+        if not ok:
+            reasons.append(
+                f"执行前置校验未通过: 次级别({probe_freq})数据源不可用 — "
+                "请检查网络与数据源配置后重试; 或关闭「B1需次级别背驰确认」跳过次级别要求"
+            )
+    return reasons
 
 
 def filter_history(df: pl.DataFrame, params: dict):
     if df.is_empty() or "symbol" not in df.columns or "date" not in df.columns:
         return df
 
-    as_of = df["date"].max()
+    # as_of 截止规则 (2026-11-25): 执行时间 17:00 前不取当日数据 —
+    # 当日 enriched 分区可能在增量同步中途 (只有部分股票), 取到会得到
+    # 残缺横截面导致误判零命中; 以上一交易日截止。17:00 后才允许取当日。
+    # 非交易日 df 内本就无该日行, 取 ≤上限 的最大日期自然落到最近一个
+    # 交易日。上限本身为当日时, 当日分区未同步也不受影响 (max ≤ 上限)。
+    _now = datetime.now()
+    _upper = (
+        _now.date()
+        if _now.time() >= dtime(17, 0)
+        else _now.date() - timedelta(days=1)
+    )
+    max_date = df["date"].max()
+    if max_date is not None and max_date <= _upper:
+        as_of = max_date
+    else:
+        # 当日(或更晚)数据超上限 — 截到上限之前最近的一个交易日
+        eligible = [d for d in df["date"].unique().to_list() if d <= _upper]
+        if not eligible:
+            return df.head(0)
+        as_of = max(eligible)
     latest = df.filter(pl.col("date") == as_of)
-    if latest.is_empty():
-        return latest
 
     freq = str(params.get("freq", "日线"))
     signal_types = tuple(
         s.strip().upper() for s in str(params.get("signal_types", "B1,B2")).split(",") if s.strip()
     ) or ("B1", "B2")
+
+    # 前置校验闸门 (2026-11-25, 用户裁定): 检测通过才执行 — 任一项不通过
+    # 直接中止 (不进扫描/不发次级别外呼), 警告经 (df, warnings) 协议透出
+    # UI, 提示先做数据同步/检查数据源。
+    reasons = _preflight(df, latest, as_of, freq, signal_types, params)
+    if reasons:
+        return latest.head(0), reasons
     # max_symbols<=0 表示不截断 — 基础条件筛出多少检视多少
     # (本地日K源后单股毫秒级, 全市场 ~5000 只在 16 并发下分钟级完成)
     max_symbols = int(params.get("max_symbols", 0) or 0)

@@ -1102,7 +1102,16 @@ class StrategyEngine:
             if isinstance(df, tuple):
                 df, strategy_warnings = df
             if "date" in df.columns:
-                df = df.filter(pl.col("date") == as_of)
+                # 方案A (2026-11-25, 用户裁定): 修剪改用输出内最新日期而非调用方
+                # as_of — filter_history 策略可能按 17:00 截止规则把内部 as_of
+                # 钳制到更早的交易日 (盘中执行时策略按上一交易日截止, 输出行
+                # date=上一交易日), 按调用方 as_of 修剪会误杀全部命中行。
+                # 普通策略输出最新日期本就等于 as_of, 行为不变。
+                # 结果行 date 为钳制后交易日、页面 as_of 为调用方日期 — 符合
+                # 预期 (当日数据未定稿时结果就是上一交易日的)。
+                out_as_of = df["date"].max()
+                if out_as_of is not None:
+                    df = df.filter(pl.col("date") == out_as_of)
         else:
             if current is None:
                 raise ValueError(f"strategy {strategy_id} requires current data")

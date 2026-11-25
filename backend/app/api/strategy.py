@@ -385,6 +385,9 @@ def run_strategy(req: RunRequest, request: Request):
     try:
         from app.services.screener import ScreenerService
         svc = ScreenerService(request.app.state.repo, asset_type=req.asset_type)
+        if req.timeframe != "1m":
+            # 方案B (2026-11-25): 日线语义统一 17:00 截止钳制, 见 ScreenerService.clamp_as_of
+            as_of = svc.clamp_as_of(as_of)
         context = svc.build_strategy_context(
             engine,
             as_of,
