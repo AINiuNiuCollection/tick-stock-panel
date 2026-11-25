@@ -1737,6 +1737,28 @@ class StrategyEngine:
             missing.append("换手率过滤未生效: 数据缺 turnover_rate 列")
         if bf.get("exclude_st") and "name" not in cols:
             missing.append("ST过滤未生效: 数据缺 name 列")
+
+        # Fix C (2026-11-24 零命中回归): 列存在但大面积 null 时, 过滤条件
+        # 虽"生效"却把 null 行静默排除 — instruments 残缺快照导致深市
+        # float_shares/turnover_rate 全 null、换手率过滤误杀整市即此场景。
+        # null 率 > 50% 视为数据异常, 显式告警 (不阻断执行)。
+        if df.is_empty():
+            return missing
+        null_checks: list[tuple[str, str]] = []  # (列名, 过滤名)
+        if bf.get("market_cap_min") is not None or bf.get("market_cap_max") is not None:
+            null_checks.append(("total_shares", "总市值"))
+        if bf.get("float_cap_min") is not None or bf.get("float_cap_max") is not None:
+            null_checks.append(("float_shares", "流通市值"))
+        if bf.get("turnover_min") is not None or bf.get("turnover_max") is not None:
+            null_checks.append(("turnover_rate", "换手率"))
+        for col, label in null_checks:
+            if col in cols:
+                null_ratio = df[col].null_count() / df.height
+                if null_ratio > 0.5:
+                    missing.append(
+                        f"{label}数据大面积缺失 ({null_ratio:.0%} 为空), "
+                        f"{label}过滤可能误杀候选 — 请检查 instruments 同步"
+                    )
         return missing
 
     @staticmethod

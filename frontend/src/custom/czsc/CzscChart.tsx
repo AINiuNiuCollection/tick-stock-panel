@@ -625,17 +625,22 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       })
     }
 
-    // 三栏布局: 主图 60% / 成交量 15% / MACD 20% (剩余 5% 留给 dataZoom 与边距)
+    // 三栏布局: 主图 / 成交量 / MACD (底部留 dataZoom 与边距)
     // 三个 grid 共享 category xAxis, 各自独立 yAxis。axisIndex 将 series 绑定到对应 grid。
-    // containLabel: true 让 echarts 把 y 轴标签宽度算进 grid 区域, 避免 MACD 负数标签 (-0.50) 被裁切。
     //
     // 变更点8: y 轴刻度改到右侧 (position:'right'), gridRight 加宽到 56 容纳刻度宽度,
     //          gridLeft 减到 4 (左侧不再需要容纳刻度)。主图与 VOL/MACD 都改右侧, 三栏右侧对齐。
+    // 修复(2026-11-24): 不用 containLabel — 它按各栏 y 轴标签实际渲染宽度内缩绘图区,
+    //          三栏标签内容/字号不同 → 绘图区宽度不一致 → axisPointer.link 联动的
+    //          垂直准线在主图与 VOL/MACD 上像素错位。改为去掉 containLabel,
+    //          三栏绘图区均为 [left 4, right 56] 像素级重合; 右侧 56px 条带容纳
+    //          刻度 (含 MACD 负数标签), 不再需要 containLabel 防裁切。
     const gridLeft = 4
     const gridRight = 56
-    const mainGrid = { left: gridLeft, right: gridRight, top: 64, height: '52%', containLabel: true }
-    const volGrid = { left: gridLeft, right: gridRight, top: '66%', height: '11%', containLabel: true }
-    const macdGrid = { left: gridLeft, right: gridRight, top: '80%', height: '14%', containLabel: true }
+    const mainGrid = { left: gridLeft, right: gridRight, top: 64, height: '52%' }
+    const volGrid = { left: gridLeft, right: gridRight, top: '66%', height: '11%' }
+    // MACD 高度 12% (底边 92%), 底部 92%~94% 留给月份标签 (dataZoom slider 在 94%)
+    const macdGrid = { left: gridLeft, right: gridRight, top: '80%', height: '12%' }
 
     // 右上角悬浮数据面板 (graphic 元素), 显示最后一根 bar 的 OHLC/CHG/VOL/MACD
     // 对齐示例图右侧黑色文字面板
@@ -878,16 +883,12 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
       },
       grid: [mainGrid, volGrid, macdGrid],
       xAxis: [
-        // 主图 xAxis (index 0) — 显示月份标签 (格式: "4月" / 跨年显示 "2026年")
+        // 主图 xAxis (index 0) — 月份标签不在此显示 (MACD 底部已有同款标签,
+        // 且去掉 containLabel 后主图标签会溢出压到 VOL 栏)
         {
           type: 'category',
           data: dateCategories,
-          axisLabel: {
-            color: theme.text,
-            fontSize: 11,
-            // 对齐示例图: 同年内显示 "M月", 1月或跨年首月显示 "YYYY年"
-            formatter: (value: string, index: number) => formatXAxisLabel(dateCategories, value, index),
-          },
+          axisLabel: { show: false },
           axisLine: { lineStyle: { color: theme.grid } },
           splitLine: { show: false },
           boundaryGap: true,

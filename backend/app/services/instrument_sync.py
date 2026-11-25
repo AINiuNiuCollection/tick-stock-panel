@@ -75,29 +75,83 @@ def _fetch_instruments_via_provider() -> list[dict] | None:
 def sync_instruments(data_dir: Path) -> int:
     """全量同步标的维表 → data/instruments/instruments.parquet。
 
-    返回写入的行数。
+    返回写入的行数; 0 = 本次未写入 (拉取全失败或触发防缩水守卫)。
+
+    防缩水守卫 (2026-11-24): 上游 TickFlow 单交易所 503 时, 旧逻辑会拿
+    部分成功 (仅沪市 ~2400 行) 的残缺快照整体覆盖全量 (~5900 行), 导致
+    深市 float_shares 丢失 → enriched 深市换手率全 null → 换手率基础
+    过滤静默排除整市 (策略零命中排查实测)。改为:
+      - tickflow 路径: 逐交易所合并 — 拉取成功的交易所覆盖更新, 失败的
+        交易所保留旧快照行 (保留其原 as_of, 数据陈旧但优于缺失);
+      - provider 整体路径: 新行数 < 现存快照 80% 且现存非空时拒绝覆盖。
     """
-    all_rows = _fetch_instruments_via_provider()
-    if all_rows is None:
-        # 未命中非 tickflow provider → 走 tickflow 直连
+    out = data_dir / "instruments" / "instruments.parquet"
+    existing: pl.DataFrame | None = None
+    if out.exists():
+        try:
+            existing = pl.read_parquet(out)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("instruments existing snapshot read failed: %s", e)
+
+    provider_rows = _fetch_instruments_via_provider()
+    if provider_rows is not None:
+        # provider 路径: 整体覆盖 + 缩水守卫
+        if (
+            existing is not None
+            and not existing.is_empty()
+            and provider_rows
+            and len(provider_rows) < existing.height * 0.8
+        ):
+            logger.warning(
+                "instruments 防缩水守卫: provider 返回 %d 行 < 现存快照 %d 行的 80%%, 保留旧快照",
+                len(provider_rows), existing.height,
+            )
+            return 0
+        all_rows: list[dict] = provider_rows
+    else:
+        # 未命中非 tickflow provider → 走 tickflow 直连, 逐交易所合并
         tf = get_client()
-        all_rows = []
+        new_rows: list[dict] = []
+        failed: list[str] = []
         for ex in _EXCHANGES:
             try:
                 items = tf.exchanges.get_instruments(ex, instrument_type="stock")
                 if items:
-                    all_rows.extend(_flatten_instruments(items))
+                    new_rows.extend(_flatten_instruments(items))
                     logger.info("instruments %s: %d stocks", ex, len(items))
+                else:
+                    failed.append(ex)
             except Exception as e:
+                failed.append(ex)
                 logger.warning("get_instruments(%s) failed: %s", ex, e)
+        # 三所全失败 → 维持"未写入"语义, 不动现存快照
+        if not new_rows:
+            return 0
+        # 失败交易所保留旧快照行 (as_of 原样, 陈旧优于缺失)
+        if failed and existing is not None and not existing.is_empty():
+            keep = existing.filter(
+                pl.any_horizontal([pl.col("symbol").str.ends_with(f".{ex}") for ex in failed])
+            )
+            if not keep.is_empty():
+                new_rows.extend(keep.to_dicts())
+                logger.warning(
+                    "instruments %s 拉取失败, 旧快照保留 %d 行 (as_of 不变)",
+                    ",".join(failed), keep.height,
+                )
+        all_rows = new_rows
 
     if not all_rows:
         return 0
 
     df = pl.DataFrame(all_rows)
-    df = df.with_columns(pl.lit(date.today()).alias("as_of"))
+    # 本次新拉取的行无 as_of (置今天); 从旧快照保留的行携带原 as_of
+    if "as_of" not in df.columns:
+        df = df.with_columns(pl.lit(date.today()).alias("as_of"))
+    else:
+        df = df.with_columns(
+            pl.col("as_of").fill_null(pl.lit(date.today())).alias("as_of")
+        )
 
-    out = data_dir / "instruments" / "instruments.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_parquet(df, out)
 

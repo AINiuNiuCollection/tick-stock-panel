@@ -190,7 +190,9 @@ def run_scheduled_strategy(strategy_id: str) -> dict[str, Any]:
         repo = state.repo
 
         from app.api.screener import ScreenerService
-        from app.services import strategy_cache, strategy_config
+        from app.services import strategy_cache
+        # strategy_config 已迁至 app.strategy.config (app.services 不再导出)
+        from app.strategy import config as strategy_config
 
         data_dir = repo.store.data_dir
         svc = ScreenerService(repo, asset_type="stock")
