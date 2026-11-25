@@ -201,3 +201,52 @@ def test_update_cache_strategy_keeps_warnings(tmp_path):
     cached = strategy_cache.read_cache(tmp_path)
     assert cached["results"]["s1"]["warnings"] == ["数据不足"]
     assert cached["results"]["other"]["total"] == 1  # 同日其余策略不受影响
+
+
+def test_update_cache_strategy_rolls_stale_today_cache(tmp_path):
+    """方案B 过渡态 (2026-11-25): 缓存是"as_of=今天"的盘中脏缓存 (未钳制时代
+    run_all 写入), 钳制后单跑 as_of=上一交易日 — 命中必须换天落缓存,
+    其余策略旧结果随迁, 不再被 as_of 失配守卫静默丢弃。"""
+    from app.services import strategy_cache
+
+    today = date.today()
+    prev = today.fromordinal(today.toordinal() - 1)
+
+    strategy_cache.write_cache(
+        tmp_path, today.isoformat(),
+        {
+            "other": {"total": 1, "as_of": today.isoformat(), "rows": []},
+            "custom_czsc_b1b2": {"total": 0, "as_of": today.isoformat(), "rows": []},
+        },
+    )
+
+    screener_api._update_cache_strategy(
+        tmp_path, prev.isoformat(), "custom_czsc_b1b2",
+        {"total": 8, "as_of": prev.isoformat(), "rows": [{"symbol": "300024.SZ"}]},
+    )
+
+    cached = strategy_cache.read_cache(tmp_path)
+    assert cached["as_of"] == prev.isoformat()
+    assert cached["results"]["custom_czsc_b1b2"]["total"] == 8
+    assert len(cached["results"]["custom_czsc_b1b2"]["rows"]) == 1
+    assert cached["results"]["other"]["total"] == 1  # 其余策略旧结果随迁
+
+
+def test_update_cache_strategy_keeps_guard_for_older_mismatch(tmp_path):
+    """非"今日脏缓存"的 as_of 失配维持原守卫: 不换天、不写入 (防止单跑误滚动
+    缓存日期, e.g. 缓存是昨天的、单跑跑了一个更早的显式日期)。"""
+    from app.services import strategy_cache
+
+    strategy_cache.write_cache(
+        tmp_path, "2026-09-10",
+        {"other": {"total": 1, "as_of": "2026-09-10", "rows": []}},
+    )
+
+    screener_api._update_cache_strategy(
+        tmp_path, "2026-09-09", "s1",
+        {"total": 5, "as_of": "2026-09-09", "rows": []},
+    )
+
+    cached = strategy_cache.read_cache(tmp_path)
+    assert cached["as_of"] == "2026-09-10"  # 缓存未被滚动
+    assert "s1" not in cached["results"]    # 失配结果未写入

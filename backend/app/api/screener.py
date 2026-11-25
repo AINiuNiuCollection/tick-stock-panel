@@ -237,20 +237,36 @@ def _cache_payload_with_ext(cached: dict, ext_values: dict[str, dict[str, Any]])
 
 def _update_cache_strategy(data_dir, as_of: str, strategy_id: str, safe_data: dict) -> None:
     """单跑后更新缓存中该策略的结果，保持缓存与最新计算一致。"""
+    from datetime import date as date_type
+
     from app.services import strategy_cache
     cached = strategy_cache.read_cache(data_dir)
-    if cached and cached.get("as_of") == as_of:
-        results = cached.get("results", {})
-        results[strategy_id] = {
-            "total": safe_data.get("total", 0),
-            "as_of": as_of,
-            "rows": safe_data.get("rows", []),
-        }
-        if safe_data.get("warnings"):
-            # 数据不足提示 (#303) 随缓存下发 (get_cached 原样读出),
-            # 单跑刷新不得冲掉 run_all 写入的提示
-            results[strategy_id]["warnings"] = safe_data["warnings"]
-        strategy_cache.write_cache(data_dir, as_of, results)
+    if not cached:
+        return
+    cached_as_of = cached.get("as_of")
+    if cached_as_of != as_of:
+        # 方案B 过渡态 (2026-11-25): 缓存里是未钳制时代盘中 run_all 写入的
+        # "as_of=今天" 脏缓存, 而钳制后单跑 as_of 为上一交易日 — 直接对 as_of
+        # 比对会被守卫静默丢弃 (命中结果不落缓存, 页面一直显示旧 0 命中)。
+        # 今日脏缓存换天重写: 携带其他策略的旧结果一并迁到新 as_of 下,
+        # 待下次 run_all (已钳制) 整体刷新; 非当日的失配维持原守卫不动。
+        try:
+            is_stale_today = date_type.fromisoformat(str(cached_as_of)) == date_type.today()
+        except (TypeError, ValueError):
+            is_stale_today = False
+        if not (is_stale_today and date_type.fromisoformat(str(as_of)) < date_type.today()):
+            return
+    results = dict(cached.get("results", {}))
+    results[strategy_id] = {
+        "total": safe_data.get("total", 0),
+        "as_of": as_of,
+        "rows": safe_data.get("rows", []),
+    }
+    if safe_data.get("warnings"):
+        # 数据不足提示 (#303) 随缓存下发 (get_cached 原样读出),
+        # 单跑刷新不得冲掉 run_all 写入的提示
+        results[strategy_id]["warnings"] = safe_data["warnings"]
+    strategy_cache.write_cache(data_dir, as_of, results)
 
 
 @router.get("/strategies")
@@ -737,6 +753,12 @@ def run_all(request: Request, body: Optional[dict] = None):
         as_of = svc.latest_date()
     if not as_of:
         return {"as_of": None, "results": {}}
+    if timeframe != "1m":
+        # 方案B (2026-11-25): 日线语义统一 17:00 截止钳制 — run_all 的缓存键/
+        # 预收窄口径与 run_preset/定时任务对齐 (此前盘中 run_all 以未钳制的
+        # 当日 as_of 整份重写缓存, 会把定时任务的正确结果冲成盘中口径的脏数据,
+        # 且导致单跑 _update_cache_strategy 因 as_of 失配被静默丢弃)。
+        as_of = svc.clamp_as_of(as_of)
 
     data_dir = request.app.state.repo.store.data_dir
 

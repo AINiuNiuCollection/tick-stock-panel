@@ -44,6 +44,11 @@ class _FakeService:
     def latest_date(self):
         return date.fromisoformat(AS_OF)
 
+    def clamp_as_of(self, as_of):
+        # 方案B (2026-11-25): run_all 接线会调用 17:00 钳制; 固定历史日期替身
+        # 原样返回 (钳制行为由 test_clamp_as_of.py 单测覆盖)
+        return as_of
+
     def build_strategy_context(self, *args, **kwargs):
         return SimpleNamespace()
 
