@@ -10,6 +10,7 @@ import threading
 import time
 from datetime import date, datetime, timedelta
 
+from ...config import SUBLEVEL_30M_LOOKBACK_DAYS
 from ...domain.interval_nest import NestResult, find_sublevel_divergence
 from ...domain.models import Bi
 from ..czsc_adapter import _direction, to_raw_bars
@@ -43,7 +44,15 @@ class IntervalNestVerifier:
     结果按 (symbol, freq, 日期, 方向) 记忆化。
     """
 
-    def __init__(self, chain: KlineSourceChain, lookback_days: int = 60) -> None:
+    def __init__(
+        self,
+        chain: KlineSourceChain,
+        lookback_days: int = SUBLEVEL_30M_LOOKBACK_DAYS,
+    ) -> None:
+        # 2026-11-26: 默认窗口对齐 SUBLEVEL_30M_LOOKBACK_DAYS (40→180 扩容) —
+        # baostock 分钟长历史下旧 60 天 (~320 根) 不足以让区间套在日线
+        # 最近 3~5 笔内稳定定位背驰段; 180 天 ≈ 968 根 30 分钟K (实测)。
+        self._chain = chain
         self._chain = chain
         self._lookback = lookback_days
         self._memo: dict[tuple[str, str, str, str], NestResult] = {}

@@ -64,8 +64,10 @@ ZS_PULLBACK_BASES = ("zg", "height")
 DEFAULT_ZS_PULLBACK_BASE = "zg"
 DEFAULT_ZS_PULLBACK_MIN_DEPTH = 0.0
 DEFAULT_ZS_PULLBACK_MIN_RATIO = 0.02
-# B2/S2 次级别验证: 30 分钟数据最近可用窗口 (东财兜底硬限制约 224 根 ≈ 5 周)
-SUBLEVEL_30M_LOOKBACK_DAYS = 40
+# B2/S2 次级别验证 30 分钟取数窗口 (2026-11-26 扩容 40→180): baostock 分钟源
+# 长历史可选, 180 自然日 ≈ 968 根 30 分钟K (实测 2026-06-01~11-25), 覆盖日线
+# 最近 3~5 笔的内部结构与区间套背驰段; 东财兜底仅约 224 根 (5 周), 作为退路。
+SUBLEVEL_30M_LOOKBACK_DAYS = 180
 # 日线全历史锚 (方案A, 2026-11-26): 日/周/月线默认分析起点锚到极早日期,
 # 分区收集/数据源自然裁到本地数据头。替代旧滑动窗口 (end - lookback_days),
 # 根因: 425 自然日窗口随 as_of 平移, 边界跨周末时切掉窗口头部 K 线导致
