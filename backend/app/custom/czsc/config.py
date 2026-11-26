@@ -66,6 +66,15 @@ DEFAULT_ZS_PULLBACK_MIN_DEPTH = 0.0
 DEFAULT_ZS_PULLBACK_MIN_RATIO = 0.02
 # B2/S2 次级别验证: 30 分钟数据最近可用窗口 (东财兜底硬限制约 224 根 ≈ 5 周)
 SUBLEVEL_30M_LOOKBACK_DAYS = 40
+# 日线全历史锚 (方案A, 2026-11-26): 日/周/月线默认分析起点锚到极早日期,
+# 分区收集/数据源自然裁到本地数据头。替代旧滑动窗口 (end - lookback_days),
+# 根因: 425 自然日窗口随 as_of 平移, 边界跨周末时切掉窗口头部 K 线导致
+# 笔链相位反转 (300229 B1 命中后消失, 2025-09-26 大阴线被切)。
+# 对齐 chanlun-trader.com 实证口径: 日线全历史递归 (~2000 根), 无固定窗口。
+FULL_HISTORY_ANCHOR = date(2000, 1, 1)
+DAILY_LEVEL_FREQS = ("日线", "周线", "月线")
+# 全历史锚下单序列根数上限保护 (2500 根 ≈ 10 年日线, 覆盖 chanlun-trader 实证的 8.4 年)
+MAX_DAILY_BARS = 2500
 
 
 def normalize_features(features: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -251,7 +260,13 @@ class AnalyzeRequest:
     def with_defaults(self) -> AnalyzeRequest:
         """补齐日期默认值并归一化配置 (幂等)。"""
         end = self.end or date.today()
-        start = self.start or (end - timedelta(days=365 + WARMUP_DAYS))
+        if self.start:
+            start = self.start
+        elif self.freq in DAILY_LEVEL_FREQS:
+            # 方案A: 日/周/月线默认起点 = 全历史锚 (数据源裁到数据头), 不再随 end 平移
+            start = FULL_HISTORY_ANCHOR
+        else:
+            start = end - timedelta(days=365 + WARMUP_DAYS)
         unit = self.center_unit if self.center_unit in CENTER_UNITS else DEFAULT_CENTER_UNIT
         return replace(
             self,

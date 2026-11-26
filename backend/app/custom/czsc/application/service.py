@@ -20,7 +20,7 @@ from ..adapters.kline.chain import KlineSourceChain, build_default_chain
 from ..adapters.kline.multilevel import IntervalNestVerifier
 from ..adapters.kline.source import KlineResult
 from ..adapters.kline.sublevel import SublevelVerifier
-from ..config import AnalyzeRequest
+from ..config import AnalyzeRequest, DAILY_LEVEL_FREQS, MAX_DAILY_BARS
 from ..domain.bs_points import identify_bs_points
 from ..domain.models import DtIndex
 from ..domain.zs import build_zs_strict
@@ -96,6 +96,10 @@ class AnalyzeService:
             raise AnalyzerError("CONVERT_FAILED", f"convert to RawBar failed for {req.symbol} {req.freq}")
 
         bars = [b for b in bars_all if bar_date(b) >= req.start] if fetch_start < req.start else bars_all
+        # 方案A 上限保护: 全历史锚下日线序列按最近 MAX_DAILY_BARS 根截断,
+        # 防止超长历史拖慢笔递归与响应体 (对齐 chanlun-trader ~2000 根实证口径)
+        if req.freq in DAILY_LEVEL_FREQS and len(bars) > MAX_DAILY_BARS:
+            bars = bars[-MAX_DAILY_BARS:]
         fxs, bis, signals = run_czsc(bars, req.max_bi_num, req.min_bi_len)
         # 中枢构造单元 (方案B/R3): bi=笔级(默认, 现行为); xianduan=先合成线段
         # (第65/67/71/77/78课)再构造线段级中枢 (第18/20课公式, 第83课稳定性)。

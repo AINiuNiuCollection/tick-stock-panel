@@ -84,7 +84,9 @@ META = {
             "default": 10, "min": 0, "max": 60, "step": 1,
         },
         {
-            "id": "lookback_days", "label": "分析窗口(天)", "type": "int",
+            # 方案A (2026-11-26): 日线扫描起点已锚定全历史 (数据头), 本参数
+            # 仅在分钟级别生效 (日线级忽略), 保留用于兼容旧覆盖文件。
+            "id": "lookback_days", "label": "分析窗口(天, 仅分钟级生效)", "type": "int",
             "default": 425, "min": 120, "max": 1200, "step": 30,
         },
         {

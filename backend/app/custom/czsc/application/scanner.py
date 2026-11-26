@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.custom.czsc.config import ASYNC_SCAN_THRESHOLD, ScanRequest
+from app.custom.czsc.config import (
+    ASYNC_SCAN_THRESHOLD,
+    DAILY_LEVEL_FREQS,
+    FULL_HISTORY_ANCHOR,
+    ScanRequest,
+)
 from app.custom.czsc.schemas import ScanHit, ScanResult, ScanTaskStatus
 
 logger = logging.getLogger(__name__)
@@ -298,7 +303,13 @@ class ScanService:
         started = time.perf_counter()
         req = req.normalized()
         as_of = req.as_of or date.today()
-        start = as_of - timedelta(days=req.lookback_days)
+        # 方案A (2026-11-26): 日线级扫描起点 = 全历史锚 (数据源裁到数据头),
+        # lookback_days 不再决定日线结构起点, 消除 425 自然日窗口随 as_of 平移
+        # 导致的笔链相位反转 (300229 B1 消失根因)。分钟级无全历史, 保留 lookback 窗口。
+        if req.freq in DAILY_LEVEL_FREQS:
+            start = FULL_HISTORY_ANCHOR
+        else:
+            start = as_of - timedelta(days=req.lookback_days)
         pairs, warnings = self.resolve_symbols(req)
         # P2-1 (2026-11-24 审计): normalized() 的参数修正提示 (白名单外
         # signal_types 被忽略等) 并入结果告警 — 两条返回路径共用此 warnings

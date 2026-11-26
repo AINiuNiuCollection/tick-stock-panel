@@ -102,7 +102,9 @@ const ZS_PULLBACK_RATIOS = [
 
 export function CzscParamsPanel({ initialSymbol = '', initialParams, onAnalyze, loading, onMaPeriodsChange, onZsPriceVisibleChange, onFxMarksVisibleChange, zsPriceVisible = false, fxMarksVisible = true }: Props) {
   const today = new Date().toISOString().slice(0, 10)
-  const defaultStart = new Date(Date.now() - 365 * 86400 * 1000).toISOString().slice(0, 10)
+  // 方案A (2026-11-26): 起始日期默认留空 = 不传 start_date, 后端按日线全历史锚
+  // (数据头) 取数; 用户显式选择日期时才以所选日期为起点。消除 365 天滑动默认窗。
+  const defaultStart = ''
   // 表单初值优先取上次提交的参数, 否则用默认值。仅恢复显示, 不自动分析。
   const [symbol, setSymbol] = useState(initialSymbol || initialParams?.symbol || '')
   const [symbolName, setSymbolName] = useState<string | null>(initialParams?.symbol_name ?? null)
