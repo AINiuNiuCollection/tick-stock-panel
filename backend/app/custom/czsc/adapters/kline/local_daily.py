@@ -22,7 +22,9 @@ import polars as pl
 
 from app.config import settings
 
+from ...eastmoney_fallback import _infer_suffix
 from ..indicators import attach_macd_from_pipeline
+from .resample import resample_daily_frame
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +46,12 @@ class LocalDailyKlineSource:
         if not self._root.exists():
             return None
         try:
-            return self._fetch_daily(symbol, start, end)
+            return self._fetch_daily(symbol, freq, start, end)
         except Exception as exc:  # noqa: BLE001 — 本地读失败静默降级到网络源
             logger.warning("local_daily fetch failed for %s: %s", symbol, exc)
             return None
 
-    def _fetch_daily(self, symbol: str, start: date, end: date) -> pl.DataFrame | None:
+    def _fetch_daily(self, symbol: str, freq: str, start: date, end: date) -> pl.DataFrame | None:
         # 收集覆盖 [start, end] 的分区目录 (分区名 date=YYYY-MM-DD)
         files: list[Path] = []
         for entry in sorted(self._root.iterdir()):
@@ -65,8 +67,15 @@ class LocalDailyKlineSource:
             return None
 
         df = pl.read_parquet(files)
+        # 无后缀代码 (前端手输 600809) → 按沪/深/北规则推断后缀一并匹配,
+        # 避免精确匹配落空后静默跳过本地源、全打网络源 (2026-11-26 修复)。
+        symbols = [symbol]
+        if "." not in symbol:
+            suffix = _infer_suffix(symbol)
+            if suffix:
+                symbols.append(f"{symbol}{suffix}")
         df = df.filter(
-            (pl.col("symbol") == symbol)
+            pl.col("symbol").is_in(symbols)
             & (pl.col("date") >= start)
             & (pl.col("date") <= end)
         ).select(["date", "open", "high", "low", "close", "volume", "amount"])
@@ -79,6 +88,9 @@ class LocalDailyKlineSource:
             return None
 
         out = df.rename({"date": "dt", "volume": "vol"}).sort("dt")
+        # 周线/月线: 本地是日K副本, 先按级别聚合再挂 MACD (2026-11-26 修复:
+        # 此前周/月线直接返回日线行, 导致周线分析实际在跑日线数据)。
+        out = resample_daily_frame(out, freq)
         out = attach_macd_from_pipeline(out)
         keep = [c for c in ("dt", "open", "high", "low", "close", "vol", "amount") if c in out.columns]
         keep += [c for c in ("macd_dif", "macd_dea", "macd_hist") if c in out.columns]

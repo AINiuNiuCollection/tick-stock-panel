@@ -15,6 +15,8 @@ import {
   X,
   Globe,
   Library,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react'
 import { api, type KnowledgeEntry, type KnowledgeCategory } from '@/lib/api'
 import { PageHeader } from '@/components/PageHeader'
@@ -245,6 +247,17 @@ export function Knowledge() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // 《缠中说禅》书籍视图: null=普通条目; 'toc'=目录; 数字=第 N 课
   const [chanlunLesson, setChanlunLesson] = useState<number | 'toc' | null>(null)
+  // 左侧目录栏收起态 — 持久化, 收起后平板/小屏可用内容区更大
+  const [asideCollapsed, setAsideCollapsed] = useState(() => {
+    try { return localStorage.getItem('tf-knowledge-aside') === 'collapsed' } catch { return false }
+  })
+  const toggleAside = useCallback(() => {
+    setAsideCollapsed(prev => {
+      const next = !prev
+      try { localStorage.setItem('tf-knowledge-aside', next ? 'collapsed' : 'expanded') } catch {}
+      return next
+    })
+  }, [])
 
   const allExpanded = expandedCats.size === ALL_CATEGORIES.length
 
@@ -257,6 +270,7 @@ export function Knowledge() {
     return () => clearTimeout(t)
   }, [searchQuery])
 
+  // 内容查询 — 受搜索词/分类过滤, 驱动右侧内容区与展开后的条目列表
   const { data, isLoading } = useQuery({
     queryKey: ['knowledge', 'list', debouncedQ, activeCategory],
     queryFn: () => api.listKnowledge({
@@ -265,6 +279,21 @@ export function Knowledge() {
       limit: 1000,
     }),
   })
+
+  // 计数查询 — 永不过滤。侧栏各分类计数若从过滤结果分组, 点击某分类后
+  // 其余分类会归零 (查询只返回该分类条目), 故计数与内容数据源分离
+  const { data: countsData } = useQuery({
+    queryKey: ['knowledge', 'counts'],
+    queryFn: () => api.listKnowledge({ limit: 1000 }),
+  })
+  const allTotal = countsData?.total ?? 0
+  const countGrouped = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const it of countsData?.items ?? []) {
+      m[it.category] = (m[it.category] ?? 0) + 1
+    }
+    return m
+  }, [countsData])
 
   const items = data?.items ?? []
   const total = data?.total ?? 0
@@ -331,7 +360,8 @@ export function Knowledge() {
       />
 
       <div className="flex flex-1 overflow-hidden">
-        {/* 左侧目录树 */}
+        {/* 左侧目录树 — 可收起 (收起后左缘悬浮按钮唤出, 平板/小屏留更大内容区) */}
+        {!asideCollapsed && (
         <aside className="w-56 shrink-0 border-r border-border overflow-y-auto py-2 px-2">
           <div className="mb-2">
             <div className="flex items-center gap-1">
@@ -348,7 +378,7 @@ export function Knowledge() {
               >
                 <BookOpen className="h-3.5 w-3.5" />
                 全部
-                <span className="ml-auto text-[10px] text-muted">{total}</span>
+                <span className="ml-auto text-[10px] text-muted">{allTotal}</span>
               </button>
               <button
                 onClick={toggleAllCats}
@@ -357,6 +387,13 @@ export function Knowledge() {
               >
                 {allExpanded ? '收起' : '展开'}
               </button>
+              <button
+                onClick={toggleAside}
+                className="shrink-0 p-1 rounded text-muted hover:bg-elevated hover:text-foreground transition-colors"
+                title="收起目录栏"
+              >
+                <PanelLeftClose className="h-3.5 w-3.5" />
+              </button>
             </div>
           </div>
 
@@ -364,6 +401,7 @@ export function Knowledge() {
             const meta = CATEGORY_META[cat]
             const Icon = meta.icon
             const catItems = groupedItems[cat] ?? []
+            const catCount = countGrouped[cat] ?? 0
             const isExpanded = expandedCats.has(cat)
             const isActive = activeCategory === cat
 
@@ -390,7 +428,7 @@ export function Knowledge() {
                   >
                     <Icon className={cn('h-3.5 w-3.5', meta.color)} />
                     {meta.label}
-                    <span className="ml-auto text-[10px] text-muted">{catItems.length}</span>
+                    <span className="ml-auto text-[10px] text-muted">{catCount}</span>
                   </button>
                 </div>
 
@@ -452,6 +490,16 @@ export function Knowledge() {
             </div>
           )}
         </aside>
+        )}
+        {asideCollapsed && (
+          <button
+            onClick={toggleAside}
+            className="shrink-0 w-7 border-r border-border grid place-items-center text-muted hover:bg-elevated hover:text-foreground transition-colors"
+            title="展开目录栏"
+          >
+            <PanelLeftOpen className="h-4 w-4" />
+          </button>
+        )}
 
         {/* 右侧内容区 */}
         <div className={cn('flex-1 overflow-hidden', selectedEntry || chanlunLesson !== null ? '' : 'overflow-y-auto px-5 py-4')}>

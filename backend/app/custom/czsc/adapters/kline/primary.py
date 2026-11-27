@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 
 from ..indicators import attach_macd_from_pipeline
+from .resample import resample_daily_frame
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,9 @@ class PrimaryKlineSource:
                 df = df.with_columns(pl.col("dt").cast(pl.Datetime, strict=False))
 
             if freq in _DAILY_FREQS and "close" in df.columns:
+                # 周线/月线: 主源日K行先按级别聚合再挂 MACD (2026-11-26 修复:
+                # 此前周/月线直接返回日线行, 级别错配)。
+                df = resample_daily_frame(df, freq)
                 df = attach_macd_from_pipeline(df)
 
             keep_base = [

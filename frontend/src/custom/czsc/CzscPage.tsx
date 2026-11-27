@@ -213,6 +213,13 @@ export function CzscPage() {
   const lastFromCache = pickLastAnalyzeFromCache(qc)
   const displayData = analyze.data ?? lastFromCache
 
+  // 后端实际分析窗口 = bars 首尾日期 (已含级别默认窗/数据头裁剪/2500根截断的全部效果)。
+  // 传给参数面板, 让日期框动态显示与后端真正运行的日期一致 (仅展示同步, 不参与请求)。
+  const actualWindow = displayData && displayData.bars.length > 0 ? {
+    start: displayData.bars[0].dt.slice(0, 10),
+    end: displayData.bars[displayData.bars.length - 1].dt.slice(0, 10),
+  } : undefined
+
   // 分析失败时, 提取后端结构化错误 (NO_DATA/CZSC_NOT_INSTALLED 等) 用于顶部 banner 提示。
   // 没有 displayData 时走 EmptyState, 不显示 banner (避免与"分析失败"空状态重复)。
   const analyzeError = analyze.error
@@ -270,6 +277,7 @@ export function CzscPage() {
       <CzscParamsPanel
         initialSymbol={savedParams?.symbol ?? ''}
         initialParams={savedParams}
+        actualWindow={actualWindow}
         onAnalyze={handleAnalyze}
         loading={analyze.isFetching}
         onMaPeriodsChange={setLiveMaPeriods}

@@ -119,6 +119,88 @@ def to_raw_bars(df: pl.DataFrame, freq: str) -> list[Any]:
     return df_to_raw_bars(df, freq)
 
 
+def _fx_kind(fx: Any) -> str:
+    return _mark_kind(str(fx.mark))
+
+
+def _endpoints_to_bi(a: Any, b: Any, index: dict[Any, int]) -> Bi:
+    """相邻两个笔端点 (异向分型) → Bi 领域模型。"""
+    a_kind, b_kind = _fx_kind(a), _fx_kind(b)
+    if a_kind == "top":
+        direction, raw_direction = "down", "向下"
+        high, low = float(a.high), float(b.low)
+    else:
+        direction, raw_direction = "up", "向上"
+        high, low = float(b.high), float(a.low)
+    return Bi(
+        sdt=a.dt,
+        edt=b.dt,
+        range_sdt=a.raw_bars[0].dt,
+        range_edt=b.raw_bars[-1].dt,
+        direction=direction,
+        raw_direction=raw_direction,
+        high=high,
+        low=low,
+        length=index[b.dt] - index[a.dt] + 1,
+        power=None,
+        start_mark=a_kind,
+        end_mark=b_kind,
+        start_price=float(a.high if a_kind == "top" else a.low),
+        end_price=float(b.high if b_kind == "top" else b.low),
+    )
+
+
+def _rebuild_tail_bis(
+    c: Any,
+    bars: list[Any],
+    min_bi_len: int,
+) -> list[Bi] | None:
+    """对 czsc 未完成笔 (bi_list[-1]) 按缠师第 62 课规则重组装。
+
+    czsc 增量笔算法在「急速 V 型反转 + 紧随反弹分型间隔 < min_bi_len +
+    后续未创新极值」形态下会丢弃已成立的分段端点, 尾部整段锁进一根
+    未完成笔, 直到趋势新极值才解锁 (实证 600809 周线 2024-05 后死锁,
+    与窗口起点无关, 属库固有保守机制)。
+
+    通用规则 (只作用于 bi_list[-1], 确认历史笔 bi_list[:-1] 不动):
+      1. 顶底分型交替 (czsc fx_list 保证严格交替, 同向做吸收取更极端者);
+      2. 相邻端点间隔 (含端点 K 线, bar 索引差+1) >= min_bi_len 才确认
+         端点, 不足则跳过该分型 (第 62 课);
+      3. 结果不足两笔返回 None, 保持 czsc 原输出 (非触发走势零变化)。
+    """
+    native_bis = c.bi_list
+    if not native_bis:
+        return None
+    pivot = native_bis[-1].fx_a
+    index = {b.dt: i for i, b in enumerate(bars)}
+    if pivot is None or pivot.dt not in index:
+        return None
+    endpoints: list[Any] = [pivot]
+    for fx in c.fx_list:
+        if fx.dt <= pivot.dt or fx.dt not in index:
+            continue
+        prev = endpoints[-1]
+        if _fx_kind(fx) == _fx_kind(prev):
+            # pivot (endpoints[0]) 与前一确认笔共享端点, 不可被吸收,
+            # 否则重组链起点后移, 与 bi_list[-2] 衔接断裂。
+            if len(endpoints) == 1:
+                continue
+            # 同向吸收: 顶取更高, 底取更低, 只前进不回退
+            if _fx_kind(fx) == "top":
+                if fx.high > prev.high:
+                    endpoints[-1] = fx
+            elif fx.low < prev.low:
+                endpoints[-1] = fx
+            continue
+        # 异向: 间隔含端点 >= min_bi_len 才确认, 否则跳过 (第 62 课)
+        if index[fx.dt] - index[prev.dt] + 1 < min_bi_len:
+            continue
+        endpoints.append(fx)
+    if len(endpoints) < 2:
+        return None
+    return [_endpoints_to_bi(a, b, index) for a, b in zip(endpoints, endpoints[1:])]
+
+
 def run_czsc(
     bars: list[Any],
     max_bi_num: int,
@@ -129,7 +211,19 @@ def run_czsc(
 
     c = CZSC(bars, max_bi_num=max_bi_num, min_bi_len=min_bi_len)
     fxs = [adapt_fx(fx) for fx in c.fx_list]
-    bis = [adapt_bi(bi) for bi in c.bi_list]
+    rebuilt = _rebuild_tail_bis(c, bars, min_bi_len)
+    if rebuilt is not None:
+        last_native = adapt_bi(c.bi_list[-1])
+        # 1 笔且端点与 czsc 原未完成笔相同 → 空转换, 保持 czsc 原笔
+        # (避免 length/power 语义无谓漂移)。
+        if len(rebuilt) == 1 and (
+            rebuilt[0].sdt == last_native.sdt and rebuilt[0].edt == last_native.edt
+        ):
+            rebuilt = None
+    if rebuilt is not None:
+        bis = [adapt_bi(bi) for bi in c.bi_list[:-1]] + rebuilt
+    else:
+        bis = [adapt_bi(bi) for bi in c.bi_list]
     try:
         signals = dict(c.signals) if c.signals else {}
     except Exception as exc:

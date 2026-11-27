@@ -55,6 +55,9 @@ interface Props {
   initialSymbol?: string
   /** 上次提交的参数, 用于恢复表单显示 (不自动触发分析) */
   initialParams?: CzscParams | null
+  /** 后端实际分析窗口 (bars 首尾日期): 一次分析完成后同步回日期框,
+   *  让展示与后端真正运行的日期一致 (级别切换后端默认窗口不同, 前端跟随)。 */
+  actualWindow?: { start: string; end: string }
   onAnalyze: (params: CzscParams) => void
   loading?: boolean
   /** 均线变化实时回调 (无需重新点分析即可更新图表) */
@@ -100,7 +103,7 @@ const ZS_PULLBACK_RATIOS = [
   { value: 0.02, label: '2%（默认）' },
 ] as const
 
-export function CzscParamsPanel({ initialSymbol = '', initialParams, onAnalyze, loading, onMaPeriodsChange, onZsPriceVisibleChange, onFxMarksVisibleChange, zsPriceVisible = false, fxMarksVisible = true }: Props) {
+export function CzscParamsPanel({ initialSymbol = '', initialParams, actualWindow, onAnalyze, loading, onMaPeriodsChange, onZsPriceVisibleChange, onFxMarksVisibleChange, zsPriceVisible = false, fxMarksVisible = true }: Props) {
   const today = new Date().toISOString().slice(0, 10)
   // 方案A (2026-11-26): 起始日期默认留空 = 不传 start_date, 后端按日线全历史锚
   // (数据头) 取数; 用户显式选择日期时才以所选日期为起点。消除 365 天滑动默认窗。
@@ -175,6 +178,19 @@ export function CzscParamsPanel({ initialSymbol = '', initialParams, onAnalyze, 
     setFeatures(prev => prev.includes(key) ? prev.filter(f => f !== key) : [...prev, key])
   }
 
+  // 分析完成后, 把日期框同步为后端实际运行的窗口 (bars 首尾日期)。
+  // 后端按级别动态决定默认窗口 (日/周/月线=全历史锚+2500根截断, 分钟=425天窗),
+  // 前端不重复推演这套规则, 直接采信后端结果 — 单一事实源, 永不失同步。
+  // 仅在新窗口到达时覆盖; 用户随后手动改日期不受影响 (直到下一次分析完成)。
+  const actualStart = actualWindow?.start
+  const actualEnd = actualWindow?.end
+  useEffect(() => {
+    if (actualStart) setStartDate(actualStart)
+  }, [actualStart])
+  useEffect(() => {
+    if (actualEnd) setEndDate(actualEnd)
+  }, [actualEnd])
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!symbol.trim()) return
@@ -219,7 +235,14 @@ export function CzscParamsPanel({ initialSymbol = '', initialParams, onAnalyze, 
         <span className="text-xs text-muted">频率</span>
         <select
           value={freq}
-          onChange={e => setFreq(e.target.value)}
+          onChange={e => {
+            setFreq(e.target.value)
+            // 级别切换 → 重置起始日期为后端动态默认 (日/周/月线=全历史锚,
+            // 分钟=425天窗)。旧级别的显式起始日期会锁定新级别的窗口
+            // (600809 周线曾带着日线时代的 start_date 跑), 切换即清除;
+            // 分析完成后 actualWindow 再把实际窗口同步回显示。
+            setStartDate('')
+          }}
           className="h-8 px-2 rounded-btn border border-border bg-base text-sm"
         >
           {FREQ_OPTIONS.map(f => <option key={f} value={f}>{f}</option>)}

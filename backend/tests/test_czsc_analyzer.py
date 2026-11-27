@@ -192,7 +192,12 @@ def test_zs_rally_then_new_box_forms_two_centers_when_pullback_stays_above_zg():
 
     禅师不以时间/涨幅切中枢, 只看"离开段 + 回抽不回箱体"。这里原中枢
     [10,11]; 拉升笔高 24 (>ZG), 回抽笔低 15 (>ZG) → 破坏成立, 拉升笔不
-    并入前中枢, 新中枢从回抽笔起算 → [16,18], 且 DD2=15 > GG1=12 (新生)。
+    并入前中枢, 但按第18课定义可作为新中枢第一段 → 新中枢 [15,18]
+    (2026-11-27 修复: 破坏后从离开笔起扫, 原从回抽笔起扫会漏掉
+    「离开笔 + 失败回抽 + 后续笔」的重叠中枢)。
+    核心区间新生: z2.zd(15) > z1.zg(11) —— 趋势判定用核心区间
+    (trend_overlap_mode 默认 practical), 离开笔只拉宽 z2 的 DD/GG,
+    不影响趋势语义。
     """
     bis = [
         *_zs_center_bis(),
@@ -207,8 +212,8 @@ def test_zs_rally_then_new_box_forms_two_centers_when_pullback_stays_above_zg():
     z1, z2 = zss
     assert (z1.zd, z1.zg, z1.gg) == (10.0, 11.0, 12.0)
     assert len(z1.bis) == 3 and z1.edt == datetime(2024, 1, 7), "拉升笔不得并入前中枢"
-    assert (z2.zd, z2.zg) == (16.0, 18.0)
-    assert z2.dd > z1.gg, "两中枢波动区间不重叠 -> 新生(第20课定理二)"
+    assert (z2.zd, z2.zg) == (15.0, 18.0)
+    assert z2.zd > z1.zg, "核心区间不重叠 -> 新生(趋势判定口径, 第20课)"
 
 
 def test_zs_rally_then_pullback_into_box_remains_one_center():
