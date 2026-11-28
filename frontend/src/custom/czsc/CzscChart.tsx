@@ -388,10 +388,29 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     })
 
     // 成交量副图数据 — 红绿柱: close>=open 用 theme.up, 否则 theme.down (对齐示例图与 czsc colorizeVol)
-    const volData = resolvedKlines.map(k => ({
-      value: k.vol,
-      itemStyle: { color: k.close >= k.open ? theme.up : theme.down },
-    }))
+    // 变更点9 (v4): 量柱显示相对前一根的倍数标注 (如 1.5X / 0.5X);
+    //   变更点11 (v4): 只标注显著放量/缩量 (>1.2X 或 <0.8X), 接近前量 (~1X) 的柱不标,
+    //   避免整排 0.9X/1.0X 密集刷屏 (具体数值 tooltip 悬停仍可见)。
+    const volData = resolvedKlines.map((k, i) => {
+      const prevVol = i >= 1 ? resolvedKlines[i - 1].vol : null
+      const ratio = prevVol != null && prevVol > 0 ? k.vol / prevVol : null
+      const notable = ratio != null && (ratio > 1.2 || ratio < 0.8)
+      return {
+        value: k.vol,
+        itemStyle: { color: k.close >= k.open ? theme.up : theme.down },
+        ...(notable
+          ? {
+              label: {
+                show: true,
+                formatter: `${ratio!.toFixed(1)}X`,
+                color: ratio! >= 1 ? theme.up : theme.down,
+                fontSize: 9,
+                position: 'top' as const,
+              },
+            }
+          : {}),
+      }
+    })
 
     // MACD 副图数据 (后端计算 EMA12/26/9, 前端仅消费)
     // - 柱状 hist: 红 (>=0) 绿 (<0)
@@ -400,10 +419,78 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     // 变更点4: 前慢速 EMA 暖机段 (前 25 根 DIF/DEA 可能为 null) 视为 0, 让副图从首根显示,
     //          不再出现"左侧忍让没有数据"的空白。这与 czsc/通达信惯例一致 (前段补 0 而非留空)。
     const macdList = result.macd ?? []
-    const macdHistData = macdList.map(m => ({
-      value: m.macd ?? 0,
-      itemStyle: { color: (m.macd ?? 0) >= 0 ? theme.up : theme.down },
-    }))
+    // 变更点10 (v4): MACD 柱堆区段 (缠论口径) — 连续同色 hist 柱为一个堆,
+    //   面积 = Σ|hist|; 倍数 = 当前堆面积 / 前一同色堆面积 (红对红, 绿对绿)。
+    //   常显标注在每堆极值柱旁 (面积 + 倍数, 如 "0.45 ×0.62"), 背驰缩堆一眼可见。
+    const fmtShort = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(1) : v.toFixed(2))
+    const macdSegs: Array<{ sign: 1 | -1; startIdx: number; endIdx: number; area: number; peakIdx: number; peakAbs: number }> = []
+    {
+      let sign: 1 | -1 | 0 = 0
+      let startIdx = 0
+      let area = 0
+      let peakIdx = 0
+      let peakAbs = 0
+      macdList.forEach((m, i) => {
+        const v = m.macd ?? 0
+        const s: 1 | -1 = v >= 0 ? 1 : -1
+        if (sign === 0) {
+          sign = s
+          startIdx = i
+        } else if (s !== sign) {
+          macdSegs.push({ sign, startIdx, endIdx: i - 1, area, peakIdx, peakAbs })
+          sign = s
+          startIdx = i
+          area = 0
+          peakIdx = i
+          peakAbs = 0
+        }
+        area += Math.abs(v)
+        if (Math.abs(v) >= peakAbs) {
+          peakAbs = Math.abs(v)
+          peakIdx = i
+        }
+      })
+      if (sign !== 0) {
+        macdSegs.push({ sign, startIdx, endIdx: macdList.length - 1, area, peakIdx, peakAbs })
+      }
+    }
+    // 逐堆倍数: 与前一个同色堆面积比 (首次出现该颜色时无倍数)
+    const segRatioByPeak = new Map<number, number | null>()
+    const lastAreaBySign: Record<'1' | '-1', number | null> = { 1: null, '-1': null }
+    for (const seg of macdSegs) {
+      const prevArea = lastAreaBySign[seg.sign === 1 ? '1' : '-1']
+      segRatioByPeak.set(seg.peakIdx, prevArea != null && prevArea > 0 ? seg.area / prevArea : null)
+      lastAreaBySign[seg.sign === 1 ? '1' : '-1'] = seg.area
+    }
+    const segByPeak = new Map(macdSegs.map(s => [s.peakIdx, s]))
+    // 变更点12 (v4): 面积标注降噪 — 只隐藏"过小的零碎堆": 面积 < 中位数*25% 的堆不标,
+    //   其余 (含中等和大块) 全部常显; 每根的 MACD/面积数值 tooltip 悬停可见。
+    const sortedAreas = macdSegs.map(s => s.area).sort((a, b) => a - b)
+    const medianSegArea = sortedAreas.length > 0
+      ? (sortedAreas.length % 2 === 1
+          ? sortedAreas[(sortedAreas.length - 1) / 2]
+          : (sortedAreas[sortedAreas.length / 2 - 1] + sortedAreas[sortedAreas.length / 2]) / 2)
+      : 0
+    const macdHistData = macdList.map((m, i) => {
+      const seg = segByPeak.get(i)
+      const ratio = seg ? segRatioByPeak.get(i) ?? null : null
+      const showLabel = seg != null && seg.area >= medianSegArea * 0.25
+      return {
+        value: m.macd ?? 0,
+        itemStyle: { color: (m.macd ?? 0) >= 0 ? theme.up : theme.down },
+        ...(showLabel && seg
+          ? {
+              label: {
+                show: true,
+                formatter: `${fmtShort(seg.area)}${ratio != null ? ` ×${ratio.toFixed(2)}` : ''}`,
+                color: theme.text,
+                fontSize: 9,
+                position: seg.sign >= 0 ? ('top' as const) : ('bottom' as const),
+              },
+            }
+          : {}),
+      }
+    })
     const macdDiffData = macdList.map(m => m.dif ?? 0)
     const macdDeaData = macdList.map(m => m.dea ?? 0)
 
@@ -637,10 +724,21 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
     //          刻度 (含 MACD 负数标签), 不再需要 containLabel 防裁切。
     const gridLeft = 4
     const gridRight = 56
-    const mainGrid = { left: gridLeft, right: gridRight, top: 64, height: '52%' }
-    const volGrid = { left: gridLeft, right: gridRight, top: '66%', height: '11%' }
-    // MACD 高度 12% (底边 92%), 底部 92%~94% 留给月份标签 (dataZoom slider 在 94%)
-    const macdGrid = { left: gridLeft, right: gridRight, top: '80%', height: '12%' }
+    // 变更点13 (v4): VOL/MACD 副图改固定像素高度 + 自底向上锚定, 主图 top/bottom 双锚自适应。
+    //   之前副图按容器百分比 (11%+12%), 容器越高副图越肥, 固定浪费 K 线空间;
+    //   现在容器多出的高度全部由主图吸收, 副图始终紧凑。
+    const zoomSliderH = 18    // dataZoom slider
+    const axisLabelH = 16     // MACD 底部月份标签
+    const macdH = 76
+    const volH = 58
+    const subPad = 6          // 副图间距
+    const zoomBottom = 2
+    const macdBottom = zoomBottom + zoomSliderH + axisLabelH
+    const volBottom = macdBottom + macdH + subPad
+    const mainBottom = volBottom + volH + subPad
+    const mainGrid = { left: gridLeft, right: gridRight, top: 64, bottom: mainBottom }
+    const volGrid = { left: gridLeft, right: gridRight, bottom: volBottom, height: volH }
+    const macdGrid = { left: gridLeft, right: gridRight, bottom: macdBottom, height: macdH }
 
     // 右上角悬浮数据面板 (graphic 元素), 显示最后一根 bar 的 OHLC/CHG/VOL/MACD
     // 对齐示例图右侧黑色文字面板
@@ -960,7 +1058,7 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
         // start/end 取自当前窗口 — 键盘缩放或重渲染后保持可见区间
         { type: 'inside', xAxisIndex: [0, 1, 2], start: zoomWindow.start, end: zoomWindow.end },
         {
-          show: true, type: 'slider', xAxisIndex: [0, 1, 2], top: '94%',
+          show: true, type: 'slider', xAxisIndex: [0, 1, 2], bottom: zoomBottom, height: zoomSliderH,
           start: zoomWindow.start, end: zoomWindow.end,
           textStyle: { color: theme.text },
         },
@@ -1096,19 +1194,22 @@ export const CzscChart = forwardRef<CzscChartHandle, Props>(function CzscChart(
           },
         },
         // ===== 成交量副图 (gridIndex 1) =====
+        // labelLayout.hideOverlap: 逐柱倍数标注在密集时自动隐藏重叠项 (缩放/拉窗后重排)
         {
           name: 'VOL',
           type: 'bar' as const,
           data: volData,
+          labelLayout: { hideOverlap: true },
           xAxisIndex: 1,
           yAxisIndex: 1,
         },
         // ===== MACD 副图 (gridIndex 2) =====
-        // MACD 柱 (hist)
+        // MACD 柱 (hist) — 柱堆面积/倍数标注同用 hideOverlap 防重叠
         {
           name: 'MACD',
           type: 'bar' as const,
           data: macdHistData,
+          labelLayout: { hideOverlap: true },
           xAxisIndex: 2,
           yAxisIndex: 2,
         },
