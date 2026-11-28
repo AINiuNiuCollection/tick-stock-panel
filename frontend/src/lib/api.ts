@@ -2578,6 +2578,43 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(symbols),
     }),
+
+  // ===== 大盘研究 (/api/market, 设计 docs/index_tracker_design_2026-11-27.md) =====
+  marketStatsModules: () =>
+    request<{ modules: MarketStatsModule[] }>('/api/market/stats/modules'),
+  marketBacktest: (body: MarketBacktestRequest) =>
+    request<MarketBacktestResponse>('/api/market/backtest', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  marketOptimize: (body: MarketOptimizeRequest) =>
+    request<MarketOptimizeResponse>('/api/market/optimize', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  marketEvents: (params?: { status?: string; category?: string; index_symbol?: string; group_by?: string }) =>
+    request<MarketEventsResponse>(
+      `/api/market/events?${new URLSearchParams(
+        Object.entries(params ?? {}).filter(([, v]) => v != null && v !== '') as [string, string][],
+      ).toString()}`,
+    ),
+  marketEventSeries: (eventId: string, indexSymbol?: string) =>
+    request<MarketEventSeriesResponse>(
+      `/api/market/events/series?${new URLSearchParams({
+        event_id: eventId,
+        ...(indexSymbol ? { index_symbol: indexSymbol } : {}),
+      }).toString()}`,
+    ),
+  marketOverview: (indexSymbol?: string) =>
+    request<MarketOverviewResponse>(
+      `/api/market/overview${indexSymbol ? `?index_symbol=${encodeURIComponent(indexSymbol)}` : ''}`,
+    ),
+  marketBreadth: (limit = 250) =>
+    request<MarketBreadthResponse>(`/api/market/breadth?limit=${limit}`),
+  marketBreadthRebuild: () =>
+    request<{ as_of: string; total_days: number }>(`/api/market/breadth/rebuild`, {
+      method: 'POST',
+    }),
   klineMinute: (symbol: string, date?: string, live?: boolean) =>
     request<{
       symbol: string
@@ -4623,4 +4660,270 @@ export interface CzscScanProgress {
 
 export async function czscScanProgress(): Promise<CzscScanProgress> {
   return request('/api/czsc/scan/progress', { quiet: true, timeoutMs: 3_000 })
+}
+// ===== 大盘研究 (/api/market) 类型 — 信号注册表 / 回测 / 寻优 =====
+
+/** 信号模块参数声明 — 驱动策略实验室参数面板自动渲染 */
+export interface MarketParamSpec {
+  name: string
+  label: string
+  type: 'int' | 'float' | 'select' | 'bool' | string
+  default: number | string | boolean
+  options?: string[] | null
+  min?: number | null
+  max?: number | null
+  description?: string
+}
+
+/** 信号模块 (M1 均线状态机 / M2 急跌急涨 / M3 量价) */
+export interface MarketStatsModule {
+  id: string
+  label: string
+  description: string
+  params: MarketParamSpec[]
+}
+
+export interface MarketExitSpec {
+  mode: 'time' | 'reverse' | 'profit_stop' | string
+  hold_days?: number
+  take_profit_pct?: number
+  stop_loss_pct?: number
+}
+
+/** 费用参数 (设计 §8.5 全可配; 响应回显生效值供前端一致性断言) */
+export interface MarketCostSpec {
+  commission_rate: number
+  stamp_tax_rate: number
+  slippage_rate: number
+}
+
+export interface MarketBacktestRequest {
+  index_symbol?: string
+  target_symbol?: string
+  module_id: string
+  entry_params?: Record<string, number | string>
+  exit?: MarketExitSpec
+  start?: string
+  end?: string
+  initial_capital?: number
+  position_ratio?: number
+  cost?: MarketCostSpec
+}
+
+export interface MarketOptimizeRequest extends MarketBacktestRequest {
+  entry_grid?: Record<string, (number | string)[]>
+  exit_grid?: Record<string, (number | string)[]> | null
+  train_ratio?: number
+  sort_by?: string
+}
+
+export interface MarketTrade {
+  entry_signal_dt: string
+  entry_dt: string
+  entry_price: number
+  exit_dt: string | null
+  exit_price: number | null
+  exit_reason: string
+  shares: number
+  pnl: number
+  return_pct: number
+}
+
+export interface MarketMetrics {
+  n_trades: number
+  initial_capital?: number
+  final_equity?: number
+  total_return_pct: number
+  annual_return_pct?: number
+  max_drawdown_pct?: number
+  sharpe?: number | null
+  win_rate?: number
+  profit_loss_ratio?: number | null
+  avg_hold_days?: number
+}
+
+export interface MarketBacktestResponse {
+  index_symbol: string
+  target_symbol: string
+  module_id: string
+  entry_params: Record<string, number | string>
+  exit: Required<MarketExitSpec>
+  cost: MarketCostSpec
+  window: { start: string; end: string }
+  signals: { dt: string; direction: number; note: string }[]
+  buy_signals: { dt: string; note: string }[]
+  trades: MarketTrade[]
+  metrics: MarketMetrics
+  equity_curve: { dt: string; equity: number }[]
+  /** 双K线联动图原始 OHLCV (raw 分区深历史, enriched 分区仅近一年不可用) */
+  target_bars: { date: string; open: number; high: number; low: number; close: number; volume: number }[]
+  index_bars: { date: string; open: number; high: number; low: number; close: number; volume: number }[]
+}
+
+/** 寻优行 — full/train/validation 三段对照, overfit_flag=true 标红 */
+export interface MarketOptimizeRow {
+  entry_params: Record<string, number | string>
+  exit: Record<string, string | number>
+  full: MarketMetrics
+  train: MarketMetrics
+  validation: MarketMetrics
+  overfit_flag: boolean
+}
+
+export interface MarketOptimizeResponse {
+  n_combos: number
+  rows: MarketOptimizeRow[]
+  cost: MarketCostSpec
+  window: { start: string; end: string; split?: string } & Record<string, string | undefined>
+}
+
+/** ===== 政策事件 (P3 设计 §2) ===== */
+
+export interface MarketEventStats {
+  event_id: string
+  base_close: number
+  t1: number | null
+  t5: number | null
+  t20: number | null
+  t60: number | null
+  max_up_20: number | null
+  max_dd_20: number | null
+  above_ma20: boolean | null
+  /** 事件时所在缠论日线笔方向 (v2 设计 §2.2; null=笔数据不足, 不虚构) */
+  bi_direction: 'up' | 'down' | string | null
+}
+
+export interface MarketPolicyEvent {
+  id: string
+  date: string
+  title: string
+  category: '货币政策' | '财政政策' | '产业政策' | '监管政策' | '会议定调' | '外部事件' | string
+  importance: 'major' | 'medium' | 'minor' | string
+  direction: 'positive' | 'negative' | 'neutral' | string
+  source: string
+  note: string
+  status: 'draft' | 'approved' | 'rejected' | string
+  fetch_code?: string
+  fetch_at?: string
+  /** approved+major+有 source 才进统计 (可信度铁律) */
+  countable: boolean
+  stats: MarketEventStats | null
+}
+
+/** direction × 20日线位置 聚合; n<5 时中位数字段缺省 (只显示样本数) */
+export interface MarketEventAggregateRow {
+  direction: string
+  ma20_position?: 'above' | 'below' | null
+  /** group_by=bi 时聚合维度字段 (v2); 默认 ma20 维度时不存在 */
+  bi_direction?: 'up' | 'down' | null
+  n: number
+  median_t1?: number
+  median_t5?: number
+  median_t20?: number
+  median_t60?: number
+}
+
+export interface MarketFixedCalendarEntry {
+  date: string
+  title: string
+  kind: string
+  note?: string
+}
+
+/** 上证指数日K (恒在层 K 线主图) */
+export interface MarketIndexBar {
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+export interface MarketEventsResponse {
+  index_symbol: string
+  /** 聚合维度 (默认 ma20; v2 起 group_by 查询参数控制, 响应回显) */
+  group_by: string
+  counts: { total: number; countable: number; draft: number }
+  events: MarketPolicyEvent[]
+  aggregate: MarketEventAggregateRow[]
+  calendar: MarketFixedCalendarEntry[]
+  index_bars: MarketIndexBar[]
+}
+
+/** 迷你路径点 — offset: -5..-1 事件前, 0=T+1 (生效日起第一个交易日), 值=close/前收盘*100 */
+export interface MarketSeriesPoint {
+  offset: number
+  date: string
+  value: number
+}
+
+export interface MarketEventSeriesResponse {
+  event: MarketPolicyEvent
+  index_symbol: string
+  base: number
+  points: MarketSeriesPoint[]
+  index_points: MarketSeriesPoint[]
+}
+
+/** ===== 总览仪表盘 (v2 Tab 0, 设计 §1.1 — 零预测性文字, 只呈现状态与统计事实) ===== */
+
+export interface MarketOverviewPrice {
+  close: number
+  prev_close: number | null
+  pct_change_pct: number | null
+  ma20_dev_pct: number | null
+  ma60_dev_pct: number | null
+  ma250_dev_pct: number | null
+}
+
+export interface MarketOverviewVolume {
+  last_5d_amount: number
+  percentile_250: number
+  level: 'extreme_high' | 'extreme_low' | 'normal' | string
+}
+
+export interface MarketOverviewChart {
+  /** 近250个交易日 ISO 日期 */
+  dates: string[]
+  /** [open, close, low, high] (echarts candlestick 口径) */
+  ohlc: number[][]
+  ma20: (number | null)[]
+  ma60: (number | null)[]
+  amounts: (number | null)[]
+  amt5: (number | null)[]
+  event_flags: { date: string; title: string; category: string }[]
+}
+
+/** ===== 市场结构 breadth (v3-⑤) ===== */
+
+export interface MarketBreadthRow {
+  date: string
+  /** 收盘 ≥ 自身 MA20 的个股占比 (0~1) */
+  pct_above_ma20: number
+  /** 收盘创自身 60 日新高的个股占比 (0~1) */
+  pct_new_high_60d: number
+  total_amount: number
+  amount_pctile_250: number | null
+  amount_level: 'extreme_high' | 'extreme_low' | 'normal' | string
+  sample_count: number
+}
+
+export interface MarketBreadthResponse {
+  as_of: string
+  total_days: number
+  rows: MarketBreadthRow[]
+}
+
+export interface MarketOverviewResponse {
+  index_symbol: string
+  /** 快照数据日期 (最新K线日) */
+  as_of: string
+  price: MarketOverviewPrice
+  ma20_streak: { above: boolean; days: number } | null
+  volume: MarketOverviewVolume | null
+  czsc: { daily_bi_direction: 'up' | 'down' | null }
+  upcoming: MarketFixedCalendarEntry[]
+  modules: MarketStatsModule[]
+  chart: MarketOverviewChart
 }
