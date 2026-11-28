@@ -13,6 +13,7 @@ from collections import OrderedDict
 from datetime import date
 
 from .eastmoney import EastmoneyKlineSource
+from .index_daily import IndexDailyKlineSource
 from .local_daily import LocalDailyKlineSource
 from .primary import PrimaryKlineSource
 from .source import KlineResult, KlineSource, empty_kline
@@ -60,6 +61,15 @@ class KlineSourceChain:
 
 
 def build_default_chain() -> KlineSourceChain:
+    # index_daily 首位: 白名单指数精确匹配, 其余 symbol 一律返回 None,
+    # 对个股零影响; 命中时毫秒级读本地 36 年指数全历史。
     # local_daily 优先: 全市场日K本地持久副本, 毫秒级且零网络依赖;
     # 数据过旧/缺失时自然落到 primary (TickFlow/自定义源) 与 eastmoney 兜底。
-    return KlineSourceChain([LocalDailyKlineSource(), PrimaryKlineSource(), EastmoneyKlineSource()])
+    return KlineSourceChain(
+        [
+            IndexDailyKlineSource(),
+            LocalDailyKlineSource(),
+            PrimaryKlineSource(),
+            EastmoneyKlineSource(),
+        ]
+    )

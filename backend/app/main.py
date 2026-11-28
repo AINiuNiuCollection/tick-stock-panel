@@ -26,6 +26,7 @@ from app.api import (
     intraday,
     kline,
     lots,
+    market,
     market_amv,
     market_recap,
     memo,
@@ -504,6 +505,7 @@ app.include_router(lots.router)
 app.include_router(alerts.router)
 app.include_router(rps.router)
 app.include_router(sector_rotation.router)
+app.include_router(market.router)
 
 # 二次开发路由与小粒度策略在所有核心路由后注册, 禁止覆盖核心路径。
 extension_registry, extension_load_errors = configure_backend_extensions(app)
